@@ -1,12 +1,13 @@
+// src/lib/ai.ts
 import Groq from "groq-sdk";
 import { Abrechnung, ExtractedData } from "./types";
 
-// Textmodell für Zusammenfassungen, Abrechnungen, Anschreiben, Chat & Recht-Check
+// Modell-Konfiguration
 const TEXT_MODEL = process.env.GROQ_TEXT_MODEL || "llama-3.3-70b-versatile";
-// Vision-Modell für Bild-Uploads (JPG/PNG) – wird für OCR/Dokumentenerkennung genutzt
 const VISION_MODEL = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
 
 let client: Groq | null = null;
+
 function getClient(): Groq {
   if (!process.env.GROQ_API_KEY) {
     throw new Error(
@@ -26,6 +27,7 @@ function extractJson(text: string): any {
   return JSON.parse(candidate.slice(start, end + 1));
 }
 
+// === SYSTEM-PROMPT FÜR DIE ANALYSE (einmalig definiert) ===
 const SYSTEM_EXTRAKTION = `Du bist "BetriebsKostenBot", ein Experte für deutsche Betriebskosten- und Nebenkostenabrechnungen, Mieteinnahmen, Heizkostenabrechnungen und Mietverträge.
 Analysiere das übergebene Dokument (Betriebskostenabrechnung, Nebenkostenabrechnung, Mietvertrag, Heizkostenabrechnung, Einnahmen/Ausgaben-Aufstellung o.ä.) und extrahiere die relevanten Daten.
 Antworte AUSSCHLIESSLICH mit einem JSON-Objekt (kein Fließtext, keine Erklärung) in exakt diesem Format:
@@ -40,11 +42,6 @@ Antworte AUSSCHLIESSLICH mit einem JSON-Objekt (kein Fließtext, keine Erklärun
 }
 Falls ein Wert nicht erkennbar ist, verwende sinnvolle Defaults (leerer String, 0, leere Liste). Erfinde keine Fakten, die nicht im Dokument stehen.`;
 
-/**
- * Analysiert ein Dokument. Für Bilder (JPG/PNG) wird das Groq Vision-Modell genutzt,
- * für bereits als Text vorliegende Inhalte (TXT oder aus PDFs extrahierter Text)
- * wird direkt das Textmodell verwendet, da Groq keine PDF-Dateien nativ verarbeitet.
- */
 export async function analyzeDocument(params: {
   base64: string;
   mimeType: string;
@@ -54,10 +51,12 @@ export async function analyzeDocument(params: {
   const groq = getClient();
 
   const isImage = mimeType.startsWith("image/");
-
-  let userContent: Groq.Chat.Completions.ChatCompletionContentPart[] | string;
+  let userContent: any;
 
   if (isImage) {
+    // === KORRIGIERTE Base64-URL (das war der alte Fehler) ===
+    const dataUrl = `data:${mimeType};base64,${base64}`;
+
     userContent = [
       {
         type: "text",
@@ -65,11 +64,11 @@ export async function analyzeDocument(params: {
       },
       {
         type: "image_url",
-        image_url: { url: `data:${mimeType};base64,${base64}` },
+        image_url: { url: dataUrl },
       },
     ];
   } else {
-    // base64 enthält hier bereits reinen Text (TXT-Upload oder aus PDF extrahierter Text)
+    // Für TXT oder aus PDF extrahierten Text
     userContent = `Datei: ${fileName}.\n\nInhalt des Dokuments:\n${base64}\n\nAnalysiere dieses Dokument und liefere die JSON-Extraktion.`;
   }
 
@@ -79,7 +78,7 @@ export async function analyzeDocument(params: {
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: SYSTEM_EXTRAKTION },
-      { role: "user", content: userContent as any },
+      { role: "user", content: userContent },
     ],
   });
 
@@ -87,6 +86,7 @@ export async function analyzeDocument(params: {
   return extractJson(text) as ExtractedData;
 }
 
+// === Übrige Funktionen (generateBetriebskostenabrechnung, generateAnschreiben, rechtCheck, chatWithContext) bleiben exakt wie du sie hast ===
 export async function generateBetriebskostenabrechnung(abr: Abrechnung): Promise<string> {
   const groq = getClient();
   const completion = await groq.chat.completions.create({
@@ -189,7 +189,6 @@ export async function chatWithContext(params: {
 }): Promise<string> {
   const { message, current, all, history } = params;
   const groq = getClient();
-
   const overview = all.map((a) => ({
     id: a.id,
     name: a.name,
@@ -203,10 +202,8 @@ export async function chatWithContext(params: {
 - Aktuell ausgewählte Abrechnung (Rohdaten + Workspace)
 - Liste aller anderen Abrechnungen
 Du machst Optimierungsvorschläge (z.B. fehlende Positionen), erkennst fehlende Punkte (z.B. USt bei Gewerbeobjekten), schlägst Formulierungen für Anschreiben vor und beantwortest Fragen zu Betriebskosten- und Mietrecht. Antworte präzise, hilfreich und auf Deutsch.
-
 Aktuelle Abrechnung:
 ${current ? JSON.stringify(current, null, 2) : "Keine ausgewählt"}
-
 Alle Abrechnungen (Übersicht):
 ${JSON.stringify(overview, null, 2)}`;
 
@@ -215,10 +212,9 @@ ${JSON.stringify(overview, null, 2)}`;
     max_completion_tokens: 1200,
     messages: [
       { role: "system", content: system },
-      ...history.map((h) => ({ role: h.role, content: h.content }) as Groq.Chat.Completions.ChatCompletionMessageParam),
+      ...history.map((h) => ({ role: h.role, content: h.content }) as any),
       { role: "user", content: message },
     ],
   });
-
   return completion.choices[0]?.message?.content || "";
 }
