@@ -2,7 +2,7 @@
 
 KI-gestützte Web-App zur automatisierten Erstellung und Prüfung von Betriebskostenabrechnungen
 (Wohnen & Gewerbe). Next.js 15 (App Router) + TypeScript + Tailwind CSS + Zustand + Anthropic
-Claude (Vision & Text)...
+Claude (Vision & Text).
 
 ## Features
 
