@@ -1,37 +1,39 @@
-# fly.toml – Konfiguration für den Fly.io Deploy
-# App-Namen vor dem ersten Deploy anpassen (muss global eindeutig sein),
-# z.B. per: fly apps create betriebskosten-ki-<dein-suffix>
+# fly.toml app configuration file generated for bkabr on 2026-07-14T05:49:19Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-app = "betriebskosten-ki"
-primary_region = "fra"
+app = 'bkabr'
+primary_region = 'fra'
 
 [build]
 
 [env]
-  NODE_ENV = "production"
-  DATA_DIR = "/data"
-  PORT = "3000"
+  DATA_DIR = '/data'
+  NODE_ENV = 'production'
+  PORT = '3000'
 
 [[mounts]]
-  source = "betriebskosten_data"
-  destination = "/data"
+  source = 'betriebskosten_data'
+  destination = '/data'
 
 [http_service]
   internal_port = 3000
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 1
-  processes = ["app"]
+  processes = ['app']
 
   [[http_service.checks]]
-    grace_period = "15s"
-    interval = "30s"
-    method = "GET"
-    timeout = "5s"
-    path = "/"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '15s'
+    method = 'GET'
+    path = '/'
 
 [[vm]]
-  memory = "512mb"
-  cpu_kind = "shared"
+  memory = '512mb'
+  cpu_kind = 'shared'
   cpus = 1
+  memory_mb = 512
