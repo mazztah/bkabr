@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { PDFParse } from "pdf-parse";
 import { analyzeDocument } from "@/lib/ai";
 import { createAbrechnung } from "@/lib/db";
 import { Abrechnung, Dokument } from "@/lib/types";
@@ -43,12 +44,34 @@ export async function POST(req: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    const isTextType = mimeType === "text/plain";
-    const payload = isTextType ? buffer.toString("utf-8") : buffer.toString("base64");
+    const isPdf = mimeType === "application/pdf";
+    const isTextType = mimeType === "text/plain" || isPdf;
+
+    let payload: string;
+    if (isPdf) {
+      // Groq kann PDFs nicht direkt verarbeiten (nur Bilder), daher wird der Text
+      // vorab lokal aus der PDF extrahiert und als Text an das Modell übergeben.
+      const parser = new PDFParse({ data: buffer });
+      const result = await parser.getText();
+      await parser.destroy();
+      payload = result.text?.trim() || "";
+
+      if (!payload) {
+        return NextResponse.json(
+          {
+            error:
+              "In der PDF konnte kein Text gefunden werden (vermutlich ein eingescanntes Dokument ohne Textebene). Bitte lade stattdessen ein Foto/Scan als JPG oder PNG hoch.",
+          },
+          { status: 415 }
+        );
+      }
+    } else {
+      payload = isTextType ? buffer.toString("utf-8") : buffer.toString("base64");
+    }
 
     const extracted = await analyzeDocument({
       base64: payload,
-      mimeType,
+      mimeType: isPdf ? "text/plain" : mimeType,
       fileName: file.name,
     });
 

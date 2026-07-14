@@ -1,16 +1,19 @@
-import Anthropic from "@anthropic-ai/sdk";
+import Groq from "groq-sdk";
 import { Abrechnung, ExtractedData } from "./types";
 
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
+// Textmodell für Zusammenfassungen, Abrechnungen, Anschreiben, Chat & Recht-Check
+const TEXT_MODEL = process.env.GROQ_TEXT_MODEL || "llama-3.3-70b-versatile";
+// Vision-Modell für Bild-Uploads (JPG/PNG) – wird für OCR/Dokumentenerkennung genutzt
+const VISION_MODEL = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
 
-let client: Anthropic | null = null;
-function getClient(): Anthropic {
-  if (!process.env.ANTHROPIC_API_KEY) {
+let client: Groq | null = null;
+function getClient(): Groq {
+  if (!process.env.GROQ_API_KEY) {
     throw new Error(
-      "ANTHROPIC_API_KEY ist nicht gesetzt. Bitte in .env.local bzw. als Fly.io Secret hinterlegen."
+      "GROQ_API_KEY ist nicht gesetzt. Bitte in .env.local bzw. als Fly.io Secret hinterlegen."
     );
   }
-  if (!client) client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  if (!client) client = new Groq({ apiKey: process.env.GROQ_API_KEY });
   return client;
 }
 
@@ -37,62 +40,64 @@ Antworte AUSSCHLIESSLICH mit einem JSON-Objekt (kein Fließtext, keine Erklärun
 }
 Falls ein Wert nicht erkennbar ist, verwende sinnvolle Defaults (leerer String, 0, leere Liste). Erfinde keine Fakten, die nicht im Dokument stehen.`;
 
+/**
+ * Analysiert ein Dokument. Für Bilder (JPG/PNG) wird das Groq Vision-Modell genutzt,
+ * für bereits als Text vorliegende Inhalte (TXT oder aus PDFs extrahierter Text)
+ * wird direkt das Textmodell verwendet, da Groq keine PDF-Dateien nativ verarbeitet.
+ */
 export async function analyzeDocument(params: {
   base64: string;
   mimeType: string;
   fileName: string;
 }): Promise<ExtractedData> {
   const { base64, mimeType, fileName } = params;
-  const anthropic = getClient();
+  const groq = getClient();
 
-  const isPdf = mimeType === "application/pdf";
   const isImage = mimeType.startsWith("image/");
 
-  const contentBlocks: Anthropic.MessageParam["content"] = [];
+  let userContent: Groq.Chat.Completions.ChatCompletionContentPart[] | string;
 
-  if (isPdf) {
-    contentBlocks.push({
-      type: "document",
-      source: { type: "base64", media_type: "application/pdf", data: base64 },
-    } as any);
-  } else if (isImage) {
-    contentBlocks.push({
-      type: "image",
-      source: { type: "base64", media_type: mimeType as any, data: base64 },
-    } as any);
+  if (isImage) {
+    userContent = [
+      {
+        type: "text",
+        text: `Datei: ${fileName}. Analysiere dieses Dokument und liefere die JSON-Extraktion.`,
+      },
+      {
+        type: "image_url",
+        image_url: { url: `data:${mimeType};base64,${base64}` },
+      },
+    ];
   } else {
-    // Text-basierte Formate (txt, docx-Rohtext etc.) werden bereits als Text übergeben
-    contentBlocks.push({ type: "text", text: base64 });
+    // base64 enthält hier bereits reinen Text (TXT-Upload oder aus PDF extrahierter Text)
+    userContent = `Datei: ${fileName}.\n\nInhalt des Dokuments:\n${base64}\n\nAnalysiere dieses Dokument und liefere die JSON-Extraktion.`;
   }
 
-  contentBlocks.push({
-    type: "text",
-    text: `Datei: ${fileName}. Analysiere dieses Dokument und liefere die JSON-Extraktion.`,
+  const completion = await groq.chat.completions.create({
+    model: isImage ? VISION_MODEL : TEXT_MODEL,
+    max_completion_tokens: 2000,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM_EXTRAKTION },
+      { role: "user", content: userContent as any },
+    ],
   });
 
-  const msg = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 2000,
-    system: SYSTEM_EXTRAKTION,
-    messages: [{ role: "user", content: contentBlocks }],
-  });
-
-  const text = msg.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
-
+  const text = completion.choices[0]?.message?.content || "";
   return extractJson(text) as ExtractedData;
 }
 
 export async function generateBetriebskostenabrechnung(abr: Abrechnung): Promise<string> {
-  const anthropic = getClient();
-  const msg = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 2500,
-    system:
-      "Du bist ein erfahrener deutscher Betriebskostenmanager. Erstelle eine vollständige, formal korrekte Betriebskostenabrechnung nach § 556 BGB / BetrKV im Klartext (Markdown), inkl. Kostenaufstellung, Umlageschlüssel und Saldo. Antworte nur mit dem fertigen Text.",
+  const groq = getClient();
+  const completion = await groq.chat.completions.create({
+    model: TEXT_MODEL,
+    max_completion_tokens: 2500,
     messages: [
+      {
+        role: "system",
+        content:
+          "Du bist ein erfahrener deutscher Betriebskostenmanager. Erstelle eine vollständige, formal korrekte Betriebskostenabrechnung nach § 556 BGB / BetrKV im Klartext (Markdown), inkl. Kostenaufstellung, Umlageschlüssel und Saldo. Antworte nur mit dem fertigen Text.",
+      },
       {
         role: "user",
         content: `Erstelle die Betriebskostenabrechnung für folgende Daten:\n${JSON.stringify(
@@ -112,20 +117,20 @@ export async function generateBetriebskostenabrechnung(abr: Abrechnung): Promise
       },
     ],
   });
-  return msg.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
+  return completion.choices[0]?.message?.content || "";
 }
 
 export async function generateAnschreiben(abr: Abrechnung, anlass: string): Promise<string> {
-  const anthropic = getClient();
-  const msg = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 1500,
-    system:
-      "Du bist ein Vermieter-Assistent. Erstelle ein formelles, höfliches Anschreiben an den Mieter auf Deutsch (Betreff, Anrede, Text, Grußformel), das alle rechtlich relevanten Punkte zur Betriebskostenabrechnung enthält. Antworte nur mit dem fertigen Brieftext.",
+  const groq = getClient();
+  const completion = await groq.chat.completions.create({
+    model: TEXT_MODEL,
+    max_completion_tokens: 1500,
     messages: [
+      {
+        role: "system",
+        content:
+          "Du bist ein Vermieter-Assistent. Erstelle ein formelles, höfliches Anschreiben an den Mieter auf Deutsch (Betreff, Anrede, Text, Grußformel), das alle rechtlich relevanten Punkte zur Betriebskostenabrechnung enthält. Antworte nur mit dem fertigen Brieftext.",
+      },
       {
         role: "user",
         content: `Anlass: ${anlass}\n\nDaten der Abrechnung:\n${JSON.stringify(
@@ -142,19 +147,19 @@ export async function generateAnschreiben(abr: Abrechnung, anlass: string): Prom
       },
     ],
   });
-  return msg.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
+  return completion.choices[0]?.message?.content || "";
 }
 
 export async function rechtCheck(abr: Abrechnung | null, staticContent: string): Promise<string> {
-  const anthropic = getClient();
-  const msg = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 1500,
-    system: `Du bist ein Experte für deutsches Miet- und Betriebskostenrecht. Nutze folgenden Rechtsstand als Basis:\n\n${staticContent}\n\nPrüfe die übergebene Abrechnung auf Konformität und gib eine klare, strukturierte Markdown-Antwort mit konkreten Hinweisen, Quellen und ggf. Entscheidungsdatum zurück.`,
+  const groq = getClient();
+  const completion = await groq.chat.completions.create({
+    model: TEXT_MODEL,
+    max_completion_tokens: 1500,
     messages: [
+      {
+        role: "system",
+        content: `Du bist ein Experte für deutsches Miet- und Betriebskostenrecht. Nutze folgenden Rechtsstand als Basis:\n\n${staticContent}\n\nPrüfe die übergebene Abrechnung auf Konformität und gib eine klare, strukturierte Markdown-Antwort mit konkreten Hinweisen, Quellen und ggf. Entscheidungsdatum zurück.`,
+      },
       {
         role: "user",
         content: abr
@@ -173,10 +178,7 @@ export async function rechtCheck(abr: Abrechnung | null, staticContent: string):
       },
     ],
   });
-  return msg.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
+  return completion.choices[0]?.message?.content || "";
 }
 
 export async function chatWithContext(params: {
@@ -186,7 +188,7 @@ export async function chatWithContext(params: {
   history: { role: "user" | "assistant"; content: string }[];
 }): Promise<string> {
   const { message, current, all, history } = params;
-  const anthropic = getClient();
+  const groq = getClient();
 
   const overview = all.map((a) => ({
     id: a.id,
@@ -208,18 +210,15 @@ ${current ? JSON.stringify(current, null, 2) : "Keine ausgewählt"}
 Alle Abrechnungen (Übersicht):
 ${JSON.stringify(overview, null, 2)}`;
 
-  const msg = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 1200,
-    system,
+  const completion = await groq.chat.completions.create({
+    model: TEXT_MODEL,
+    max_completion_tokens: 1200,
     messages: [
-      ...history.map((h) => ({ role: h.role, content: h.content }) as Anthropic.MessageParam),
+      { role: "system", content: system },
+      ...history.map((h) => ({ role: h.role, content: h.content }) as Groq.Chat.Completions.ChatCompletionMessageParam),
       { role: "user", content: message },
     ],
   });
 
-  return msg.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
+  return completion.choices[0]?.message?.content || "";
 }
