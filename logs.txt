@@ -1,0 +1,373 @@
+
+npm failed to build your repo
+Your repo npm run build failed. Check out logs from the Build Image step to see what went wrong or press "Copy question to ask AI" as paste in your favorite LLM to get it fixed.
+
+After writting a fix, you can retry the deployment using the buttons below.
+
+You can also ask help in our community forum 
+
+
+flyctl deploy --build-only --push -a bkabr --image-label deployment-7ad33f50ebdc84ec04207a8858bc5dd1 --config fly.toml
+
+==> Verifying app config
+
+Validating fly.toml
+
+✓ Configuration is valid
+
+--> Verified app config
+
+==> Building image
+
+Waiting for depot builder...
+
+
+==> Building image with Depot
+
+--> build: (​)
+
+#1 [internal] load build definition from Dockerfile
+
+#1 transferring dockerfile: 1.08kB 0.0s done
+
+#1 DONE 0.0s
+
+
+#2 resolve image config for docker-image://docker.io/docker/dockerfile:1
+
+#2 DONE 0.2s
+
+
+#3 docker-image://docker.io/docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
+
+#3 resolve docker.io/docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89 done
+
+#3 CACHED
+
+
+#1 [internal] load build definition from Dockerfile
+
+#1 transferring dockerfile: 1.08kB 0.0s done
+
+#1 DONE 0.0s
+
+
+#4 [internal] load build definition from Dockerfile
+
+#4 Deduplicating step ID [internal] load build definition from Dockerfile, another build is calculating it done
+
+#4 DONE 0.0s
+
+
+#5 [internal] load metadata for docker.io/library/node:22-alpine
+
+#5 DONE 0.2s
+
+
+#6 [internal] load .dockerignore
+
+#6 transferring context: 118B done
+
+#6 DONE 0.0s
+
+
+#7 [deps 1/4] FROM docker.io/library/node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
+
+#7 resolve docker.io/library/node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 done
+
+#7 DONE 0.0s
+
+
+#8 [internal] load build context
+
+#8 transferring context: 443.30kB 0.0s done
+
+#8 DONE 0.0s
+
+
+#9 [deps 2/4] WORKDIR /app
+
+#9 CACHED
+
+
+#10 [deps 3/4] COPY package.json package-lock.json* ./
+
+#10 CACHED
+
+
+#11 [deps 4/4] RUN npm install --no-audit --no-fund
+
+#11 CACHED
+
+
+#12 [builder 3/5] COPY --from=deps /app/node_modules ./node_modules
+
+#12 CACHED
+
+
+#13 [builder 4/5] COPY . .
+
+#13 DONE 0.0s
+
+
+#14 [builder 5/5] RUN npm run build
+
+#14 0.586
+
+#14 0.586 > betriebskosten-ki@1.0.0 build
+
+#14 0.586 > next build
+
+#14 0.586
+
+#14 2.013 ▲ Next.js 15.5.9
+
+#14 2.014
+
+#14 2.059 Creating an optimized production build ...
+
+#14 9.423 Failed to compile.
+
+#14 9.423
+
+#14 9.423 ./src/lib/ai.ts
+
+#14 9.423 Module not found: Can't resolve '@anthropic-ai/sdk'
+
+#14 9.423
+
+#14 9.423 https://nextjs.org/docs/messages/module-not-found
+
+#14 9.423
+
+#14 9.423 Import trace for requested module:
+
+#14 9.423 ./src/app/api/generate/abrechnung/route.ts
+
+#14 9.423
+
+#14 9.429
+
+#14 9.429 > Build failed because of webpack errors
+
+#14 9.454 npm notice
+
+#14 9.454 npm notice New major version of npm available! 10.9.8 -> 12.0.1
+
+#14 9.454 npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.1
+
+#14 9.454 npm notice To update run: npm install -g npm@12.0.1
+
+#14 9.454 npm notice
+
+#14 ERROR: process "/bin/sh -c npm run build" did not complete successfully: exit code: 1
+
+npm run build failed
+
+------
+
+> [builder 5/5] RUN npm run build:
+
+9.423 Import trace for requested module:
+
+9.423 ./src/app/api/generate/abrechnung/route.ts
+
+9.423
+
+9.429
+
+9.429 > Build failed because of webpack errors
+
+9.454 npm notice
+
+9.454 npm notice New major version of npm available! 10.9.8 -> 12.0.1
+
+9.454 npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.1
+
+9.454 npm notice To update run: npm install -g npm@12.0.1
+
+9.454 npm notice
+
+------
+
+==> Building image
+
+Waiting for depot builder...
+
+
+==> Building image with Depot
+
+--> build: (​)
+
+#1 [internal] load build definition from Dockerfile
+
+#1 transferring dockerfile: 1.08kB done
+
+#1 DONE 0.0s
+
+
+#2 resolve image config for docker-image://docker.io/docker/dockerfile:1
+
+#2 DONE 0.2s
+
+
+#3 docker-image://docker.io/docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
+
+#3 resolve docker.io/docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89 done
+
+#3 CACHED
+
+
+#1 [internal] load build definition from Dockerfile
+
+#1 transferring dockerfile: 1.08kB done
+
+#1 DONE 0.0s
+
+
+#4 [internal] load build definition from Dockerfile
+
+#4 Deduplicating step ID [internal] load build definition from Dockerfile, another build is calculating it done
+
+#4 DONE 0.0s
+
+
+#5 [internal] load metadata for docker.io/library/node:22-alpine
+
+#5 DONE 0.2s
+
+
+#6 [internal] load .dockerignore
+
+#6 transferring context: 118B 0.0s done
+
+#6 DONE 0.0s
+
+
+#7 [deps 1/4] FROM docker.io/library/node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
+
+#7 resolve docker.io/library/node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 done
+
+#7 DONE 0.0s
+
+
+#8 [internal] load build context
+
+#8 transferring context: 2.30kB 0.0s done
+
+#8 DONE 0.0s
+
+
+#9 [builder 3/5] COPY --from=deps /app/node_modules ./node_modules
+
+#9 CACHED
+
+
+#10 [deps 3/4] COPY package.json package-lock.json* ./
+
+#10 CACHED
+
+
+#11 [deps 2/4] WORKDIR /app
+
+#11 CACHED
+
+
+#12 [deps 4/4] RUN npm install --no-audit --no-fund
+
+#12 CACHED
+
+
+#13 [builder 4/5] COPY . .
+
+#13 CACHED
+
+
+#14 [builder 5/5] RUN npm run build
+
+#14 0.681
+
+#14 0.681 > betriebskosten-ki@1.0.0 build
+
+#14 0.681 > next build
+
+#14 0.681
+
+#14 2.155 ▲ Next.js 15.5.9
+
+#14 2.155
+
+#14 2.193 Creating an optimized production build ...
+
+#14 9.176 Failed to compile.
+
+#14 9.176
+
+#14 9.176 ./src/lib/ai.ts
+
+#14 9.176 Module not found: Can't resolve '@anthropic-ai/sdk'
+
+#14 9.176
+
+#14 9.176 https://nextjs.org/docs/messages/module-not-found
+
+#14 9.176
+
+#14 9.176 Import trace for requested module:
+
+#14 9.176 ./src/app/api/chat/route.ts
+
+#14 9.176
+
+#14 9.178
+
+#14 9.178 > Build failed because of webpack errors
+
+#14 9.206 npm notice
+
+#14 9.206 npm notice New major version of npm available! 10.9.8 -> 12.0.1
+
+#14 9.206 npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.1
+
+#14 9.206 npm notice To update run: npm install -g npm@12.0.1
+
+#14 9.206 npm notice
+
+#14 ERROR: process "/bin/sh -c npm run build" did not complete successfully: exit code: 1
+
+npm run build failed
+
+------
+
+> [builder 5/5] RUN npm run build:
+
+9.176 Import trace for requested module:
+
+9.176 ./src/app/api/chat/route.ts
+
+9.176
+
+9.178
+
+9.178 > Build failed because of webpack errors
+
+9.206 npm notice
+
+9.206 npm notice New major version of npm available! 10.9.8 -> 12.0.1
+
+9.206 npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.1
+
+9.206 npm notice To update run: npm install -g npm@12.0.1
+
+9.206 npm notice
+
+------
+
+Error: failed to fetch an image or build from source: error building: failed to solve: process "/bin/sh -c npm run build" did not complete successfully: exit code: 1
+
+npm run build failed
+
+unsuccessful command 'flyctl deploy --build-only --push -a bkabr --image-label deployment-7ad33f50ebdc84ec04207a8858bc5dd1 --config fly.toml'
+
+
+
