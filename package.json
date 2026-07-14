@@ -1,0 +1,33 @@
+{
+  "name": "betriebskosten-ki",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start -p ${PORT:-3000}",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "next": "15.5.9",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "@anthropic-ai/sdk": "^0.65.0",
+    "zustand": "^4.5.5",
+    "pdf-lib": "^1.17.1",
+    "date-fns": "^3.6.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/uuid": "^9.0.8",
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.9"
+  }
+}
