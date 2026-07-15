@@ -1,6 +1,6 @@
 import { promises as fs } from "fs";
 import path from "path";
-import { Abrechnung } from "./types";
+import { Abrechnung, Gebaeude, Liegenschaft, Mieter, Wohnung } from "./types";
 
 // DATA_DIR kann per ENV überschrieben werden (z.B. für ein Fly.io Volume unter /data)
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
@@ -8,6 +8,10 @@ const DB_FILE = path.join(DATA_DIR, "db.json");
 
 interface DbShape {
   abrechnungen: Abrechnung[];
+  liegenschaften: Liegenschaft[];
+  gebaeude: Gebaeude[];
+  wohnungen: Wohnung[];
+  mieter: Mieter[];
 }
 
 let cache: DbShape | null = null;
@@ -17,14 +21,24 @@ async function ensureDataDir() {
   await fs.mkdir(DATA_DIR, { recursive: true });
 }
 
+function withDefaults(db: Partial<DbShape>): DbShape {
+  return {
+    abrechnungen: db.abrechnungen || [],
+    liegenschaften: db.liegenschaften || [],
+    gebaeude: db.gebaeude || [],
+    wohnungen: db.wohnungen || [],
+    mieter: db.mieter || [],
+  };
+}
+
 async function readDb(): Promise<DbShape> {
   if (cache) return cache;
   await ensureDataDir();
   try {
     const raw = await fs.readFile(DB_FILE, "utf-8");
-    cache = JSON.parse(raw) as DbShape;
+    cache = withDefaults(JSON.parse(raw) as Partial<DbShape>);
   } catch {
-    cache = { abrechnungen: [] };
+    cache = withDefaults({});
     await writeDb(cache);
   }
   return cache!;
@@ -108,3 +122,53 @@ export async function deleteAbrechnung(id: string): Promise<boolean> {
   await writeDb(db);
   return db.abrechnungen.length < before;
 }
+
+// -------- Generische CRUD-Fabrik für die Liegenschaftshierarchie --------
+
+function makeCrud<T extends { id: string; createdAt: string; updatedAt: string }>(
+  collection: keyof DbShape
+) {
+  return {
+    async list(filter?: Partial<T>): Promise<T[]> {
+      const db = await readDb();
+      const items = db[collection] as unknown as T[];
+      if (!filter) return items;
+      return items.filter((item) =>
+        Object.entries(filter).every(([k, v]) => (item as any)[k] === v)
+      );
+    },
+    async get(id: string): Promise<T | undefined> {
+      const db = await readDb();
+      return (db[collection] as unknown as T[]).find((i) => i.id === id);
+    },
+    async create(item: T): Promise<T> {
+      const db = await readDb();
+      (db[collection] as unknown as T[]).push(item);
+      await writeDb(db);
+      return item;
+    },
+    async update(id: string, patch: Partial<T>): Promise<T | undefined> {
+      const db = await readDb();
+      const items = db[collection] as unknown as T[];
+      const idx = items.findIndex((i) => i.id === id);
+      if (idx === -1) return undefined;
+      const updated = { ...items[idx], ...patch, updatedAt: new Date().toISOString() } as T;
+      items[idx] = updated;
+      await writeDb(db);
+      return updated;
+    },
+    async remove(id: string): Promise<boolean> {
+      const db = await readDb();
+      const items = db[collection] as unknown as T[];
+      const before = items.length;
+      (db as any)[collection] = items.filter((i) => i.id !== id);
+      await writeDb(db);
+      return (db[collection] as unknown as T[]).length < before;
+    },
+  };
+}
+
+export const liegenschaftenDb = makeCrud<Liegenschaft>("liegenschaften");
+export const gebaeudeDb = makeCrud<Gebaeude>("gebaeude");
+export const wohnungenDb = makeCrud<Wohnung>("wohnungen");
+export const mieterDb = makeCrud<Mieter>("mieter");

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import TopNav from "@/components/TopNav";
 
 export const metadata: Metadata = {
   title: "BetriebsKostenBot – Automatische Betriebskostenabrechnungen",
@@ -23,7 +24,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
-      <body className="min-h-screen antialiased">{children}</body>
+      <body className="min-h-screen antialiased">
+        <div className="flex h-screen flex-col overflow-hidden">
+          <TopNav />
+          <div className="min-h-0 flex-1">{children}</div>
+        </div>
+      </body>
     </html>
   );
 }
