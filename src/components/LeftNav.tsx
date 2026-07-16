@@ -29,8 +29,8 @@ const GROUPS: NavGroup[] = [
     title: "Objekte",
     items: [
       { href: "/liegenschaften", label: "Liegenschaften", icon: "🏠" },
-      { href: "/liegenschaften", label: "Gebäude", icon: "🏢" },
-      { href: "/liegenschaften", label: "Mieter", icon: "🧑" },
+      { href: "/gebaeude", label: "Gebäude", icon: "🏢" },
+      { href: "/mieter", label: "Mieter", icon: "🧑" },
       { href: "/auswertung", label: "Auswertung", icon: "📊" },
     ],
   },

@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
 import { Abrechnung, Gebaeude, Liegenschaft, Mieter, SollIstEintrag, Wohnung } from "@/lib/types";
-import { HierarchyData } from "@/app/liegenschaften/page";
+import { HierarchyData } from "@/lib/use-hierarchy-data";
 import { NodeSelection } from "./LiegenschaftenTree";
 import Modal from "./Modal";
 import ProgressRing from "./ProgressRing";

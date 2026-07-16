@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { cn } from "@/lib/utils";
-import { HierarchyData } from "@/app/liegenschaften/page";
+import { HierarchyData } from "@/lib/use-hierarchy-data";
 
 export type NodeSelection =
   | { type: "liegenschaft"; id: string }

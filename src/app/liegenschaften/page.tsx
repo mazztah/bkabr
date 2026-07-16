@@ -1,62 +1,15 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Abrechnung, Gebaeude, Liegenschaft, Mieter, Wohnung } from "@/lib/types";
+import { useHierarchyData } from "@/lib/use-hierarchy-data";
 import LiegenschaftenTree, { NodeSelection } from "@/components/LiegenschaftenTree";
 import LiegenschaftDetail from "@/components/LiegenschaftDetail";
 
-export interface HierarchyData {
-  liegenschaften: Liegenschaft[];
-  gebaeude: Gebaeude[];
-  wohnungen: Wohnung[];
-  mieter: Mieter[];
-  abrechnungen: Abrechnung[];
-}
-
-const EMPTY: HierarchyData = {
-  liegenschaften: [],
-  gebaeude: [],
-  wohnungen: [],
-  mieter: [],
-  abrechnungen: [],
-};
-
 function LiegenschaftenPageInner() {
-  const [data, setData] = useState<HierarchyData>(EMPTY);
-  const [loading, setLoading] = useState(true);
+  const { data, loading, error, refresh } = useHierarchyData();
   const [selection, setSelection] = useState<NodeSelection>(null);
-  const [error, setError] = useState<string | null>(null);
   const searchParams = useSearchParams();
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [l, g, w, m, a] = await Promise.all([
-        fetch("/api/liegenschaften").then((r) => r.json()),
-        fetch("/api/gebaeude").then((r) => r.json()),
-        fetch("/api/wohnungen").then((r) => r.json()),
-        fetch("/api/mieter").then((r) => r.json()),
-        fetch("/api/abrechnungen").then((r) => r.json()),
-      ]);
-      setData({
-        liegenschaften: l.liegenschaften || [],
-        gebaeude: g.gebaeude || [],
-        wohnungen: w.wohnungen || [],
-        mieter: m.mieter || [],
-        abrechnungen: a.abrechnungen || [],
-      });
-      setError(null);
-    } catch {
-      setError("Daten konnten nicht geladen werden.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
 
   useEffect(() => {
     const select = searchParams.get("select");
