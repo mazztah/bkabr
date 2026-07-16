@@ -22,7 +22,7 @@ export const RECHNUNGS_MERKMALE = [
   "betrag",
 ] as const;
 export type RechnungsMerkmal = (typeof RECHNUNGS_MERKMALE)[number];
-export const MERKMALS_SCHWELLE = 0.9;
+export const MERKMALS_SCHWELLE = 0.83;
 
 export interface RechnungsPruefung {
   erkannteMerkmale: RechnungsMerkmal[];
