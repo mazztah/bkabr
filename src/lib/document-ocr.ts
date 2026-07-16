@@ -28,7 +28,11 @@ export async function extractTextFromFile(
       const parser = new PDFParse({ data: buffer });
       const result = await parser.getText();
       await parser.destroy();
-      const text = result.text?.trim() || "";
+      const text = (result.text || "")
+        .replace(/--\s*\d+\s*of\s*\d+\s*--/gi, "") // pdf-parse Seiten-Marker entfernen
+        .replace(/[ \t]+\n/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
       if (!text) {
         return {
           text: "",

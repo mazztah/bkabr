@@ -149,7 +149,12 @@ export default function MietvertraegePage() {
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-muted-foreground sm:grid-cols-4">
                   <span>Mieter: {m?.name || "–"}</span>
-                  <span>Wohnung: {w?.bezeichnung || "–"}</span>
+                  <a
+                    href={`/liegenschaften?select=wohnung:${mv.wohnungId}`}
+                    className="text-primary hover:underline"
+                  >
+                    Wohnung: {w?.bezeichnung || "–"} ↗
+                  </a>
                   {mv.sollMiete ? <span>Kaltmiete: {formatCurrency(mv.sollMiete)}</span> : null}
                   {mv.mietbeginn && <span>Beginn: {mv.mietbeginn}</span>}
                   <span>Status: {mv.status}</span>

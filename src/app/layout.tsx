@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import LeftNav from "@/components/LeftNav";
+import GlobalTopBar from "@/components/GlobalTopBar";
+import SandboxLayer from "@/components/SandboxLayer";
+import { SandboxProvider } from "@/lib/sandbox-context";
 
 export const metadata: Metadata = {
   title: "BetriebsKostenBot – Automatische Betriebskostenabrechnungen",
@@ -25,10 +28,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body className="min-h-screen antialiased">
-        <div className="flex h-screen overflow-hidden">
-          <LeftNav />
-          <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
-        </div>
+        <SandboxProvider>
+          <div className="flex h-screen overflow-hidden">
+            <LeftNav />
+            <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
+          </div>
+          <GlobalTopBar />
+          <SandboxLayer />
+        </SandboxProvider>
       </body>
     </html>
   );

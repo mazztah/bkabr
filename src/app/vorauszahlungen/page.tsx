@@ -32,6 +32,7 @@ export default function VorauszahlungenPage() {
     const lieg = geb ? liegenschaften.find((l) => l.id === geb.liegenschaftId) : undefined;
     return (m.sollIst || []).map((e) => ({
       ...e,
+      mieterId: m.id,
       mieterName: m.name,
       wohnung: wohnung?.bezeichnung || "–",
       objekt: lieg?.name || geb?.name || "–",
@@ -66,7 +67,11 @@ export default function VorauszahlungenPage() {
           <tbody>
             {rows.map((r) => (
               <tr key={r.id} className="border-b border-border/50">
-                <td className="py-2 font-medium">{r.mieterName}</td>
+                <td className="py-2 font-medium">
+                  <a href={`/liegenschaften?select=mieter:${r.mieterId}`} className="text-primary hover:underline">
+                    {r.mieterName} ↗
+                  </a>
+                </td>
                 <td className="py-2 text-muted-foreground">{r.objekt}</td>
                 <td className="py-2 text-muted-foreground">{r.wohnung}</td>
                 <td className="py-2">{r.jahr}</td>

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
 import { Abrechnung, Dokument } from "@/lib/types";
+import ProgressRing from "@/components/ProgressRing";
 
 async function patchAbrechnung(id: string, patch: Record<string, unknown>) {
   await fetch(`/api/abrechnungen/${id}`, {
@@ -75,18 +76,7 @@ export default function RechnungenPage() {
                     <span className="font-semibold">{dok.name}</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    {dok.pruefung && (
-                      <span
-                        className={cn(
-                          "rounded px-2 py-0.5 text-xs",
-                          dok.pruefung.akzeptiert
-                            ? "bg-[var(--success-bg)] text-[var(--success)]"
-                            : "bg-[var(--danger-bg)] text-[var(--destructive)]"
-                        )}
-                      >
-                        {Math.round(dok.pruefung.score * 100)}% Merkmale
-                      </span>
-                    )}
+                    {dok.pruefung && <ProgressRing percent={dok.pruefung.score * 100} />}
                     {dok.storedFileName && (
                       <a
                         href={`/api/files/${dok.storedFileName}?mime=${encodeURIComponent(
@@ -121,7 +111,20 @@ export default function RechnungenPage() {
                   )}
                   {dok.leistungsart && <span>Leistung: {dok.leistungsart}</span>}
                   {dok.leistungsort && <span>Ort: {dok.leistungsort}</span>}
-                  <span>Zugeordnet zu: {abrechnung.name}</span>
+                  <a
+                    href={
+                      abrechnung.wohnungId
+                        ? `/liegenschaften?select=wohnung:${abrechnung.wohnungId}`
+                        : abrechnung.gebaeudeId
+                        ? `/liegenschaften?select=gebaeude:${abrechnung.gebaeudeId}`
+                        : abrechnung.liegenschaftId
+                        ? `/liegenschaften?select=liegenschaft:${abrechnung.liegenschaftId}`
+                        : "/"
+                    }
+                    className="text-primary hover:underline"
+                  >
+                    Zugeordnet zu: {abrechnung.name} ↗
+                  </a>
                   <span>Hochgeladen: {formatDate(dok.uploadedAt)}</span>
                 </div>
               </div>

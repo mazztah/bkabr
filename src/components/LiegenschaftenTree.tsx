@@ -22,6 +22,13 @@ function isSel(sel: NodeSelection, type: string, id: string) {
   return !!sel && sel.type === type && sel.id === id;
 }
 
+const LEVEL_COLORS = {
+  liegenschaft: "#2563eb",
+  gebaeude: "#9333ea",
+  wohnung: "#0d9488",
+  mieter: "#d97706",
+};
+
 async function createEntity(url: string, body: Record<string, unknown>) {
   const res = await fetch(url, {
     method: "POST",
@@ -117,6 +124,7 @@ export default function LiegenschaftenTree({ data, selection, onSelect, onChange
         return (
           <div key={l.id} className="mb-1">
             <div
+              style={{ borderLeft: `3px solid ${LEVEL_COLORS.liegenschaft}` }}
               className={cn(
                 "flex items-center gap-1 rounded px-2 py-1.5 cursor-pointer",
                 isSel(selection, "liegenschaft", l.id) ? "bg-primary text-primary-foreground" : "hover:bg-muted"
@@ -147,6 +155,7 @@ export default function LiegenschaftenTree({ data, selection, onSelect, onChange
                   return (
                     <div key={g.id} className="mb-1">
                       <div
+                        style={{ borderLeft: `3px solid ${LEVEL_COLORS.gebaeude}` }}
                         className={cn(
                           "flex items-center gap-1 rounded px-2 py-1.5 cursor-pointer",
                           isSel(selection, "gebaeude", g.id)
@@ -179,6 +188,7 @@ export default function LiegenschaftenTree({ data, selection, onSelect, onChange
                             return (
                               <div key={w.id} className="mb-1">
                                 <div
+                                  style={{ borderLeft: `3px solid ${LEVEL_COLORS.wohnung}` }}
                                   className={cn(
                                     "flex items-center gap-1 rounded px-2 py-1.5 cursor-pointer",
                                     isSel(selection, "wohnung", w.id)
@@ -209,6 +219,7 @@ export default function LiegenschaftenTree({ data, selection, onSelect, onChange
                                       <div
                                         key={m.id}
                                         onClick={() => onSelect({ type: "mieter", id: m.id })}
+                                        style={{ borderLeft: `3px solid ${LEVEL_COLORS.mieter}` }}
                                         className={cn(
                                           "cursor-pointer truncate rounded px-2 py-1.5",
                                           isSel(selection, "mieter", m.id)

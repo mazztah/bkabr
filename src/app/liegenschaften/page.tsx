@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Abrechnung, Gebaeude, Liegenschaft, Mieter, Wohnung } from "@/lib/types";
 import LiegenschaftenTree, { NodeSelection } from "@/components/LiegenschaftenTree";
 import LiegenschaftDetail from "@/components/LiegenschaftDetail";
@@ -21,11 +22,12 @@ const EMPTY: HierarchyData = {
   abrechnungen: [],
 };
 
-export default function LiegenschaftenPage() {
+function LiegenschaftenPageInner() {
   const [data, setData] = useState<HierarchyData>(EMPTY);
   const [loading, setLoading] = useState(true);
   const [selection, setSelection] = useState<NodeSelection>(null);
   const [error, setError] = useState<string | null>(null);
+  const searchParams = useSearchParams();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -55,6 +57,16 @@ export default function LiegenschaftenPage() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const select = searchParams.get("select");
+    if (!select || loading) return;
+    const [type, id] = select.split(":");
+    if (type && id && ["liegenschaft", "gebaeude", "wohnung", "mieter"].includes(type)) {
+      setSelection({ type, id } as NodeSelection);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden lg:flex-row">
@@ -91,5 +103,13 @@ export default function LiegenschaftenPage() {
         />
       </main>
     </div>
+  );
+}
+
+export default function LiegenschaftenPage() {
+  return (
+    <Suspense fallback={<div className="p-4 text-sm text-muted-foreground">Lade…</div>}>
+      <LiegenschaftenPageInner />
+    </Suspense>
   );
 }

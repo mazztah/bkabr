@@ -28,29 +28,32 @@ function extractJson(text: string): any {
 
 const SYSTEM_EXTRAKTION = `Du bist "BetriebsKostenBot", ein Experte für deutsche Betriebskosten- und Nebenkostenabrechnungen, Mieteinnahmen, Heizkostenabrechnungen, Mietverträge und Eingangsrechnungen.
 Analysiere das übergebene Dokument (Rechnung, Betriebskostenabrechnung, Nebenkostenabrechnung, Mietvertrag, Heizkostenabrechnung, Einnahmen/Ausgaben-Aufstellung o.ä.) und extrahiere die relevanten Daten.
+
+WICHTIGSTE REGEL: Trage NUR Werte ein, die wörtlich oder eindeutig erkennbar im übergebenen Text stehen. Rate niemals, leite niemals Werte aus Firmennamen, Textmustern, Layoutvermutungen oder Weltwissen ab. Der übergebene Text kann OCR-/Extraktionsfehler oder Lücken enthalten – im Zweifel leeres Feld statt Vermutung. Ein leeres/falsches Feld ist immer besser als eine erfundene Angabe.
+
 Antworte AUSSCHLIESSLICH mit einem JSON-Objekt (kein Fließtext, keine Erklärung) in exakt diesem Format:
 {
   "name": "kurzer Titel/Objektname",
   "adresse": "vollständige Adresse des Objekts",
   "objektTyp": "Wohnung" | "Haus" | "Gewerbe",
   "zeitraum": "z.B. 01.01.2025 - 31.12.2025",
-  "gesamtSumme": <Zahl in Euro>,
+  "gesamtSumme": <Zahl in Euro, NUR falls ein Gesamt-/Endbetrag eindeutig im Text steht, sonst 0>,
   "positionen": [ { "name": "Heizung", "betrag": <Zahl>, "beschreibung": "kurz" }, ... ],
-  "rawText": "kurze Zusammenfassung der wichtigsten erkannten Rohdaten",
-  "rechnungsnummer": "Rechnungs-/Belegnummer, falls vorhanden, sonst leerer String",
-  "rechnungsdatum": "Datum der Rechnung, z.B. 12.03.2025, sonst leerer String",
-  "betrag": <Rechnungsendbetrag in Euro, sonst 0>,
-  "leistungsart": "Was wurde geliefert/geleistet (z.B. Heizöllieferung, Hausmeisterdienst)",
-  "leistungsort": "Ort/Objekt der Leistungserbringung",
-  "auftraggeber": "Empfänger der Rechnung (i.d.R. Vermieter/Verwaltung)",
-  "auftragnehmer": "Aussteller/Lieferant der Rechnung",
-  "firma": "Firmenname des Rechnungsstellers",
-  "rechnungsadresse": "Anschrift auf der Rechnung (Rechnungsempfänger)"
+  "rawText": "kurze, wortgetreue Zusammenfassung der wichtigsten erkannten Rohdaten (keine Interpretation)",
+  "rechnungsnummer": "Rechnungs-/Belegnummer, NUR falls im Text vorhanden, sonst leerer String",
+  "rechnungsdatum": "Datum der Rechnung, z.B. 12.03.2025, NUR falls im Text vorhanden, sonst leerer String",
+  "betrag": <Rechnungsendbetrag in Euro, NUR falls eindeutig, sonst 0>,
+  "leistungsart": "Was wurde geliefert/geleistet, NUR falls im Text erkennbar",
+  "leistungsort": "Ort/Objekt der Leistungserbringung, NUR falls im Text erkennbar",
+  "auftraggeber": "Empfänger der Rechnung, NUR falls im Text erkennbar",
+  "auftragnehmer": "Aussteller/Lieferant der Rechnung, NUR falls im Text erkennbar",
+  "firma": "Firmenname des Rechnungsstellers, NUR falls im Text erkennbar",
+  "rechnungsadresse": "Anschrift auf der Rechnung, NUR falls im Text erkennbar"
 }
-Falls ein Wert nicht erkennbar ist, verwende sinnvolle Defaults (leerer String, 0, leere Liste). Erfinde keine Fakten, die nicht im Dokument stehen.`;
+Falls ein Wert nicht sicher erkennbar ist, verwende leeren String bzw. 0 – niemals raten oder erfinden.`;
 
-const SYSTEM_TRANSKRIPTION = `Du bist ein OCR-Assistent. Gib ausschließlich den auf dem Bild sichtbaren Text/die sichtbaren Daten so wortgetreu wie möglich als Klartext wieder (Tabellen zeilenweise, Zahlen exakt).
-Keine Interpretation, keine Zusammenfassung, keine Erklärung – nur die abgeschriebenen Rohdaten (z.B. Positionen, Beträge, Adresse, Zeitraum, Namen).`;
+const SYSTEM_TRANSKRIPTION = `Du bist ein OCR-Assistent. Gib AUSSCHLIESSLICH den auf dem Bild tatsächlich sichtbaren Text wortgetreu wieder (Tabellen zeilenweise, Zahlen exakt wie abgebildet).
+Keine Interpretation, keine Ergänzung, keine Zusammenfassung, keine Vervollständigung unleserlicher Stellen. Ist ein Teil unleserlich oder unsicher, markiere ihn mit [unleserlich] statt zu raten. Erfinde niemals Wörter, Zahlen oder Namen, die nicht klar erkennbar sind.`;
 
 /**
  * Lässt das Groq Vision-Modell den Bildinhalt (Rechnung/Abrechnung) abschreiben.
@@ -67,6 +70,7 @@ export async function visionTranscribe(params: {
   const completion = await groq.chat.completions.create({
     model: VISION_MODEL,
     max_completion_tokens: 2000,
+    temperature: 0,
     messages: [
       { role: "system", content: SYSTEM_TRANSKRIPTION },
       {
@@ -97,6 +101,7 @@ export async function analyzeDocument(params: {
   const completion = await groq.chat.completions.create({
     model: TEXT_MODEL,
     max_completion_tokens: 2000,
+    temperature: 0,
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: SYSTEM_EXTRAKTION },
@@ -136,6 +141,7 @@ export async function extractMietvertrag(params: {
   const completion = await groq.chat.completions.create({
     model: TEXT_MODEL,
     max_completion_tokens: 1200,
+    temperature: 0,
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: SYSTEM_MIETVERTRAG },

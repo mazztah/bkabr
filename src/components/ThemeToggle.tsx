@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-export default function ThemeToggle() {
+export default function ThemeToggle({ compact = false }: { compact?: boolean }) {
   const [isDark, setIsDark] = useState(false);
 
   useEffect(() => {
@@ -17,6 +17,18 @@ export default function ThemeToggle() {
       localStorage.setItem("theme", next ? "dark" : "light");
     } catch {}
   };
+
+  if (compact) {
+    return (
+      <button
+        onClick={toggle}
+        className="flex h-10 w-10 items-center justify-center rounded-full bg-card text-base ring-1 ring-border transition-colors hover:bg-muted"
+        title="Dark Mode umschalten"
+      >
+        {isDark ? "☀️" : "🌙"}
+      </button>
+    );
+  }
 
   return (
     <button

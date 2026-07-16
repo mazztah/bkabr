@@ -6,6 +6,7 @@ import { Abrechnung, Gebaeude, Liegenschaft, Mieter, SollIstEintrag, Wohnung } f
 import { HierarchyData } from "@/app/liegenschaften/page";
 import { NodeSelection } from "./LiegenschaftenTree";
 import Modal from "./Modal";
+import ProgressRing from "./ProgressRing";
 
 interface Props {
   data: HierarchyData;
@@ -248,7 +249,7 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-border p-5">
+      <div className="sticky top-0 z-10 border-b border-border bg-card/80 p-5 backdrop-blur-sm">
         <p className="text-xs uppercase tracking-wide text-muted-foreground">
           {subtitle} {nummer && <span className="font-mono">· {nummer}</span>}
         </p>
@@ -272,7 +273,7 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
         ))}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
+      <div key={tab} className="min-h-0 flex-1 overflow-y-auto p-5 animate-[fadein_0.2s_ease]">
         {tab === "Stammdaten" && (
           <div className="grid max-w-xl grid-cols-2 gap-4">
             {liegenschaft && (
@@ -537,18 +538,7 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
                       {d.name}
                     </span>
                     <div className="flex items-center gap-2">
-                      {d.pruefung && (
-                        <span
-                          className={cn(
-                            "rounded px-2 py-0.5 text-xs",
-                            d.pruefung.akzeptiert
-                              ? "bg-[var(--success-bg)] text-[var(--success)]"
-                              : "bg-[var(--danger-bg)] text-[var(--destructive)]"
-                          )}
-                        >
-                          {Math.round(d.pruefung.score * 100)}% Merkmale
-                        </span>
-                      )}
+                      {d.pruefung && <ProgressRing percent={d.pruefung.score * 100} />}
                       {d.storedFileName && (
                         <a
                           href={`/api/files/${d.storedFileName}?mime=${encodeURIComponent(
