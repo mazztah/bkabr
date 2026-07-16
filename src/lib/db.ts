@@ -2,15 +2,6 @@ import { promises as fs } from "fs";
 import path from "path";
 import { Abrechnung, Gebaeude, Liegenschaft, Mieter, Wohnung } from "./types";
 
-// Optimized database access
-function bulkInsert(items) {
-  const CHUNK_SIZE = 100;
-  for (let i = 0; i < items.length; i += CHUNK_SIZE) {
-    const chunk = items.slice(i, i + CHUNK_SIZE);
-    database.bulkInsert(chunk);
-  }
-}
-
 // DATA_DIR kann per ENV überschrieben werden (z.B. für ein Fly.io Volume unter /data)
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");

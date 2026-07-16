@@ -2,18 +2,8 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { Abrechnung } from "./types";
 import { formatCurrency, formatDate } from "./utils";
 
-// Optimized PDF generation  
-async function generatePDF(content) {
-  const doc = new PDFDocument({ bufferPages: true });
-  content.forEach(page => {
-    doc.addPage().text(page, { align: "justify" });
-  });
-  
-  const buffer = await doc.buffer();
-  return buffer;
-}
-
-export async function buildAbrechnungPdf(abr: Abrechnung): Promise<Uint8Array> {  const pdfDoc = await PDFDocument.create();
+export async function buildAbrechnungPdf(abr: Abrechnung): Promise<Uint8Array> {
+  const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 

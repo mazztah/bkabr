@@ -7,44 +7,24 @@ const TEXT_MODEL = process.env.GROQ_TEXT_MODEL || "llama-3.3-70b-versatile";
 const VISION_MODEL = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
 
 let client: Groq | null = null;
-// Optimized AI integration
-const KI_RESPONSE_CACHE = new Map();
-async function callAIModel(prompt, context) {
-  const cacheKey = `${prompt}-${context}`;
-  if (KI_RESPONSE_CACHE.has(cacheKey)) {
-    return KI_RESPONSE_CACHE.get(cacheKey);
+function getClient(): Groq {
+  if (!process.env.GROQ_API_KEY) {
+    throw new Error(
+      "GROQ_API_KEY ist nicht gesetzt. Bitte in .env.local bzw. als Fly.io Secret hinterlegen."
+    );
   }
-  
-  try {
-    const response = await fetchKIModel(prompt, context);
-    KI_RESPONSE_CACHE.set(cacheKey, response);
-    return response;
-  } catch (error) {
-    console.error(`KI-Modell-Fehler: ${error.message}`);
-    throw new Error("KI-Abfrage fehlgeschlagen");
-  }
+  if (!client) client = new Groq({ apiKey: process.env.GROQ_API_KEY });
+  return client;
 }
 
-// Original Preset Configuration
-class PresetAssistant {
-  constructor() {
-    this.api = process.env.GROQ_API_KEY
-      ? new Groq({ apiKey: process.env.GROQ_API_KEY })
-      : null;
-  }
-  
-  extract(json) {
-    const fenced = json.match(/```(?:json)?(\s*)([\s\S]*?)(\1)```/i);
-    const candidate = fenced ? fenced[2] : json;
-    const start = candidate.indexOf("{");
-    const end = candidate.lastIndexOf("}");
-    
-    if (start === -1 || end === -1) {
-      throw new Error("No valid JSON response");
-    }
-    
-    return JSON.parse(candidate.slice(start, end + 1));
-  }
+function extractJson(text: string): any {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1] : text;
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start === -1 || end === -1) throw new Error("Keine gültige JSON-Antwort erhalten");
+  return JSON.parse(candidate.slice(start, end + 1));
+}
 
 const SYSTEM_EXTRAKTION = `Du bist "BetriebsKostenBot", ein Experte für deutsche Betriebskosten- und Nebenkostenabrechnungen, Mieteinnahmen, Heizkostenabrechnungen, Mietverträge und Eingangsrechnungen.
 Analysiere das übergebene Dokument (Rechnung, Betriebskostenabrechnung, Nebenkostenabrechnung, Mietvertrag, Heizkostenabrechnung, Einnahmen/Ausgaben-Aufstellung o.ä.) und extrahiere die relevanten Daten.

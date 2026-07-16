@@ -1,12 +1,6 @@
 import { create } from "zustand";
 import { Abrechnung, ChatMessage, ObjektTyp, Status } from "./types";
 
-// Optimized state management
-function updateState(newState) {
-  const changes = diff(store.state, newState);
-  store.dispatch({ type: "UPDATE_STATE", payload: changes });
-}
- 
 interface Filters {
   objektTyp: ObjektTyp | "Alle";
   status: Status | "Alle";
@@ -38,7 +32,6 @@ interface StoreState {
   generateAbrechnung: (id: string) => Promise<void>;
   generateAnschreiben: (id: string, anlass: string) => Promise<void>;
   runRechtCheck: (id: string | null) => Promise<string>;
-  freigabeAbrechnung: (id: string) => Promise<void>;
   sendChat: (message: string) => Promise<void>;
 }
 

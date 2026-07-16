@@ -1,14 +1,6 @@
 import { createWorker } from "tesseract.js";
 import path from "path";
 
-// Optimized OCR processing
-function preprocessImage(image) {
-  return image
-    .resize(2000, 2000)
-    .greyscale()
-    .enhance();
-}
-
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 // Sprachdaten werden auf dem persistenten Volume gecacht, damit sie nicht bei
 // jedem Kaltstart der Maschine erneut heruntergeladen werden müssen.
