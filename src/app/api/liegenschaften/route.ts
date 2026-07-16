@@ -24,6 +24,6 @@ export async function POST(req: NextRequest) {
     createdAt: now,
     updatedAt: now,
   };
-  await liegenschaftenDb.create(liegenschaft);
-  return NextResponse.json({ liegenschaft });
+  const saved = await liegenschaftenDb.create(liegenschaft);
+  return NextResponse.json({ liegenschaft: saved });
 }

@@ -26,6 +26,6 @@ export async function POST(req: NextRequest) {
     createdAt: now,
     updatedAt: now,
   };
-  await gebaeudeDb.create(gebaeude);
-  return NextResponse.json({ gebaeude });
+  const saved = await gebaeudeDb.create(gebaeude);
+  return NextResponse.json({ gebaeude: saved });
 }

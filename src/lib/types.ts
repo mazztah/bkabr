@@ -22,7 +22,7 @@ export const RECHNUNGS_MERKMALE = [
   "betrag",
 ] as const;
 export type RechnungsMerkmal = (typeof RECHNUNGS_MERKMALE)[number];
-export const MERKMALS_SCHWELLE = 0.9;
+export const MERKMALS_SCHWELLE = 0.83;
 
 export interface RechnungsPruefung {
   erkannteMerkmale: RechnungsMerkmal[];
@@ -74,11 +74,13 @@ export function pruefeRechnungsmerkmale(extracted: ExtractedData): RechnungsPrue
 
 export interface Dokument {
   id: string;
+  nummer?: string;
   name: string;
   mimeType: string;
   size: number;
   uploadedAt: string;
   extraktText?: string;
+  storedFileName?: string; // Dateiname im Upload-Verzeichnis, ermöglicht Ansicht/Download
   // Erweiterte Rechnungsmerkmale aus OCR/Vision-Analyse
   rechnungsnummer?: string;
   rechnungsdatum?: string;
@@ -115,6 +117,7 @@ export interface ChatMessage {
 
 export interface Abrechnung {
   id: string;
+  nummer?: string;
   name: string;
   adresse: string;
   objektTyp: ObjektTyp;
@@ -160,6 +163,7 @@ export interface ExtractedData {
 
 export interface Liegenschaft {
   id: string;
+  nummer?: string;
   name: string;
   strasse: string;
   hausnummer: string;
@@ -174,6 +178,7 @@ export interface Liegenschaft {
 
 export interface Gebaeude {
   id: string;
+  nummer?: string;
   liegenschaftId: string;
   name: string;
   baujahr?: number;
@@ -188,6 +193,7 @@ export type EinheitTyp = "Wohnung" | "Gewerbe" | "Stellplatz" | "Sonstige";
 
 export interface Wohnung {
   id: string;
+  nummer?: string;
   gebaeudeId: string;
   bezeichnung: string; // z.B. "1. OG links"
   typ: EinheitTyp;
@@ -209,6 +215,7 @@ export interface SollIstEintrag {
 
 export interface Mieter {
   id: string;
+  nummer?: string;
   wohnungId: string;
   name: string;
   email?: string;
@@ -221,4 +228,40 @@ export interface Mieter {
   sollIst?: SollIstEintrag[];
   createdAt: string;
   updatedAt: string;
+}
+
+// -------- Mietverträge --------
+
+export type MietvertragStatus = "Entwurf" | "Aktiv" | "Beendet";
+
+export interface Mietvertrag {
+  id: string;
+  nummer?: string;
+  wohnungId: string;
+  mieterId?: string;
+  dateiName: string;
+  storedFileName?: string;
+  mimeType: string;
+  hochgeladenAm: string;
+  sollMiete?: number;
+  nebenkostenVorauszahlung?: number;
+  kaution?: number;
+  mietbeginn?: string;
+  mietende?: string;
+  status: MietvertragStatus;
+  extraktText?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MietvertragExtraktion {
+  mieterName?: string;
+  vermieterName?: string;
+  mietbeginn?: string;
+  mietende?: string;
+  sollMiete?: number;
+  nebenkostenVorauszahlung?: number;
+  kaution?: number;
+  objektAdresse?: string;
+  wohnungsbezeichnung?: string;
 }

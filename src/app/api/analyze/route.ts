@@ -1,8 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { PDFParse } from "pdf-parse";
-import { analyzeDocument, visionTranscribe } from "@/lib/ai";
-import { tesseractOcr } from "@/lib/ocr";
-import { createAbrechnung } from "@/lib/db";
+import { analyzeDocument } from "@/lib/ai";
+import { extractTextFromFile } from "@/lib/document-ocr";
+import {
+  createAbrechnung,
+  liegenschaftenDb,
+  listAbrechnungen,
+  nextNummer,
+  updateAbrechnung,
+} from "@/lib/db";
+import { storeFile } from "@/lib/storage";
+import { jahresZeitraum, matchLiegenschaft, parseAddress, parseYear, zeitraumEnthaeltJahr } from "@/lib/matching";
 import { Abrechnung, Dokument, pruefeRechnungsmerkmale } from "@/lib/types";
 import { uid } from "@/lib/utils";
 
@@ -31,7 +38,6 @@ export async function POST(req: NextRequest) {
         { status: 415 }
       );
     }
-
     if (isDocx) {
       return NextResponse.json(
         {
@@ -45,79 +51,35 @@ export async function POST(req: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    const isPdf = mimeType === "application/pdf";
-    const isImage = mimeType.startsWith("image/");
-
-    // Schritt 1: OCR / Texterfassung.
-    // - PDF: Text wird lokal aus der Datei extrahiert (Groq kann PDFs nicht direkt lesen).
-    // - Bild (JPG/PNG): zwei unabhängige OCR-Quellen werden kombiniert – Tesseract.js
-    //   (lokal, deterministisch) und das Groq Vision-LLM (robuster bei schlechter
-    //   Bildqualität/handschriftlichen Notizen). So gleichen sich Schwächen der
-    //   jeweils anderen Methode aus.
-    // - TXT: der Inhalt wird direkt übernommen.
-    let ocrText: string;
-
-    if (isPdf) {
-      const parser = new PDFParse({ data: buffer });
-      const result = await parser.getText();
-      await parser.destroy();
-      ocrText = result.text?.trim() || "";
-
-      if (!ocrText) {
-        return NextResponse.json(
-          {
-            error:
-              "In der PDF konnte kein Text gefunden werden (vermutlich ein eingescanntes Dokument ohne Textebene). Bitte lade stattdessen ein Foto/Scan als JPG oder PNG hoch.",
-          },
-          { status: 415 }
-        );
-      }
-    } else if (isImage) {
-      const base64 = buffer.toString("base64");
-      const [tesseractText, visionText] = await Promise.all([
-        tesseractOcr(buffer).catch((e) => {
-          console.error("Tesseract-OCR-Fehler:", e);
-          return "";
-        }),
-        visionTranscribe({ base64, mimeType, fileName: file.name }).catch((e) => {
-          console.error("Vision-OCR-Fehler:", e);
-          return "";
-        }),
-      ]);
-
-      ocrText = [
-        visionText && `--- Vision-LLM Texterkennung ---\n${visionText}`,
-        tesseractText && `--- Tesseract OCR ---\n${tesseractText}`,
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-
-      if (!ocrText) {
-        return NextResponse.json(
-          { error: "Es konnte kein Text aus dem Bild erkannt werden. Bitte Qualität prüfen und erneut versuchen." },
-          { status: 422 }
-        );
-      }
-    } else {
-      ocrText = buffer.toString("utf-8");
+    // Schritt 1: OCR / Texterfassung (Tesseract + Vision-LLM für Bilder, lokale
+    // Extraktion für PDF, direkte Übernahme für TXT).
+    const ocr = await extractTextFromFile(buffer, mimeType, file.name);
+    if (ocr.error) {
+      return NextResponse.json({ error: ocr.error }, { status: 415 });
     }
 
-    // Schritt 2: ein zweites, separates LLM analysiert den erkannten Text und
-    // extrahiert die strukturierten Abrechnungsdaten.
-    const extracted = await analyzeDocument({ text: ocrText, fileName: file.name });
+    // Schritt 2: separates LLM analysiert den erkannten Text und extrahiert die
+    // strukturierten Abrechnungs-/Rechnungsdaten.
+    const extracted = await analyzeDocument({ text: ocr.text, fileName: file.name });
 
-    // Schritt 3: Merkmalsprüfung – ab 90% erkannter Pflichtmerkmale gilt die
-    // Rechnung als vollständig erkannt/akzeptiert (Kernstück der Dokumentenverwaltung).
+    // Schritt 3: Merkmalsprüfung – ab MERKMALS_SCHWELLE (Standard 83%) erkannter
+    // Pflichtmerkmale gilt die Rechnung als vollständig erkannt/akzeptiert.
     const pruefung = pruefeRechnungsmerkmale(extracted);
 
     const now = new Date().toISOString();
+    const dokId = uid();
+    const storedFileName = await storeFile(dokId, file.name, buffer);
+    const dokNummer = await nextNummer("DOK");
+
     const dokument: Dokument = {
-      id: uid(),
+      id: dokId,
+      nummer: dokNummer,
       name: file.name,
       mimeType,
       size: buffer.byteLength,
       uploadedAt: now,
-      extraktText: extracted.rawText || ocrText.slice(0, 4000),
+      extraktText: extracted.rawText || ocr.text.slice(0, 4000),
+      storedFileName,
       rechnungsnummer: extracted.rechnungsnummer,
       rechnungsdatum: extracted.rechnungsdatum,
       betrag: extracted.betrag,
@@ -130,18 +92,82 @@ export async function POST(req: NextRequest) {
       pruefung,
     };
 
-    // Optionale direkte Zuordnung zu einer Liegenschaft/einem Gebäude/einer
-    // Wohnung (z.B. beim Upload aus der jeweiligen Registerkarte heraus).
-    const liegenschaftId = (formData.get("liegenschaftId") as string) || undefined;
+    // Zuordnung zur Liegenschaftshierarchie: entweder explizit übergeben (Upload
+    // aus einer Registerkarte heraus) oder per Adressabgleich automatisch erkannt.
+    let liegenschaftId = (formData.get("liegenschaftId") as string) || undefined;
     const gebaeudeId = (formData.get("gebaeudeId") as string) || undefined;
     const wohnungId = (formData.get("wohnungId") as string) || undefined;
 
+    let liegenschaftVorschlag: ReturnType<typeof parseAddress> & { grund: string } | undefined;
+
+    if (!liegenschaftId && !gebaeudeId && !wohnungId) {
+      const adresse = extracted.adresse || extracted.rechnungsadresse || "";
+      if (adresse) {
+        const alle = await liegenschaftenDb.list();
+        const match = matchLiegenschaft(adresse, alle);
+        if (match) {
+          liegenschaftId = match.id;
+        } else {
+          liegenschaftVorschlag = { ...parseAddress(adresse), grund: adresse };
+        }
+      }
+    }
+
+    // Zeitraum-Zuordnung: Rechnungsdatum bestimmt das Kalenderjahr. Existiert im
+    // selben Objekt-Scope (Wohnung > Gebäude > Liegenschaft) bereits eine
+    // Abrechnung für dieses Jahr, wird das Dokument dort ergänzt statt eine neue
+    // "lose" Abrechnung anzulegen.
+    const jahr = parseYear(extracted.rechnungsdatum) || new Date().getFullYear();
+    const scope = wohnungId
+      ? { wohnungId }
+      : gebaeudeId
+      ? { gebaeudeId }
+      : liegenschaftId
+      ? { liegenschaftId }
+      : null;
+
+    if (scope) {
+      const alle = await listAbrechnungen();
+      const bestehende = alle.find((a) => {
+        const scopeMatch =
+          ("wohnungId" in scope && a.wohnungId === scope.wohnungId) ||
+          ("gebaeudeId" in scope && a.gebaeudeId === scope.gebaeudeId) ||
+          ("liegenschaftId" in scope && a.liegenschaftId === scope.liegenschaftId);
+        return scopeMatch && zeitraumEnthaeltJahr(a.zeitraum, jahr);
+      });
+
+      if (bestehende) {
+        const neueBetrag = extracted.betrag || extracted.gesamtSumme || 0;
+        const updated = await updateAbrechnung(bestehende.id, {
+          dokumente: [...bestehende.dokumente, dokument],
+          gesamtSumme: bestehende.gesamtSumme + (extracted.betrag ? neueBetrag : 0),
+          workspace: {
+            ...bestehende.workspace,
+            positionen: extracted.betrag
+              ? [
+                  ...bestehende.workspace.positionen,
+                  {
+                    id: uid(),
+                    name: extracted.leistungsart || file.name,
+                    betrag: extracted.betrag,
+                    beschreibung: extracted.firma,
+                  },
+                ]
+              : bestehende.workspace.positionen,
+          },
+        });
+        return NextResponse.json({ abrechnung: updated, pruefung, liegenschaftVorschlag, ergaenzt: true });
+      }
+    }
+
+    const abrNummer = await nextNummer("BK");
     const abrechnung: Abrechnung = {
       id: uid(),
+      nummer: abrNummer,
       name: extracted.name || file.name.replace(/\.[^.]+$/, ""),
       adresse: extracted.adresse || "",
       objektTyp: extracted.objektTyp || "Wohnung",
-      zeitraum: extracted.zeitraum || "",
+      zeitraum: extracted.zeitraum || jahresZeitraum(jahr),
       gesamtSumme: extracted.gesamtSumme || 0,
       status: "Validierung",
       dokumente: [dokument],
@@ -161,12 +187,9 @@ export async function POST(req: NextRequest) {
     };
 
     await createAbrechnung(abrechnung);
-    return NextResponse.json({ abrechnung, pruefung });
+    return NextResponse.json({ abrechnung, pruefung, liegenschaftVorschlag, ergaenzt: false });
   } catch (e: any) {
     console.error("Analyze error:", e);
-    return NextResponse.json(
-      { error: e.message || "Analyse fehlgeschlagen" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: e.message || "Analyse fehlgeschlagen" }, { status: 500 });
   }
 }

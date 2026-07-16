@@ -111,6 +111,45 @@ export async function analyzeDocument(params: {
   return extractJson(result) as ExtractedData;
 }
 
+const SYSTEM_MIETVERTRAG = `Du bist ein Experte für deutsche Mietverträge. Analysiere den übergebenen Text eines Mietvertrags (oder Nachtrags) und extrahiere die relevanten Stammdaten.
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt in exakt diesem Format:
+{
+  "mieterName": "Name des Mieters/der Mieter",
+  "vermieterName": "Name des Vermieters",
+  "mietbeginn": "Datum, z.B. 01.06.2025, sonst leerer String",
+  "mietende": "Datum falls befristet, sonst leerer String",
+  "sollMiete": <Kaltmiete in Euro, sonst 0>,
+  "nebenkostenVorauszahlung": <monatliche NK-Vorauszahlung in Euro, sonst 0>,
+  "kaution": <Kaution in Euro, sonst 0>,
+  "objektAdresse": "Adresse des Mietobjekts",
+  "wohnungsbezeichnung": "Lage/Bezeichnung der Wohnung, z.B. 2. OG rechts"
+}
+Erfinde keine Fakten, die nicht im Dokument stehen. Falls ein Wert nicht erkennbar ist: leerer String bzw. 0.`;
+
+export async function extractMietvertrag(params: {
+  text: string;
+  fileName: string;
+}): Promise<import("./types").MietvertragExtraktion> {
+  const { text, fileName } = params;
+  const groq = getClient();
+
+  const completion = await groq.chat.completions.create({
+    model: TEXT_MODEL,
+    max_completion_tokens: 1200,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM_MIETVERTRAG },
+      {
+        role: "user",
+        content: `Datei: ${fileName}.\n\nInhalt:\n${text}\n\nExtrahiere die JSON-Daten.`,
+      },
+    ],
+  });
+
+  const result = completion.choices[0]?.message?.content || "";
+  return extractJson(result);
+}
+
 export async function generateBetriebskostenabrechnung(abr: Abrechnung): Promise<string> {
   const groq = getClient();
   const completion = await groq.chat.completions.create({

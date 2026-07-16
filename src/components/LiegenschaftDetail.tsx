@@ -5,6 +5,7 @@ import { cn, formatCurrency, formatDate } from "@/lib/utils";
 import { Abrechnung, Gebaeude, Liegenschaft, Mieter, SollIstEintrag, Wohnung } from "@/lib/types";
 import { HierarchyData } from "@/app/liegenschaften/page";
 import { NodeSelection } from "./LiegenschaftenTree";
+import Modal from "./Modal";
 
 interface Props {
   data: HierarchyData;
@@ -42,16 +43,44 @@ function Field({
   type?: string;
 }) {
   const [val, setVal] = useState(value ?? "");
+  const [saved, setSaved] = useState(false);
+  const dirty = String(val) !== String(value ?? "");
+
+  const save = () => {
+    onSave(String(val));
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
+  };
+
   return (
     <label className="block">
       <span className="mb-1 block text-xs font-medium text-muted-foreground">{label}</span>
-      <input
-        type={type}
-        value={val}
-        onChange={(e) => setVal(e.target.value)}
-        onBlur={() => onSave(String(val))}
-        className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
-      />
+      <div className="flex gap-1">
+        <input
+          type={type}
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && dirty) save();
+          }}
+          className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+        />
+        <button
+          onClick={save}
+          disabled={!dirty}
+          title="Speichern"
+          className={cn(
+            "shrink-0 rounded px-2 text-xs font-medium transition-colors",
+            saved
+              ? "bg-[var(--success-bg)] text-[var(--success)]"
+              : dirty
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-muted-foreground"
+          )}
+        >
+          {saved ? "✓" : "💾"}
+        </button>
+      </div>
     </label>
   );
 }
@@ -61,6 +90,14 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
+  const [liegenschaftVorschlag, setLiegenschaftVorschlag] = useState<{
+    strasse: string;
+    hausnummer: string;
+    plz: string;
+    ort: string;
+    grund: string;
+  } | null>(null);
+  const [neueAbrechnungId, setNeueAbrechnungId] = useState<string | undefined>();
 
   const liegenschaft = data.liegenschaften.find(
     (l) => selection?.type === "liegenschaft" && l.id === selection.id
@@ -126,6 +163,8 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
     ? "Wohnung / Einheit"
     : "Mieter";
 
+  const nummer = liegenschaft?.nummer || gebaeude?.nummer || wohnung?.nummer || mieter?.nummer;
+
   const visibleTabs = TABS.filter((t) => {
     if (t === "Struktur" && mieter) return false;
     if (t === "Soll/Ist Vorauszahlungen" && !mieter) return false;
@@ -149,9 +188,15 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
         const pct = Math.round((json.pruefung?.score || 0) * 100);
         setUploadMsg(
           json.pruefung?.akzeptiert
-            ? `✅ Rechnung erkannt (${pct}% der Merkmale) und im Workspace abgelegt.`
+            ? `✅ Rechnung erkannt (${pct}% der Merkmale)${
+                json.ergaenzt ? " und der bestehenden Abrechnung des Zeitraums hinzugefügt." : " und im Workspace abgelegt."
+              }`
             : `⚠️ Nur ${pct}% der Rechnungsmerkmale erkannt – bitte prüfen.`
         );
+        if (json.liegenschaftVorschlag) {
+          setLiegenschaftVorschlag(json.liegenschaftVorschlag);
+          setNeueAbrechnungId(json.abrechnung?.id);
+        }
         onChanged();
       }
     } catch {
@@ -161,10 +206,52 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
     }
   };
 
+  const liegenschaftAnlegen = async () => {
+    if (!liegenschaftVorschlag) return;
+    const res = await fetch("/api/liegenschaften", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: `${liegenschaftVorschlag.strasse} ${liegenschaftVorschlag.hausnummer}`.trim() || "Neue Liegenschaft",
+        strasse: liegenschaftVorschlag.strasse,
+        hausnummer: liegenschaftVorschlag.hausnummer,
+        plz: liegenschaftVorschlag.plz,
+        ort: liegenschaftVorschlag.ort,
+      }),
+    });
+    const { liegenschaft: neu } = await res.json();
+    if (neu && neueAbrechnungId) {
+      await patchEntity(`/api/abrechnungen/${neueAbrechnungId}`, { liegenschaftId: neu.id });
+    }
+    setLiegenschaftVorschlag(null);
+    setNeueAbrechnungId(undefined);
+    onChanged();
+    if (neu) onSelect({ type: "liegenschaft", id: neu.id });
+  };
+
+  const freigeben = async (abrechnung: Abrechnung, dok: (typeof scopedDokumente)[number]) => {
+    const status = dok.pruefung?.zahlungsfreigabe?.status === "freigegeben" ? "offen" : "freigegeben";
+    const updatedDokumente = abrechnung.dokumente.map((d) =>
+      d.id === dok.id
+        ? {
+            ...d,
+            pruefung: {
+              ...(d.pruefung || { erkannteMerkmale: [], score: 0, akzeptiert: false }),
+              zahlungsfreigabe: { status, timestamp: new Date().toISOString() },
+            },
+          }
+        : d
+    );
+    await patchEntity(`/api/abrechnungen/${abrechnung.id}`, { dokumente: updatedDokumente });
+    onChanged();
+  };
+
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-border p-5">
-        <p className="text-xs uppercase tracking-wide text-muted-foreground">{subtitle}</p>
+        <p className="text-xs uppercase tracking-wide text-muted-foreground">
+          {subtitle} {nummer && <span className="font-mono">· {nummer}</span>}
+        </p>
         <h2 className="text-xl font-bold">{title}</h2>
       </div>
 
@@ -411,7 +498,14 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
                     className="block rounded-md border border-border p-3 text-sm hover:bg-muted"
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-medium">{a.name}</span>
+                      <span className="font-medium">
+                        {a.nummer && (
+                          <span className="mr-1.5 font-mono text-xs text-muted-foreground">
+                            {a.nummer}
+                          </span>
+                        )}
+                        {a.name}
+                      </span>
                       <span className="text-muted-foreground">{formatCurrency(a.gesamtSumme)}</span>
                     </div>
                     <div className="text-xs text-muted-foreground">
@@ -429,35 +523,70 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
             {scopedDokumente.length === 0 && (
               <p className="text-sm text-muted-foreground">Keine Dokumente vorhanden.</p>
             )}
-            {scopedDokumente.map((d) => (
-              <div key={d.id} className="rounded-md border border-border p-3 text-sm">
-                <div className="flex items-center justify-between">
-                  <span className="font-medium">{d.name}</span>
-                  {d.pruefung && (
-                    <span
-                      className={cn(
-                        "rounded px-2 py-0.5 text-xs",
-                        d.pruefung.akzeptiert
-                          ? "bg-[var(--success-bg)] text-[var(--success)]"
-                          : "bg-[var(--danger-bg)] text-[var(--destructive)]"
+            {scopedDokumente.map((d) => {
+              const freigegeben = d.pruefung?.zahlungsfreigabe?.status === "freigegeben";
+              return (
+                <div key={d.id} className="rounded-md border border-border p-3 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-medium">
+                      {d.nummer && (
+                        <span className="mr-1.5 font-mono text-xs text-muted-foreground">
+                          {d.nummer}
+                        </span>
                       )}
-                    >
-                      {Math.round(d.pruefung.score * 100)}% Merkmale
+                      {d.name}
                     </span>
-                  )}
+                    <div className="flex items-center gap-2">
+                      {d.pruefung && (
+                        <span
+                          className={cn(
+                            "rounded px-2 py-0.5 text-xs",
+                            d.pruefung.akzeptiert
+                              ? "bg-[var(--success-bg)] text-[var(--success)]"
+                              : "bg-[var(--danger-bg)] text-[var(--destructive)]"
+                          )}
+                        >
+                          {Math.round(d.pruefung.score * 100)}% Merkmale
+                        </span>
+                      )}
+                      {d.storedFileName && (
+                        <a
+                          href={`/api/files/${d.storedFileName}?mime=${encodeURIComponent(
+                            d.mimeType
+                          )}&name=${encodeURIComponent(d.name)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
+                        >
+                          👁 Ansehen
+                        </a>
+                      )}
+                      <button
+                        onClick={() => freigeben(d.abrechnung, d)}
+                        className={cn(
+                          "rounded-md px-2 py-1 text-xs font-medium",
+                          freigegeben
+                            ? "bg-[var(--success-bg)] text-[var(--success)]"
+                            : "bg-primary text-primary-foreground"
+                        )}
+                      >
+                        {freigegeben ? "✓ Freigegeben" : "Freigeben"}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
+                    {d.rechnungsnummer && <span>Nr.: {d.rechnungsnummer}</span>}
+                    {d.rechnungsdatum && <span>Datum: {d.rechnungsdatum}</span>}
+                    {d.firma && <span>Firma: {d.firma}</span>}
+                    {typeof d.betrag === "number" && d.betrag > 0 && (
+                      <span>Betrag: {formatCurrency(d.betrag)}</span>
+                    )}
+                    {d.leistungsart && <span>Leistung: {d.leistungsart}</span>}
+                    {d.leistungsort && <span>Ort: {d.leistungsort}</span>}
+                  </div>
                 </div>
-                <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
-                  {d.rechnungsnummer && <span>Nr.: {d.rechnungsnummer}</span>}
-                  {d.rechnungsdatum && <span>Datum: {d.rechnungsdatum}</span>}
-                  {d.firma && <span>Firma: {d.firma}</span>}
-                  {typeof d.betrag === "number" && d.betrag > 0 && (
-                    <span>Betrag: {formatCurrency(d.betrag)}</span>
-                  )}
-                  {d.leistungsart && <span>Leistung: {d.leistungsart}</span>}
-                  {d.leistungsort && <span>Ort: {d.leistungsort}</span>}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -465,6 +594,36 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
           <SollIstTab mieter={mieter} onChanged={onChanged} />
         )}
       </div>
+
+      {liegenschaftVorschlag && (
+        <Modal title="Neue Liegenschaft anlegen?" onClose={() => setLiegenschaftVorschlag(null)}>
+          <p className="mb-3 text-sm text-muted-foreground">
+            Die erkannte Adresse <strong>„{liegenschaftVorschlag.grund}"</strong> passt zu keiner
+            bestehenden Liegenschaft. Soll eine neue angelegt werden? Die Stammdaten werden
+            automatisch vorausgefüllt.
+          </p>
+          <div className="mb-4 grid grid-cols-2 gap-2 rounded-md bg-muted p-3 text-xs">
+            <span>Straße: {liegenschaftVorschlag.strasse || "–"}</span>
+            <span>Hausnr.: {liegenschaftVorschlag.hausnummer || "–"}</span>
+            <span>PLZ: {liegenschaftVorschlag.plz || "–"}</span>
+            <span>Ort: {liegenschaftVorschlag.ort || "–"}</span>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setLiegenschaftVorschlag(null)}
+              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted"
+            >
+              Nicht jetzt
+            </button>
+            <button
+              onClick={liegenschaftAnlegen}
+              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"
+            >
+              Liegenschaft anlegen
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

@@ -36,10 +36,10 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=deps --chown=nextjs:nodejs /app/node_modules/tesseract.js ./node_modules/tesseract.js
 COPY --from=deps --chown=nextjs:nodejs /app/node_modules/tesseract.js-core ./node_modules/tesseract.js-core
 
-# @napi-rs/canvas wird von pdf-parse nur in einem try/catch dynamisch
-# nachgeladen (Fallback-Polyfill für DOMMatrix/Path2D/ImageData) und daher vom
-# Output-Tracing ebenfalls übersprungen.
-COPY --from=deps --chown=nextjs:nodejs /app/node_modules/@napi-rs ./node_modules/@napi-rs
+# Gleiches Problem bei pdfjs-dist (von pdf-parse genutzt): der PDF-Worker
+# (pdf.worker.mjs) wird über einen zur Laufzeit berechneten Pfad geladen, den
+# das Output-Tracing ebenfalls nicht erkennt.
+COPY --from=deps --chown=nextjs:nodejs /app/node_modules/pdfjs-dist ./node_modules/pdfjs-dist
 
 # Datenverzeichnis für persistente JSON-DB (wird i.d.R. per Fly-Volume gemountet)
 RUN mkdir -p /data && chown -R nextjs:nodejs /data

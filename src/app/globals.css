@@ -19,6 +19,7 @@
   --danger-bg: #fee2e2;
   --success-bg: #dcfce7;
   --ring: #2563eb;
+  --brand-accent: #06b6d4;
 }
 
 .dark {
@@ -38,6 +39,7 @@
   --danger-bg: #3f1d1d;
   --success-bg: #123321;
   --ring: #3b82f6;
+  --brand-accent: #22d3ee;
 }
 
 @theme inline {
@@ -55,6 +57,7 @@
   --color-destructive: var(--destructive);
   --color-success: var(--success);
   --color-ring: var(--ring);
+  --color-brand-accent: var(--brand-accent);
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 

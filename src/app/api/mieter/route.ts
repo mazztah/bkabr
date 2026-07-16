@@ -30,6 +30,6 @@ export async function POST(req: NextRequest) {
     createdAt: now,
     updatedAt: now,
   };
-  await mieterDb.create(mieter);
-  return NextResponse.json({ mieter });
+  const saved = await mieterDb.create(mieter);
+  return NextResponse.json({ mieter: saved });
 }

@@ -1,6 +1,6 @@
 import { promises as fs } from "fs";
 import path from "path";
-import { Abrechnung, Gebaeude, Liegenschaft, Mieter, Wohnung } from "./types";
+import { Abrechnung, Gebaeude, Liegenschaft, Mieter, Mietvertrag, Wohnung } from "./types";
 
 // DATA_DIR kann per ENV überschrieben werden (z.B. für ein Fly.io Volume unter /data)
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
@@ -12,6 +12,8 @@ interface DbShape {
   gebaeude: Gebaeude[];
   wohnungen: Wohnung[];
   mieter: Mieter[];
+  mietvertraege: Mietvertrag[];
+  counters: Record<string, number>;
 }
 
 let cache: DbShape | null = null;
@@ -28,6 +30,8 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     gebaeude: db.gebaeude || [],
     wohnungen: db.wohnungen || [],
     mieter: db.mieter || [],
+    mietvertraege: db.mietvertraege || [],
+    counters: db.counters || {},
   };
 }
 
@@ -53,6 +57,21 @@ async function writeDb(db: DbShape) {
     await fs.rename(tmp, DB_FILE);
   });
   await writeQueue;
+}
+
+/**
+ * Erzeugt eine eindeutige, fortlaufende Nummer je Objekttyp inkl. Jahr,
+ * z.B. "LG-2026-0001", "MI-2026-0007". Wird für alle Stammobjekte (Liegenschaft,
+ * Gebäude, Wohnung, Mieter, Mietvertrag) sowie Akten/Dokumente/Abrechnungen vergeben.
+ */
+export async function nextNummer(prefix: string): Promise<string> {
+  const db = await readDb();
+  const year = new Date().getFullYear();
+  const key = `${prefix}-${year}`;
+  const count = (db.counters[key] || 0) + 1;
+  db.counters[key] = count;
+  await writeDb(db);
+  return `${prefix}-${year}-${String(count).padStart(4, "0")}`;
 }
 
 export async function listAbrechnungen(): Promise<Abrechnung[]> {
@@ -125,8 +144,9 @@ export async function deleteAbrechnung(id: string): Promise<boolean> {
 
 // -------- Generische CRUD-Fabrik für die Liegenschaftshierarchie --------
 
-function makeCrud<T extends { id: string; createdAt: string; updatedAt: string }>(
-  collection: keyof DbShape
+function makeCrud<T extends { id: string; nummer?: string; createdAt: string; updatedAt: string }>(
+  collection: keyof DbShape,
+  prefix: string
 ) {
   return {
     async list(filter?: Partial<T>): Promise<T[]> {
@@ -142,10 +162,11 @@ function makeCrud<T extends { id: string; createdAt: string; updatedAt: string }
       return (db[collection] as unknown as T[]).find((i) => i.id === id);
     },
     async create(item: T): Promise<T> {
+      const withNummer = { ...item, nummer: item.nummer || (await nextNummer(prefix)) };
       const db = await readDb();
-      (db[collection] as unknown as T[]).push(item);
+      (db[collection] as unknown as T[]).push(withNummer);
       await writeDb(db);
-      return item;
+      return withNummer;
     },
     async update(id: string, patch: Partial<T>): Promise<T | undefined> {
       const db = await readDb();
@@ -168,7 +189,8 @@ function makeCrud<T extends { id: string; createdAt: string; updatedAt: string }
   };
 }
 
-export const liegenschaftenDb = makeCrud<Liegenschaft>("liegenschaften");
-export const gebaeudeDb = makeCrud<Gebaeude>("gebaeude");
-export const wohnungenDb = makeCrud<Wohnung>("wohnungen");
-export const mieterDb = makeCrud<Mieter>("mieter");
+export const liegenschaftenDb = makeCrud<Liegenschaft>("liegenschaften", "LG");
+export const gebaeudeDb = makeCrud<Gebaeude>("gebaeude", "GB");
+export const wohnungenDb = makeCrud<Wohnung>("wohnungen", "EH");
+export const mieterDb = makeCrud<Mieter>("mieter", "MI");
+export const mietvertraegeDb = makeCrud<Mietvertrag>("mietvertraege", "MV");
