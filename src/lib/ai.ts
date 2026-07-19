@@ -242,16 +242,22 @@ export async function generateBetriebskostenabrechnung(abr: Abrechnung): Promise
   const groq = getClient();
   const completion = await groq.chat.completions.create({
     model: TEXT_MODEL,
-    max_completion_tokens: 2500,
+    max_completion_tokens: 1200,
     messages: [
       {
         role: "system",
         content:
-          "Du bist ein erfahrener deutscher Betriebskostenmanager. Erstelle eine vollständige, formal korrekte Betriebskostenabrechnung nach § 556 BGB / BetrKV im Klartext (Markdown), inkl. Kostenaufstellung, Umlageschlüssel und Saldo. Antworte nur mit dem fertigen Text.",
+          "Du bist ein erfahrener deutscher Betriebskostenmanager. Kopf (Vermieter/Mieter/Objekt/Zeitraum), " +
+          "Kostentabelle und Saldo werden bereits automatisch von der Software formatiert dargestellt – " +
+          "wiederhole sie NICHT. Schreibe stattdessen einen kurzen, sachlichen Abschnitt 'Erläuterungen' " +
+          "(max. 5-8 Sätze, Fließtext, kein Markdown-Header) mit Auffälligkeiten: nennenswerte Änderungen " +
+          "gegenüber typischen Werten, Hinweise zu verbrauchsabhängigen Positionen (HeizkostenV, 50-70% " +
+          "verbrauchsabhängig), oder falls nichts Auffälliges vorliegt ein kurzer bestätigender Satz. " +
+          "Antworte nur mit dem fertigen Fließtext, keine Anrede, keine Grußformel.",
       },
       {
         role: "user",
-        content: `Erstelle die Betriebskostenabrechnung für folgende Daten:\n${JSON.stringify(
+        content: `Erstelle die Erläuterungen für folgende Abrechnung:\n${JSON.stringify(
           {
             name: abr.name,
             adresse: abr.adresse,
@@ -261,6 +267,7 @@ export async function generateBetriebskostenabrechnung(abr: Abrechnung): Promise
             positionen: abr.workspace.positionen,
             mieteinnahmen: abr.workspace.mieteinnahmen,
             nebenkosten: abr.workspace.nebenkosten,
+            vorauszahlungen: abr.workspace.vorauszahlungen,
           },
           null,
           2
@@ -273,23 +280,35 @@ export async function generateBetriebskostenabrechnung(abr: Abrechnung): Promise
 
 export async function generateAnschreiben(abr: Abrechnung, anlass: string): Promise<string> {
   const groq = getClient();
+  const saldo = abr.workspace.nebenkosten - (abr.workspace.vorauszahlungen ?? 0);
   const completion = await groq.chat.completions.create({
     model: TEXT_MODEL,
-    max_completion_tokens: 1500,
+    max_completion_tokens: 1200,
     messages: [
       {
         role: "system",
         content:
-          "Du bist ein Vermieter-Assistent. Erstelle ein formelles, höfliches Anschreiben an den Mieter auf Deutsch (Betreff, Anrede, Text, Grußformel), das alle rechtlich relevanten Punkte zur Betriebskostenabrechnung enthält. Antworte nur mit dem fertigen Brieftext.",
+          "Du bist ein Vermieter-/Hausverwaltungs-Assistent. Adressblock, Datum und Betreffzeile werden " +
+          "bereits automatisch von der Software über dem Text angezeigt – erzeuge NUR den Brieftext ab der " +
+          "Anrede (z.B. 'Sehr geehrte(r) Frau/Herr ...,'). Struktur: kurze Einleitung, Kernaussage mit " +
+          "konkretem Nachzahlungs- oder Guthabenbetrag und Zahlungsfrist/Auszahlungshinweis, Hinweis auf " +
+          "die Einspruchsfrist von 12 Monaten nach Zugang gemäß § 556 Abs. 3 BGB, Hinweis auf Belegeinsicht " +
+          "während der üblichen Geschäftszeiten, abschließende Grußformel mit Absendername. Formell, " +
+          "höflich, präzise, auf Deutsch. Antworte nur mit dem fertigen Brieftext.",
       },
       {
         role: "user",
         content: `Anlass: ${anlass}\n\nDaten der Abrechnung:\n${JSON.stringify(
           {
-            name: abr.name,
+            mieterName: abr.mieterName || abr.name,
+            vermieterName: abr.vermieterName,
             adresse: abr.adresse,
             zeitraum: abr.zeitraum,
             gesamtSumme: abr.gesamtSumme,
+            summeMieteranteile: abr.workspace.nebenkosten,
+            vorauszahlungen: abr.workspace.vorauszahlungen,
+            saldo,
+            saldoArt: saldo > 0 ? "Nachzahlung zu Lasten des Mieters" : saldo < 0 ? "Guthaben zugunsten des Mieters" : "ausgeglichen",
             positionen: abr.workspace.positionen,
           },
           null,

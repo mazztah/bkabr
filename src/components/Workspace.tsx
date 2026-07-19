@@ -120,6 +120,63 @@ export default function WorkspacePanel() {
               />
             </Field>
 
+            <div className="border-t border-border pt-4">
+              <h3 className="text-sm font-semibold mb-1">Briefkopf (für Vorschau/PDF/Anschreiben)</h3>
+              <p className="text-xs text-muted-foreground mb-3">
+                Diese Angaben erscheinen im Kopf der Abrechnung und im Anschreiben (§ 126b BGB
+                verlangt vollständige Angaben zu Vermieter und Mieter).
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Vermieter / Hausverwaltung">
+                  <input
+                    value={abr.vermieterName || ""}
+                    onChange={(e) => patchAbrechnung(abr.id, { vermieterName: e.target.value })}
+                    placeholder="Name"
+                    className="w-full rounded-md border border-border bg-background px-3 py-2"
+                  />
+                </Field>
+                <Field label="Anschrift Vermieter">
+                  <input
+                    value={abr.vermieterAnschrift || ""}
+                    onChange={(e) => patchAbrechnung(abr.id, { vermieterAnschrift: e.target.value })}
+                    placeholder="Straße, PLZ Ort"
+                    className="w-full rounded-md border border-border bg-background px-3 py-2"
+                  />
+                </Field>
+                <Field label="Kontakt (Tel./E-Mail)">
+                  <input
+                    value={abr.verwalterKontakt || ""}
+                    onChange={(e) => patchAbrechnung(abr.id, { verwalterKontakt: e.target.value })}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2"
+                  />
+                </Field>
+                <Field label="Nutzungszeitraum (falls abweichend)">
+                  <input
+                    value={abr.nutzungszeitraum || ""}
+                    onChange={(e) => patchAbrechnung(abr.id, { nutzungszeitraum: e.target.value })}
+                    placeholder="z.B. bei Ein-/Auszug"
+                    className="w-full rounded-md border border-border bg-background px-3 py-2"
+                  />
+                </Field>
+                <Field label="Mieter">
+                  <input
+                    value={abr.mieterName || ""}
+                    onChange={(e) => patchAbrechnung(abr.id, { mieterName: e.target.value })}
+                    placeholder="Name"
+                    className="w-full rounded-md border border-border bg-background px-3 py-2"
+                  />
+                </Field>
+                <Field label="Anschrift Mieter">
+                  <input
+                    value={abr.mieterAnschrift || ""}
+                    onChange={(e) => patchAbrechnung(abr.id, { mieterAnschrift: e.target.value })}
+                    placeholder="Straße, PLZ Ort"
+                    className="w-full rounded-md border border-border bg-background px-3 py-2"
+                  />
+                </Field>
+              </div>
+            </div>
+
             {abr.dokumente.length > 0 && (
               <div>
                 <h3 className="text-sm font-semibold mb-2 mt-6">Hochgeladene Dokumente</h3>
@@ -203,47 +260,86 @@ export default function WorkspacePanel() {
                 ＋ Position hinzufügen
               </button>
             </div>
+            <p className="mb-3 text-xs text-muted-foreground">
+              Gesamtkosten &amp; Umlageschlüssel sind optional, verbessern aber die Vorschau/den
+              PDF-Export (tabellarische Darstellung wie in einer formalen Betriebskostenabrechnung).
+            </p>
 
             <div className="space-y-2">
               {abr.workspace.positionen.map((pos, i) => (
-                <div key={pos.id} className="flex flex-wrap gap-2 items-center rounded-md border border-border p-2">
-                  <input
-                    value={pos.name}
-                    onChange={(e) => {
-                      const next = [...abr.workspace.positionen];
-                      next[i] = { ...pos, name: e.target.value };
-                      updatePositionen(next);
-                    }}
-                    className="flex-1 min-w-[140px] rounded-md border border-border bg-background px-2 py-1.5 text-sm"
-                    placeholder="Bezeichnung"
-                  />
-                  <input
-                    value={pos.beschreibung || ""}
-                    onChange={(e) => {
-                      const next = [...abr.workspace.positionen];
-                      next[i] = { ...pos, beschreibung: e.target.value };
-                      updatePositionen(next);
-                    }}
-                    className="flex-1 min-w-[140px] rounded-md border border-border bg-background px-2 py-1.5 text-sm"
-                    placeholder="Beschreibung"
-                  />
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={pos.betrag}
-                    onChange={(e) => {
-                      const next = [...abr.workspace.positionen];
-                      next[i] = { ...pos, betrag: parseFloat(e.target.value) || 0 };
-                      updatePositionen(next);
-                    }}
-                    className="w-28 rounded-md border border-border bg-background px-2 py-1.5 text-sm"
-                  />
-                  <button
-                    onClick={() => updatePositionen(abr.workspace.positionen.filter((p) => p.id !== pos.id))}
-                    className="text-muted-foreground hover:text-destructive px-2"
-                  >
-                    ✕
-                  </button>
+                <div key={pos.id} className="rounded-md border border-border p-2 space-y-1.5">
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <input
+                      value={pos.name}
+                      onChange={(e) => {
+                        const next = [...abr.workspace.positionen];
+                        next[i] = { ...pos, name: e.target.value };
+                        updatePositionen(next);
+                      }}
+                      className="flex-1 min-w-[140px] rounded-md border border-border bg-background px-2 py-1.5 text-sm font-medium"
+                      placeholder="Kostenart (z.B. Grundsteuer)"
+                    />
+                    <input
+                      value={pos.umlageschluessel || ""}
+                      onChange={(e) => {
+                        const next = [...abr.workspace.positionen];
+                        next[i] = { ...pos, umlageschluessel: e.target.value };
+                        updatePositionen(next);
+                      }}
+                      className="flex-1 min-w-[160px] rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+                      placeholder="Umlageschlüssel (z.B. Wohnfläche 20 %)"
+                    />
+                    <button
+                      onClick={() => updatePositionen(abr.workspace.positionen.filter((p) => p.id !== pos.id))}
+                      className="text-muted-foreground hover:text-destructive px-2"
+                      title="Position entfernen"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <input
+                      value={pos.beschreibung || ""}
+                      onChange={(e) => {
+                        const next = [...abr.workspace.positionen];
+                        next[i] = { ...pos, beschreibung: e.target.value };
+                        updatePositionen(next);
+                      }}
+                      className="flex-1 min-w-[140px] rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+                      placeholder="Anmerkung (optional)"
+                    />
+                    <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      Gesamtkosten
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={pos.gesamtkosten ?? ""}
+                        onChange={(e) => {
+                          const next = [...abr.workspace.positionen];
+                          next[i] = {
+                            ...pos,
+                            gesamtkosten: e.target.value === "" ? undefined : parseFloat(e.target.value) || 0,
+                          };
+                          updatePositionen(next);
+                        }}
+                        className="w-28 rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+                      />
+                    </label>
+                    <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      Mieteranteil
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={pos.betrag}
+                        onChange={(e) => {
+                          const next = [...abr.workspace.positionen];
+                          next[i] = { ...pos, betrag: parseFloat(e.target.value) || 0 };
+                          updatePositionen(next);
+                        }}
+                        className="w-28 rounded-md border border-border bg-background px-2 py-1.5 text-sm font-mono"
+                      />
+                    </label>
+                  </div>
                 </div>
               ))}
               {abr.workspace.positionen.length === 0 && (
@@ -265,9 +361,36 @@ export default function WorkspacePanel() {
                   className="w-full rounded-md border border-border bg-background px-3 py-2"
                 />
               </Field>
-              <Field label="Nebenkosten Summe (€)">
+              <Field label="Nebenkosten Summe / Mieteranteile (€)">
                 <div className="px-3 py-2 rounded-md bg-muted font-mono">
                   {formatCurrency(abr.workspace.nebenkosten)}
+                </div>
+              </Field>
+              <Field label="Geleistete NK-Vorauszahlungen (€)">
+                <input
+                  type="number"
+                  step="0.01"
+                  value={abr.workspace.vorauszahlungen ?? ""}
+                  onChange={(e) =>
+                    patchAbrechnung(abr.id, {
+                      workspace: {
+                        ...abr.workspace,
+                        vorauszahlungen: e.target.value === "" ? undefined : parseFloat(e.target.value) || 0,
+                      },
+                    })
+                  }
+                  className="w-full rounded-md border border-border bg-background px-3 py-2"
+                />
+              </Field>
+              <Field label="Saldo (Nachzahlung / Guthaben)">
+                <div
+                  className={`px-3 py-2 rounded-md font-mono font-semibold ${
+                    abr.workspace.nebenkosten - (abr.workspace.vorauszahlungen ?? 0) > 0
+                      ? "bg-red-50 text-red-700"
+                      : "bg-green-50 text-green-700"
+                  }`}
+                >
+                  {formatCurrency(abr.workspace.nebenkosten - (abr.workspace.vorauszahlungen ?? 0))}
                 </div>
               </Field>
             </div>

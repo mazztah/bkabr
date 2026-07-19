@@ -4,8 +4,10 @@ export type Status = "Rohdaten" | "Validierung" | "Fertig";
 export interface Position {
   id: string;
   name: string;
-  betrag: number;
+  betrag: number; // Mieteranteil (umgelegter Betrag)
   beschreibung?: string;
+  gesamtkosten?: number; // Gesamtkosten dieser Kostenart für das gesamte Objekt
+  umlageschluessel?: string; // z.B. "Wohnfläche (80/400 m²) – 20 %"
 }
 
 // -------- Rechnungsmerkmale (§14 UStG-nahe Pflichtangaben, vereinfacht) --------
@@ -98,6 +100,7 @@ export interface Workspace {
   positionen: Position[];
   mieteinnahmen: number;
   nebenkosten: number;
+  vorauszahlungen?: number; // geleistete Nebenkosten-Vorauszahlungen im Abrechnungszeitraum
   abrechnungstext?: string;
   anschreiben?: string;
 }
@@ -136,6 +139,14 @@ export interface Abrechnung {
   liegenschaftId?: string;
   gebaeudeId?: string;
   wohnungId?: string;
+  // Kopfdaten für Anschreiben/Briefkopf (§ 126b BGB) – manuell oder automatisch
+  // aus der verknüpften Liegenschaft/dem Mieter befüllbar
+  vermieterName?: string;
+  vermieterAnschrift?: string;
+  verwalterKontakt?: string; // z.B. Telefon/E-Mail der Hausverwaltung
+  mieterName?: string;
+  mieterAnschrift?: string;
+  nutzungszeitraum?: string; // falls abweichend vom Abrechnungszeitraum (Ein-/Auszug)
 }
 
 export interface ExtractedData {

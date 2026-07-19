@@ -2,7 +2,16 @@
 
 import { useMemo, useRef, useState } from "react";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
-import { Abrechnung, Gebaeude, Liegenschaft, Mieter, SollIstEintrag, Wohnung } from "@/lib/types";
+import {
+  Abrechnung,
+  Eigentuemer,
+  Gebaeude,
+  Liegenschaft,
+  Mieter,
+  PmVertrag,
+  SollIstEintrag,
+  Wohnung,
+} from "@/lib/types";
 import { HierarchyData } from "@/lib/use-hierarchy-data";
 import { NodeSelection } from "./LiegenschaftenTree";
 import Modal from "./Modal";
@@ -18,6 +27,8 @@ interface Props {
 const TABS = [
   "Stammdaten",
   "Struktur",
+  "Eigentümer",
+  "PM-Vertrag",
   "Abrechnungen",
   "Dokumente",
   "Soll/Ist Vorauszahlungen",
@@ -100,6 +111,32 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
   } | null>(null);
   const [neueAbrechnungId, setNeueAbrechnungId] = useState<string | undefined>();
 
+  const eigFileInputRef = useRef<HTMLInputElement>(null);
+  const [eigUploading, setEigUploading] = useState(false);
+  const [eigMsg, setEigMsg] = useState<string | null>(null);
+  const [eigManuellOpen, setEigManuellOpen] = useState(false);
+  const [eigForm, setEigForm] = useState({
+    name: "",
+    anschrift: "",
+    email: "",
+    telefon: "",
+    miteigentumsanteil: "",
+  });
+
+  const pmFileInputRef = useRef<HTMLInputElement>(null);
+  const [pmUploading, setPmUploading] = useState(false);
+  const [pmMsg, setPmMsg] = useState<string | null>(null);
+  const [pmManuellOpen, setPmManuellOpen] = useState(false);
+  const [pmForm, setPmForm] = useState({
+    verwalterName: "",
+    auftraggeberName: "",
+    honorarModell: "",
+    honorarSatz: "",
+    leistungsumfang: "",
+    laufzeitBeginn: "",
+    kuendigungsfrist: "",
+  });
+
   const liegenschaft = data.liegenschaften.find(
     (l) => selection?.type === "liegenschaft" && l.id === selection.id
   );
@@ -143,6 +180,16 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
     [scopedAbrechnungen]
   );
 
+  const scopedEigentuemer: Eigentuemer[] = useMemo(
+    () => (liegenschaft ? data.eigentuemer.filter((e) => e.liegenschaftId === liegenschaft.id) : []),
+    [data.eigentuemer, liegenschaft]
+  );
+
+  const scopedPmVertraege: PmVertrag[] = useMemo(
+    () => (liegenschaft ? data.pmVertraege.filter((p) => p.liegenschaftId === liegenschaft.id) : []),
+    [data.pmVertraege, liegenschaft]
+  );
+
   if (!selection) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-center text-muted-foreground">
@@ -169,6 +216,7 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
   const visibleTabs = TABS.filter((t) => {
     if (t === "Struktur" && mieter) return false;
     if (t === "Soll/Ist Vorauszahlungen" && !mieter) return false;
+    if ((t === "Eigentümer" || t === "PM-Vertrag") && !liegenschaft) return false;
     return true;
   });
 
@@ -228,6 +276,140 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
     setNeueAbrechnungId(undefined);
     onChanged();
     if (neu) onSelect({ type: "liegenschaft", id: neu.id });
+  };
+
+  const handleEigentuemerUpload = async (file: File) => {
+    if (!liegenschaft) return;
+    setEigUploading(true);
+    setEigMsg(null);
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const res = await fetch("/api/eigentuemer/analyze", { method: "POST", body: fd });
+      const json = await res.json();
+      if (!res.ok) {
+        setEigMsg(json.error || "Analyse fehlgeschlagen");
+      } else {
+        const e = json.extraktion;
+        await fetch("/api/eigentuemer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            liegenschaftId: liegenschaft.id,
+            name: e.eigentuemerName || "Unbekannter Eigentümer",
+            anschrift: e.anschrift,
+            email: e.email,
+            telefon: e.telefon,
+            miteigentumsanteil: e.miteigentumsanteil,
+            vollmachtVon: e.vollmachtBeginn,
+            vollmachtBis: e.vollmachtEnde,
+            dateiName: json.dateiName,
+            storedFileName: json.storedFileName,
+            mimeType: json.mimeType,
+            notizen: e.dokumentTyp ? `Dokumenttyp: ${e.dokumentTyp}` : undefined,
+          }),
+        });
+        setEigMsg(`✅ „${e.eigentuemerName || "Eigentümer"}“ erkannt und zugeordnet.`);
+        onChanged();
+      }
+    } catch {
+      setEigMsg("Analyse fehlgeschlagen");
+    } finally {
+      setEigUploading(false);
+    }
+  };
+
+  const submitEigentuemerManuell = async () => {
+    if (!liegenschaft || !eigForm.name.trim()) return;
+    await fetch("/api/eigentuemer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        liegenschaftId: liegenschaft.id,
+        name: eigForm.name,
+        anschrift: eigForm.anschrift || undefined,
+        email: eigForm.email || undefined,
+        telefon: eigForm.telefon || undefined,
+        miteigentumsanteil: eigForm.miteigentumsanteil ? Number(eigForm.miteigentumsanteil) : undefined,
+      }),
+    });
+    setEigForm({ name: "", anschrift: "", email: "", telefon: "", miteigentumsanteil: "" });
+    setEigManuellOpen(false);
+    onChanged();
+  };
+
+  const handlePmVertragUpload = async (file: File) => {
+    if (!liegenschaft) return;
+    setPmUploading(true);
+    setPmMsg(null);
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const res = await fetch("/api/pm-vertrag/analyze", { method: "POST", body: fd });
+      const json = await res.json();
+      if (!res.ok) {
+        setPmMsg(json.error || "Analyse fehlgeschlagen");
+      } else {
+        const e = json.extraktion;
+        await fetch("/api/pm-vertrag", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            liegenschaftId: liegenschaft.id,
+            dateiName: json.dateiName,
+            storedFileName: json.storedFileName,
+            mimeType: json.mimeType,
+            verwalterName: e.verwalterName,
+            auftraggeberName: e.auftraggeberName,
+            honorarModell: e.honorarModell,
+            honorarSatz: e.honorarSatz,
+            leistungsumfang: e.leistungsumfang,
+            laufzeitBeginn: e.laufzeitBeginn,
+            laufzeitEnde: e.laufzeitEnde,
+            kuendigungsfrist: e.kuendigungsfrist,
+            status: "Aktiv",
+          }),
+        });
+        setPmMsg(`✅ Vertrag mit „${e.verwalterName || "Verwalter"}“ erkannt und zugeordnet.`);
+        onChanged();
+      }
+    } catch {
+      setPmMsg("Analyse fehlgeschlagen");
+    } finally {
+      setPmUploading(false);
+    }
+  };
+
+  const submitPmVertragManuell = async () => {
+    if (!liegenschaft || !pmForm.verwalterName.trim()) return;
+    await fetch("/api/pm-vertrag", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        liegenschaftId: liegenschaft.id,
+        dateiName: `PM-Vertrag ${pmForm.verwalterName}`,
+        mimeType: "text/plain",
+        verwalterName: pmForm.verwalterName,
+        auftraggeberName: pmForm.auftraggeberName || undefined,
+        honorarModell: pmForm.honorarModell || undefined,
+        honorarSatz: pmForm.honorarSatz ? Number(pmForm.honorarSatz) : undefined,
+        leistungsumfang: pmForm.leistungsumfang || undefined,
+        laufzeitBeginn: pmForm.laufzeitBeginn || undefined,
+        kuendigungsfrist: pmForm.kuendigungsfrist || undefined,
+        status: "Aktiv",
+      }),
+    });
+    setPmForm({
+      verwalterName: "",
+      auftraggeberName: "",
+      honorarModell: "",
+      honorarSatz: "",
+      leistungsumfang: "",
+      laufzeitBeginn: "",
+      kuendigungsfrist: "",
+    });
+    setPmManuellOpen(false);
+    onChanged();
   };
 
   const freigeben = async (abrechnung: Abrechnung, dok: (typeof scopedDokumente)[number]) => {
@@ -460,6 +642,231 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
             onSelect={onSelect}
             onChanged={onChanged}
           />
+        )}
+
+        {tab === "Eigentümer" && liegenschaft && (
+          <div>
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <input
+                ref={eigFileInputRef}
+                type="file"
+                accept=".pdf,.png,.jpg,.jpeg,.txt"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handleEigentuemerUpload(f);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                disabled={eigUploading}
+                onClick={() => eigFileInputRef.current?.click()}
+                className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+              >
+                {eigUploading ? "Analysiere…" : "＋ Dokument hochladen"}
+              </button>
+              <button
+                onClick={() => setEigManuellOpen((v) => !v)}
+                className="rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
+              >
+                {eigManuellOpen ? "Abbrechen" : "＋ Eigentümer manuell anlegen"}
+              </button>
+            </div>
+            {eigMsg && <p className="mb-4 text-sm">{eigMsg}</p>}
+
+            {eigManuellOpen && (
+              <div className="mb-4 grid max-w-xl grid-cols-2 gap-2 rounded-lg border border-dashed border-border p-3">
+                <input
+                  value={eigForm.name}
+                  onChange={(e) => setEigForm({ ...eigForm, name: e.target.value })}
+                  placeholder="Name"
+                  className="col-span-2 rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+                <input
+                  value={eigForm.anschrift}
+                  onChange={(e) => setEigForm({ ...eigForm, anschrift: e.target.value })}
+                  placeholder="Anschrift"
+                  className="col-span-2 rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+                <input
+                  value={eigForm.email}
+                  onChange={(e) => setEigForm({ ...eigForm, email: e.target.value })}
+                  placeholder="E-Mail"
+                  className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+                <input
+                  value={eigForm.telefon}
+                  onChange={(e) => setEigForm({ ...eigForm, telefon: e.target.value })}
+                  placeholder="Telefon"
+                  className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+                <input
+                  type="number"
+                  value={eigForm.miteigentumsanteil}
+                  onChange={(e) => setEigForm({ ...eigForm, miteigentumsanteil: e.target.value })}
+                  placeholder="MEA (‰)"
+                  className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+                <button
+                  onClick={submitEigentuemerManuell}
+                  disabled={!eigForm.name.trim()}
+                  className="col-span-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  Anlegen
+                </button>
+              </div>
+            )}
+
+            {scopedEigentuemer.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Noch keine Eigentümer hinterlegt.</p>
+            ) : (
+              <div className="space-y-2">
+                {scopedEigentuemer.map((eg) => (
+                  <div key={eg.id} className="rounded-lg border border-border bg-card p-3 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold">{eg.name}</span>
+                      {eg.storedFileName && (
+                        <a
+                          href={`/api/files/${eg.storedFileName}?mime=${encodeURIComponent(
+                            eg.mimeType || "application/pdf"
+                          )}&name=${encodeURIComponent(eg.dateiName || eg.name)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
+                        >
+                          👁 Ansehen
+                        </a>
+                      )}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
+                      {eg.anschrift && <span>{eg.anschrift}</span>}
+                      {eg.email && <span>{eg.email}</span>}
+                      {eg.miteigentumsanteil ? <span>MEA: {eg.miteigentumsanteil}/1000</span> : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === "PM-Vertrag" && liegenschaft && (
+          <div>
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <input
+                ref={pmFileInputRef}
+                type="file"
+                accept=".pdf,.png,.jpg,.jpeg,.txt"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handlePmVertragUpload(f);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                disabled={pmUploading}
+                onClick={() => pmFileInputRef.current?.click()}
+                className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+              >
+                {pmUploading ? "Analysiere…" : "＋ PM-Vertrag hochladen"}
+              </button>
+              <button
+                onClick={() => setPmManuellOpen((v) => !v)}
+                className="rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
+              >
+                {pmManuellOpen ? "Abbrechen" : "＋ PM-Vertrag manuell anlegen"}
+              </button>
+            </div>
+            {pmMsg && <p className="mb-4 text-sm">{pmMsg}</p>}
+
+            {pmManuellOpen && (
+              <div className="mb-4 grid max-w-xl grid-cols-2 gap-2 rounded-lg border border-dashed border-border p-3">
+                <input
+                  value={pmForm.verwalterName}
+                  onChange={(e) => setPmForm({ ...pmForm, verwalterName: e.target.value })}
+                  placeholder="Verwalter / Property Manager"
+                  className="col-span-2 rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+                <input
+                  value={pmForm.auftraggeberName}
+                  onChange={(e) => setPmForm({ ...pmForm, auftraggeberName: e.target.value })}
+                  placeholder="Auftraggeber"
+                  className="col-span-2 rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+                <input
+                  value={pmForm.honorarModell}
+                  onChange={(e) => setPmForm({ ...pmForm, honorarModell: e.target.value })}
+                  placeholder="Honorarmodell (z.B. je Einheit)"
+                  className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+                <input
+                  type="number"
+                  value={pmForm.honorarSatz}
+                  onChange={(e) => setPmForm({ ...pmForm, honorarSatz: e.target.value })}
+                  placeholder="Honorarsatz"
+                  className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+                <input
+                  value={pmForm.laufzeitBeginn}
+                  onChange={(e) => setPmForm({ ...pmForm, laufzeitBeginn: e.target.value })}
+                  placeholder="Laufzeitbeginn"
+                  className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+                <input
+                  value={pmForm.kuendigungsfrist}
+                  onChange={(e) => setPmForm({ ...pmForm, kuendigungsfrist: e.target.value })}
+                  placeholder="Kündigungsfrist"
+                  className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+                <input
+                  value={pmForm.leistungsumfang}
+                  onChange={(e) => setPmForm({ ...pmForm, leistungsumfang: e.target.value })}
+                  placeholder="Leistungsumfang"
+                  className="col-span-2 rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+                <button
+                  onClick={submitPmVertragManuell}
+                  disabled={!pmForm.verwalterName.trim()}
+                  className="col-span-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  Anlegen
+                </button>
+              </div>
+            )}
+
+            {scopedPmVertraege.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Noch keine PM-Verträge hinterlegt.</p>
+            ) : (
+              <div className="space-y-2">
+                {scopedPmVertraege.map((pm) => (
+                  <div key={pm.id} className="rounded-lg border border-border bg-card p-3 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold">{pm.verwalterName || pm.dateiName}</span>
+                      {pm.storedFileName && (
+                        <a
+                          href={`/api/files/${pm.storedFileName}?mime=${encodeURIComponent(
+                            pm.mimeType
+                          )}&name=${encodeURIComponent(pm.dateiName)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
+                        >
+                          👁 Ansehen
+                        </a>
+                      )}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
+                      {pm.honorarModell && <span>Honorar: {pm.honorarModell}</span>}
+                      {pm.laufzeitBeginn && <span>Beginn: {pm.laufzeitBeginn}</span>}
+                      {pm.kuendigungsfrist && <span>Kündigung: {pm.kuendigungsfrist}</span>}
+                      <span>Status: {pm.status}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
         {tab === "Abrechnungen" && (

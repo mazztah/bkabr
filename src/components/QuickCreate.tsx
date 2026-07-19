@@ -4,7 +4,16 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Gebaeude, Liegenschaft, Wohnung } from "@/lib/types";
 
-type Kind = "liegenschaft" | "gebaeude" | "wohnung" | "mieter" | "rechnung" | "mietvertrag" | "abrechnung";
+type Kind =
+  | "liegenschaft"
+  | "gebaeude"
+  | "wohnung"
+  | "mieter"
+  | "rechnung"
+  | "mietvertrag"
+  | "abrechnung"
+  | "eigentuemer"
+  | "pmvertrag";
 
 const OPTIONS: { kind: Kind; label: string; icon: string; needsParent?: "liegenschaft" | "gebaeude" | "wohnung" }[] = [
   { kind: "liegenschaft", label: "Liegenschaft", icon: "🏠" },
@@ -13,6 +22,8 @@ const OPTIONS: { kind: Kind; label: string; icon: string; needsParent?: "liegens
   { kind: "mieter", label: "Mieter", icon: "🧑", needsParent: "wohnung" },
   { kind: "rechnung", label: "Rechnung hochladen", icon: "🧾" },
   { kind: "mietvertrag", label: "Mietvertrag hochladen", icon: "📄" },
+  { kind: "eigentuemer", label: "Eigentümer-Dokument hochladen", icon: "👤" },
+  { kind: "pmvertrag", label: "PM-Vertrag hochladen", icon: "📃" },
 ];
 
 export default function QuickCreate() {
@@ -116,6 +127,79 @@ export default function QuickCreate() {
     setMsg("Analysiere…");
     const fd = new FormData();
     fd.append("file", file);
+
+    if (active === "eigentuemer" || active === "pmvertrag") {
+      const analyzeEndpoint =
+        active === "eigentuemer" ? "/api/eigentuemer/analyze" : "/api/pm-vertrag/analyze";
+      const createEndpoint = active === "eigentuemer" ? "/api/eigentuemer" : "/api/pm-vertrag";
+      const zielSeite = active === "eigentuemer" ? "/eigentuemer" : "/pm-vertrag";
+      try {
+        const res = await fetch(analyzeEndpoint, { method: "POST", body: fd });
+        const json = await res.json();
+        if (!res.ok) {
+          setMsg(json.error || "Fehlgeschlagen");
+        } else if (json.vorschlag?.liegenschaftId) {
+          // Liegenschaft konnte automatisch zugeordnet werden -> direkt anlegen
+          const e = json.extraktion;
+          const body =
+            active === "eigentuemer"
+              ? {
+                  liegenschaftId: json.vorschlag.liegenschaftId,
+                  name: e.eigentuemerName || "Unbekannter Eigentümer",
+                  anschrift: e.anschrift,
+                  email: e.email,
+                  telefon: e.telefon,
+                  miteigentumsanteil: e.miteigentumsanteil,
+                  vollmachtVon: e.vollmachtBeginn,
+                  vollmachtBis: e.vollmachtEnde,
+                  dateiName: json.dateiName,
+                  storedFileName: json.storedFileName,
+                  mimeType: json.mimeType,
+                }
+              : {
+                  liegenschaftId: json.vorschlag.liegenschaftId,
+                  dateiName: json.dateiName,
+                  storedFileName: json.storedFileName,
+                  mimeType: json.mimeType,
+                  verwalterName: e.verwalterName,
+                  auftraggeberName: e.auftraggeberName,
+                  honorarModell: e.honorarModell,
+                  honorarSatz: e.honorarSatz,
+                  leistungsumfang: e.leistungsumfang,
+                  laufzeitBeginn: e.laufzeitBeginn,
+                  laufzeitEnde: e.laufzeitEnde,
+                  kuendigungsfrist: e.kuendigungsfrist,
+                  status: "Aktiv",
+                };
+          await fetch(createEndpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          setMsg(`✅ Erkannt und „${json.vorschlag.liegenschaftName}“ zugeordnet`);
+          router.push(zielSeite);
+          setTimeout(() => {
+            setOpen(false);
+            reset();
+          }, 600);
+        } else {
+          // Keine passende Liegenschaft gefunden -> auf der Modulseite fortsetzen,
+          // dort kann direkt eine neue Liegenschaft mit vorausgefüllten Stammdaten angelegt werden
+          setMsg("Keine Liegenschaft gefunden – bitte auf der Seite zuordnen.");
+          router.push(zielSeite);
+          setTimeout(() => {
+            setOpen(false);
+            reset();
+          }, 900);
+        }
+      } catch {
+        setMsg("Fehlgeschlagen");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     const endpoint = active === "mietvertrag" ? "/api/mietvertraege/analyze" : "/api/analyze";
     try {
       const res = await fetch(endpoint, { method: "POST", body: fd });
@@ -174,7 +258,12 @@ export default function QuickCreate() {
                   key={o.kind}
                   onClick={() => {
                     setActive(o.kind);
-                    if (o.kind === "rechnung" || o.kind === "mietvertrag") {
+                    if (
+                      o.kind === "rechnung" ||
+                      o.kind === "mietvertrag" ||
+                      o.kind === "eigentuemer" ||
+                      o.kind === "pmvertrag"
+                    ) {
                       setTimeout(startUpload, 50);
                     }
                   }}
@@ -185,7 +274,7 @@ export default function QuickCreate() {
                 </button>
               ))}
             </div>
-          ) : active === "rechnung" || active === "mietvertrag" ? (
+          ) : active === "rechnung" || active === "mietvertrag" || active === "eigentuemer" || active === "pmvertrag" ? (
             <div className="p-2 text-sm text-muted-foreground">{msg || "Datei auswählen…"}</div>
           ) : (
             <div className="space-y-3 p-2">

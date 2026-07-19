@@ -89,6 +89,24 @@ body {
   .no-print {
     display: none !important;
   }
+  .print-page-break {
+    break-after: page;
+    page-break-after: always;
+  }
+  body * {
+    visibility: hidden;
+  }
+  #print-area,
+  #print-area * {
+    visibility: visible;
+  }
+  #print-area {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    max-height: none;
+    overflow: visible;
+  }
 }
 
 @keyframes fadein {
