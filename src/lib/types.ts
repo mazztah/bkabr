@@ -265,3 +265,89 @@ export interface MietvertragExtraktion {
   objektAdresse?: string;
   wohnungsbezeichnung?: string;
 }
+
+// -------- Eigentümer --------
+
+export interface Eigentuemer {
+  id: string;
+  nummer?: string;
+  liegenschaftId: string;
+  name: string;
+  anschrift?: string;
+  email?: string;
+  telefon?: string;
+  miteigentumsanteil?: number; // in ‰ oder % je nach Teilungserklärung
+  vollmachtVon?: string;
+  vollmachtBis?: string;
+  dateiName?: string;
+  storedFileName?: string;
+  mimeType?: string;
+  extraktText?: string;
+  notizen?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EigentuemerExtraktion {
+  eigentuemerName?: string;
+  anschrift?: string;
+  email?: string;
+  telefon?: string;
+  miteigentumsanteil?: number;
+  vollmachtBeginn?: string;
+  vollmachtEnde?: string;
+  dokumentTyp?: string; // z.B. "Vollmacht", "Grundbuchauszug", "Eigentümerbeschluss"
+  objektAdresse?: string;
+  liegenschaftName?: string;
+}
+
+// -------- Property-Management-Vertrag --------
+
+export type PmVertragStatus = "Entwurf" | "Aktiv" | "Beendet";
+
+export interface PmVertrag {
+  id: string;
+  nummer?: string;
+  liegenschaftId: string;
+  dateiName: string;
+  storedFileName?: string;
+  mimeType: string;
+  hochgeladenAm: string;
+  verwalterName?: string;
+  auftraggeberName?: string;
+  honorarModell?: string; // z.B. "Pauschale", "je Einheit", "% der Mieteinnahmen"
+  honorarSatz?: number;
+  leistungsumfang?: string;
+  laufzeitBeginn?: string;
+  laufzeitEnde?: string;
+  kuendigungsfrist?: string;
+  status: PmVertragStatus;
+  extraktText?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PmVertragExtraktion {
+  verwalterName?: string;
+  auftraggeberName?: string;
+  honorarModell?: string;
+  honorarSatz?: number;
+  leistungsumfang?: string;
+  laufzeitBeginn?: string;
+  laufzeitEnde?: string;
+  kuendigungsfrist?: string;
+  objektAdresse?: string;
+  liegenschaftName?: string;
+}
+
+// -------- Gemeinsamer Vorschlag zur Neuanlage einer Liegenschaft --------
+// Wird von den Analyse-Endpunkten (Eigentümer, PM-Vertrag, ggf. weitere) genutzt,
+// um bei fehlendem Treffer eine bereits vorausgefüllte Maske anzubieten.
+
+export interface LiegenschaftStammdatenVorschlag {
+  name?: string;
+  strasse?: string;
+  hausnummer?: string;
+  plz?: string;
+  ort?: string;
+}

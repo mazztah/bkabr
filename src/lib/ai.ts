@@ -156,6 +156,88 @@ export async function extractMietvertrag(params: {
   return extractJson(result);
 }
 
+const SYSTEM_EIGENTUEMER = `Du bist ein Experte für deutsche Hausverwaltungs- und WEG-Dokumente. Analysiere den übergebenen Text eines eigentümerbezogenen Dokuments (z.B. Vollmacht, Eigentümerbeschluss, Grundbuchauszug, Verwaltervollmacht, Kontaktdaten-Schreiben) und extrahiere die relevanten Stammdaten.
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt in exakt diesem Format:
+{
+  "eigentuemerName": "Name des/der Eigentümer(s)",
+  "anschrift": "vollständige Anschrift des Eigentümers (Straße, PLZ, Ort)",
+  "email": "E-Mail-Adresse, sonst leerer String",
+  "telefon": "Telefonnummer, sonst leerer String",
+  "miteigentumsanteil": <Miteigentumsanteil als Zahl (z.B. 125 für 125/1000), sonst 0>,
+  "vollmachtBeginn": "Datum, sonst leerer String",
+  "vollmachtEnde": "Datum, sonst leerer String",
+  "dokumentTyp": "kurze Bezeichnung des Dokumenttyps, z.B. Vollmacht/Grundbuchauszug/Eigentümerbeschluss",
+  "objektAdresse": "vollständige Adresse der betroffenen Liegenschaft/Immobilie (Straße Hausnummer, PLZ Ort)",
+  "liegenschaftName": "Name/Bezeichnung der Liegenschaft, falls im Dokument genannt, sonst leerer String"
+}
+Erfinde keine Fakten, die nicht im Dokument stehen. Falls ein Wert nicht erkennbar ist: leerer String bzw. 0.`;
+
+export async function extractEigentuemerDokument(params: {
+  text: string;
+  fileName: string;
+}): Promise<import("./types").EigentuemerExtraktion> {
+  const { text, fileName } = params;
+  const groq = getClient();
+
+  const completion = await groq.chat.completions.create({
+    model: TEXT_MODEL,
+    max_completion_tokens: 1200,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM_EIGENTUEMER },
+      {
+        role: "user",
+        content: `Datei: ${fileName}.\n\nInhalt:\n${text}\n\nExtrahiere die JSON-Daten.`,
+      },
+    ],
+  });
+
+  const result = completion.choices[0]?.message?.content || "";
+  return extractJson(result);
+}
+
+const SYSTEM_PM_VERTRAG = `Du bist ein Experte für deutsche Property-Management- und Hausverwaltungsverträge. Analysiere den übergebenen Text eines PM-/Verwaltervertrags und extrahiere die relevanten Stammdaten.
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt in exakt diesem Format:
+{
+  "verwalterName": "Name der Hausverwaltung/des Property Managers",
+  "auftraggeberName": "Name des Auftraggebers/Eigentümers",
+  "honorarModell": "kurze Bezeichnung, z.B. Pauschale/je Einheit/Prozent der Mieteinnahmen, sonst leerer String",
+  "honorarSatz": <Satz als Zahl (Euro oder Prozent, je nach Modell), sonst 0>,
+  "leistungsumfang": "kurze Zusammenfassung des vereinbarten Leistungsumfangs",
+  "laufzeitBeginn": "Datum, sonst leerer String",
+  "laufzeitEnde": "Datum falls befristet, sonst leerer String",
+  "kuendigungsfrist": "Kündigungsfrist, z.B. '3 Monate zum Jahresende', sonst leerer String",
+  "objektAdresse": "vollständige Adresse der betroffenen Liegenschaft/Immobilie (Straße Hausnummer, PLZ Ort)",
+  "liegenschaftName": "Name/Bezeichnung der Liegenschaft, falls im Dokument genannt, sonst leerer String"
+}
+Erfinde keine Fakten, die nicht im Dokument stehen. Falls ein Wert nicht erkennbar ist: leerer String bzw. 0.`;
+
+export async function extractPmVertrag(params: {
+  text: string;
+  fileName: string;
+}): Promise<import("./types").PmVertragExtraktion> {
+  const { text, fileName } = params;
+  const groq = getClient();
+
+  const completion = await groq.chat.completions.create({
+    model: TEXT_MODEL,
+    max_completion_tokens: 1200,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM_PM_VERTRAG },
+      {
+        role: "user",
+        content: `Datei: ${fileName}.\n\nInhalt:\n${text}\n\nExtrahiere die JSON-Daten.`,
+      },
+    ],
+  });
+
+  const result = completion.choices[0]?.message?.content || "";
+  return extractJson(result);
+}
+
 export async function generateBetriebskostenabrechnung(abr: Abrechnung): Promise<string> {
   const groq = getClient();
   const completion = await groq.chat.completions.create({

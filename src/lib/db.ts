@@ -1,6 +1,15 @@
 import { promises as fs } from "fs";
 import path from "path";
-import { Abrechnung, Gebaeude, Liegenschaft, Mieter, Mietvertrag, Wohnung } from "./types";
+import {
+  Abrechnung,
+  Eigentuemer,
+  Gebaeude,
+  Liegenschaft,
+  Mieter,
+  Mietvertrag,
+  PmVertrag,
+  Wohnung,
+} from "./types";
 
 // DATA_DIR kann per ENV überschrieben werden (z.B. für ein Fly.io Volume unter /data)
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
@@ -13,6 +22,8 @@ interface DbShape {
   wohnungen: Wohnung[];
   mieter: Mieter[];
   mietvertraege: Mietvertrag[];
+  eigentuemer: Eigentuemer[];
+  pmVertraege: PmVertrag[];
   counters: Record<string, number>;
 }
 
@@ -31,6 +42,8 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     wohnungen: db.wohnungen || [],
     mieter: db.mieter || [],
     mietvertraege: db.mietvertraege || [],
+    eigentuemer: db.eigentuemer || [],
+    pmVertraege: db.pmVertraege || [],
     counters: db.counters || {},
   };
 }
@@ -194,3 +207,5 @@ export const gebaeudeDb = makeCrud<Gebaeude>("gebaeude", "GB");
 export const wohnungenDb = makeCrud<Wohnung>("wohnungen", "EH");
 export const mieterDb = makeCrud<Mieter>("mieter", "MI");
 export const mietvertraegeDb = makeCrud<Mietvertrag>("mietvertraege", "MV");
+export const eigentuemerDb = makeCrud<Eigentuemer>("eigentuemer", "EG");
+export const pmVertraegeDb = makeCrud<PmVertrag>("pmVertraege", "PM");
