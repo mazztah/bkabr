@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:1584px; height:396px; overflow:hidden; background:#05070d; font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+  .wrap { position:relative; width:1584px; height:396px; background:#05070d; }
+  .grid {
+    position:absolute; inset:0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
+    background-size: 48px 48px;
+    -webkit-mask-image: radial-gradient(ellipse 70% 90% at 25% 50%, #000 40%, transparent 100%);
+  }
+  .glow1 { position:absolute; top:-160px; left:200px; width:520px; height:520px; border-radius:50%;
+    background: radial-gradient(circle, rgba(59,157,255,0.5), transparent 70%); filter: blur(10px); }
+  .glow2 { position:absolute; bottom:-200px; right:120px; width:480px; height:480px; border-radius:50%;
+    background: radial-gradient(circle, rgba(34,211,238,0.4), transparent 70%); filter: blur(10px); }
+  .content { position:relative; z-index:2; height:100%; display:flex; align-items:center; padding: 0 90px; }
+  .left { max-width: 900px; }
+  .brand { display:flex; align-items:center; gap:12px; margin-bottom: 22px; }
+  .brand img { height:38px; width:auto; }
+  .brand span { font-size:19px; font-weight:800; color:#f4f6fb; letter-spacing:-0.3px; }
+  .brand span b { color:#3b9dff; }
+  h1 { font-size:42px; font-weight:800; color:#f4f6fb; line-height:1.12; letter-spacing:-1px; }
+  .accent { background: linear-gradient(90deg,#22d3ee,#3b9dff,#34d399); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  p { margin-top:16px; font-size:17px; color:#93a0b8; max-width:560px; line-height:1.5; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="grid"></div>
+    <div class="glow1"></div>
+    <div class="glow2"></div>
+    <div class="content">
+      <div class="left">
+        <div class="brand">
+          <img src="file:///home/claude/bkabr-main/bkabr-main/public/brand/logo-icon.png" />
+          <span>BetriebsKosten<b>Bot</b> AI</span>
+        </div>
+        <h1>Die KI für <span class="accent">perfekte Betriebskostenabrechnungen.</span></h1>
+        <p>Dokumente hochladen, KI erkennt &amp; ordnet zu, fertige Abrechnung als PDF.</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

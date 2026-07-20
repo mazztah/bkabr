@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:1080px; height:1080px; overflow:hidden; background:#05070d; font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+  .wrap { position:relative; width:1080px; height:1080px; background:#05070d; }
+  .grid {
+    position:absolute; inset:0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.045) 1px, transparent 1px);
+    background-size: 54px 54px;
+    -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, #000 40%, transparent 100%);
+  }
+  .glow1 { position:absolute; top:-140px; left:-100px; width:560px; height:560px; border-radius:50%;
+    background: radial-gradient(circle, rgba(59,157,255,0.5), transparent 70%); filter: blur(10px); }
+  .glow2 { position:absolute; bottom:-160px; right:-120px; width:520px; height:520px; border-radius:50%;
+    background: radial-gradient(circle, rgba(34,211,238,0.42), transparent 70%); filter: blur(10px); }
+  .content { position:relative; z-index:2; height:100%; display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center; padding: 0 90px; }
+  .brand { display:flex; align-items:center; gap:12px; margin-bottom: 48px; }
+  .brand img { height:60px; width:auto; }
+  .brand span { font-size:26px; font-weight:800; color:#f4f6fb; letter-spacing:-0.4px; }
+  .brand span b { color:#3b9dff; }
+  h1 { font-size:56px; font-weight:800; color:#f4f6fb; line-height:1.14; letter-spacing:-1.2px; }
+  .accent { background: linear-gradient(90deg,#22d3ee,#3b9dff,#34d399); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  p { margin-top:28px; font-size:22px; color:#93a0b8; max-width:640px; line-height:1.55; }
+  .pill-row { margin-top:40px; display:flex; gap:12px; flex-wrap:wrap; justify-content:center; }
+  .pill { background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1); color:#cfe0ff; font-size:15px;
+    font-weight:600; border-radius:999px; padding:9px 18px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="grid"></div>
+    <div class="glow1"></div>
+    <div class="glow2"></div>
+    <div class="content">
+      <div class="brand">
+        <img src="file:///home/claude/bkabr-main/bkabr-main/public/brand/logo-icon.png" />
+        <span>BetriebsKosten<b>Bot</b></span>
+      </div>
+      <h1>Betriebskosten­abrechnung<br><span class="accent">automatisiert per KI.</span></h1>
+      <p>Rechnungen &amp; Verträge hochladen — der Rest läuft von allein.</p>
+      <div class="pill-row">
+        <div class="pill">✓ § 556 BGB-konform</div>
+        <div class="pill">✓ 12 Min. bis fertig</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,71 @@
+/* Eigenständiges Farbschema für den Marketing-/Werbe-Bereich (BetriebsKostenBot AI).
+   Überschreibt die App-Design-Tokens NUR innerhalb von .mk, beeinflusst also nicht
+   das Erscheinungsbild der eigentlichen Anwendung (Light/Dark-Toggle bleibt unberührt). */
+
+.mk {
+  --background: #05070d;
+  --foreground: #f4f6fb;
+  --card: #0c0f18;
+  --card-foreground: #f4f6fb;
+  --border: rgba(255, 255, 255, 0.09);
+  --muted: #10131d;
+  --muted-foreground: #93a0b8;
+  --primary: #3b9dff;
+  --primary-foreground: #05070d;
+  --secondary: #131826;
+  --secondary-foreground: #cfe0ff;
+  --brand-accent: #22d3ee;
+  --ring: #3b9dff;
+  color-scheme: dark;
+}
+
+.mk {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.mk ::selection {
+  background: rgba(59, 157, 255, 0.35);
+  color: #fff;
+}
+
+.mk-noise {
+  background-image: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.6) 1px, transparent 0);
+  background-size: 22px 22px;
+}
+
+.mk-grid-bg {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+}
+
+@keyframes mk-aurora {
+  0%,
+  100% {
+    transform: translate(-5%, -5%) rotate(0deg) scale(1);
+  }
+  50% {
+    transform: translate(5%, 5%) rotate(8deg) scale(1.1);
+  }
+}
+
+.mk-aurora {
+  animation: mk-aurora 22s ease-in-out infinite;
+}
+
+@keyframes mk-float {
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-14px);
+  }
+}
+
+.mk-float {
+  animation: mk-float 6s ease-in-out infinite;
+}

@@ -57,6 +57,7 @@ const GROUPS: NavGroup[] = [
 
 export default function LeftNav() {
   const pathname = usePathname();
+  if (pathname?.startsWith("/marketing")) return null;
 
   return (
     <nav className="flex h-full w-56 shrink-0 flex-col overflow-y-auto border-r border-border bg-card no-print">

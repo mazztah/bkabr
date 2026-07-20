@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:1200px; height:630px; overflow:hidden; background:#05070d; font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+  .wrap { position:relative; width:1200px; height:630px; background:#05070d; }
+  .grid {
+    position:absolute; inset:0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.045) 1px, transparent 1px);
+    background-size: 56px 56px;
+    -webkit-mask-image: radial-gradient(ellipse 75% 65% at 30% 30%, #000 40%, transparent 100%);
+  }
+  .glow1 { position:absolute; top:-180px; left:-120px; width:620px; height:620px; border-radius:50%;
+    background: radial-gradient(circle, rgba(59,157,255,0.55), transparent 70%); filter: blur(10px); }
+  .glow2 { position:absolute; bottom:-220px; right:-140px; width:560px; height:560px; border-radius:50%;
+    background: radial-gradient(circle, rgba(34,211,238,0.45), transparent 70%); filter: blur(10px); }
+  .content { position:relative; z-index:2; height:100%; display:flex; flex-direction:column; justify-content:center; padding: 0 80px; }
+  .brand { display:flex; align-items:center; gap:14px; margin-bottom: 38px; }
+  .brand img { height:52px; width:auto; }
+  .brand span { font-size:26px; font-weight:800; color:#f4f6fb; letter-spacing:-0.5px; }
+  .brand span b { color:#3b9dff; }
+  .badge { display:inline-flex; background:rgba(34,211,238,0.14); color:#22d3ee; font-size:13px; font-weight:700;
+    border-radius:6px; padding: 3px 8px; margin-left:6px; }
+  h1 { font-size:58px; font-weight:800; color:#f4f6fb; line-height:1.08; letter-spacing:-1.5px; max-width: 880px; }
+  .accent { background: linear-gradient(90deg,#22d3ee,#3b9dff,#34d399); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  p { margin-top:26px; font-size:22px; color:#93a0b8; max-width:680px; line-height:1.5; }
+  .pill-row { margin-top:34px; display:flex; gap:14px; }
+  .pill { background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1); color:#cfe0ff; font-size:15px;
+    font-weight:600; border-radius:999px; padding:9px 18px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="grid"></div>
+    <div class="glow1"></div>
+    <div class="glow2"></div>
+    <div class="content">
+      <div class="brand">
+        <img src="file:///home/claude/bkabr-main/bkabr-main/public/brand/logo-icon.png" />
+        <span>BetriebsKosten<b>Bot</b></span>
+        <span class="badge">AI</span>
+      </div>
+      <h1>Betriebskostenabrechnungen,<br><span class="accent">die sich von selbst erledigen.</span></h1>
+      <p>KI-gestützte Dokumentenerkennung, automatische Zuordnung &amp; rechtssichere Abrechnungen — in Minuten statt Tagen.</p>
+      <div class="pill-row">
+        <div class="pill">✓ § 556 BGB-konform</div>
+        <div class="pill">✓ DSGVO-konform</div>
+        <div class="pill">✓ In Minuten startklar</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
