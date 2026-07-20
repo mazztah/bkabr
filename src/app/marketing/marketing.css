@@ -69,3 +69,20 @@
 .mk-float {
   animation: mk-float 6s ease-in-out infinite;
 }
+
+@keyframes mk-gradient-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.mk-gradient-text {
+  background-size: 200% auto;
+  animation: mk-gradient-shift 6s ease-in-out infinite;
+}

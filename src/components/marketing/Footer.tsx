@@ -35,7 +35,7 @@ export default function Footer() {
         <div className="grid gap-10 lg:grid-cols-[1.3fr_1fr_1fr_1fr]">
           <div>
             <div className="flex items-center gap-2.5">
-              <img src="/brand/logo-icon.png" alt="BetriebsKostenBot AI" className="h-7 w-7 object-contain" />
+              <img src="/brand/logo-mark.png" alt="BetriebsKostenBot AI" className="h-7 w-auto object-contain" />
               <span className="text-sm font-bold text-foreground">
                 BetriebsKosten<span className="text-[var(--brand-accent)]">Bot</span> AI
               </span>

@@ -11,7 +11,7 @@ export default function GradientText({
   return (
     <span
       className={clsx(
-        "bg-gradient-to-r from-[var(--brand-accent)] via-[var(--primary)] to-emerald-300 bg-clip-text text-transparent",
+        "mk-gradient-text bg-gradient-to-r from-[var(--brand-accent)] via-[var(--primary)] to-emerald-300 bg-clip-text text-transparent",
         className
       )}
     >

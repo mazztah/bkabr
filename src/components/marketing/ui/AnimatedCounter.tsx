@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useInView } from "framer-motion";
 
 export default function AnimatedCounter({
   value,
@@ -16,26 +15,36 @@ export default function AnimatedCounter({
   duration?: number;
   decimals?: number;
 }) {
-  const ref = useRef<HTMLSpanElement>(null);
-  const inView = useInView(ref, { once: true, margin: "-80px" });
-  const [display, setDisplay] = useState(0);
+  const [display, setDisplay] = useState(value);
+  const started = useRef(false);
 
   useEffect(() => {
-    if (!inView) return;
+    // Nur einmal animieren, unabhängig davon, ob die IntersectionObserver-Timing auf
+    // bestimmten Mobilgeräten zuverlässig feuert – die Metriken liegen im Hero-Bereich
+    // ohnehin direkt im sichtbaren Bereich beim Laden der Seite.
+    if (started.current) return;
+    started.current = true;
+    setDisplay(0);
+
     const start = performance.now();
     let raf: number;
     const tick = (now: number) => {
       const progress = Math.min(1, (now - start) / (duration * 1000));
       const eased = 1 - Math.pow(1 - progress, 3);
       setDisplay(value * eased);
-      if (progress < 1) raf = requestAnimationFrame(tick);
+      if (progress < 1) {
+        raf = requestAnimationFrame(tick);
+      } else {
+        setDisplay(value);
+      }
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [inView, value, duration]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
-    <span ref={ref}>
+    <span>
       {prefix}
       {display.toLocaleString("de-DE", { maximumFractionDigits: decimals, minimumFractionDigits: decimals })}
       {suffix}

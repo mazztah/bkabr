@@ -39,7 +39,7 @@ export default function Navbar() {
     >
       <Container className="flex h-16 items-center justify-between lg:h-20">
         <a href="#top" className="flex items-center gap-2.5">
-          <img src="/brand/logo-icon.png" alt="BetriebsKostenBot AI" className="h-8 w-8 object-contain" />
+          <img src="/brand/logo-mark.png" alt="BetriebsKostenBot AI" className="h-8 w-auto object-contain" />
           <span className="text-[15px] font-bold tracking-tight text-foreground">
             BetriebsKosten<span className="text-[var(--brand-accent)]">Bot</span>
           </span>

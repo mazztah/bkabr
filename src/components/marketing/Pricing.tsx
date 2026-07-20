@@ -12,37 +12,67 @@ import FadeUp from "./ui/FadeUp";
 
 const PLANS = [
   {
-    name: "Starter",
-    price: "0",
-    period: "kostenlos",
-    desc: "Zum Ausprobieren für einzelne Objekte.",
-    features: ["Bis zu 2 Liegenschaften", "KI-Dokumentenerkennung", "PDF-Export mit Wasserzeichen", "E-Mail-Support"],
-    cta: "Kostenlos starten",
+    emoji: "🟢",
+    name: "Basic",
+    price: "299",
+    period: "einmalig",
+    desc: "Ideal for small residential properties",
+    features: [
+      "Up to 10 units",
+      "Complete digital documentation provided",
+      "Operating cost statement or HOA (condominium) service charge statement",
+      "Delivery within 5–7 business days",
+      "1 revision included",
+    ],
+    cta: "Basic auswählen",
     highlight: false,
   },
   {
-    name: "Professional",
-    price: "49",
-    period: "/ Monat",
-    desc: "Für Hausverwaltungen mit wachsendem Bestand.",
+    emoji: "🔵",
+    name: "Standard",
+    price: "799",
+    period: "einmalig",
+    desc: "Perfect for multi-family residential buildings",
     features: [
-      "Unbegrenzte Liegenschaften",
-      "Eigentümer- & PM-Vertragsverwaltung",
-      "Soll/Ist-Vorauszahlungsabgleich",
-      "KI-Chat & Rechtscheck",
-      "Markenfreies PDF mit eigenem Logo",
-      "Priorisierter Support",
+      "Up to 30 units",
+      "Multiple cost categories",
+      "Plausibility and accuracy review",
+      "Buyer support and clarification included",
+      "Delivery within 7–10 business days",
+      "2 revisions included",
     ],
-    cta: "Jetzt upgraden",
+    cta: "Standard auswählen",
     highlight: true,
   },
   {
+    emoji: "🟣",
+    name: "Premium",
+    price: "1.299",
+    period: "einmalig",
+    desc: "For complex properties & condominium associations (HOAs / WEGs)",
+    features: [
+      "Up to 60 units",
+      "Paper documents accepted",
+      "Lease and contract review",
+      "Master data preparation and organization",
+      "Ownership changes handled",
+      "Tenant changes handled",
+      "Special assessments supported",
+      "Delivery within 10–14 business days",
+      "Priority processing",
+      "Unlimited revisions until final approval",
+    ],
+    cta: "Premium auswählen",
+    highlight: false,
+  },
+  {
+    emoji: "⚫",
     name: "Enterprise",
     price: "Individuell",
     period: "",
     desc: "Für größere Bestände & individuelle Anforderungen.",
     features: [
-      "Alles aus Professional",
+      "Alles aus Premium",
       "SSO & Mandantenfähigkeit",
       "Individuelle Integrationen (API)",
       "Persönlicher Ansprechpartner",
@@ -67,7 +97,7 @@ export default function Pricing() {
           </p>
         </FadeUp>
 
-        <div className="mt-16 grid gap-6 lg:grid-cols-3">
+        <div className="mt-16 grid gap-6 lg:grid-cols-2 xl:grid-cols-4">
           {PLANS.map((p, i) => (
             <FadeUp key={p.name} delay={i * 0.1}>
               <GlassCard
@@ -79,10 +109,12 @@ export default function Pricing() {
                     Beliebt
                   </span>
                 )}
-                <h3 className="text-lg font-semibold text-foreground">{p.name}</h3>
+                <h3 className="flex items-center gap-2 text-lg font-semibold text-foreground">
+                  <span>{p.emoji}</span> {p.name}
+                </h3>
                 <p className="mt-1.5 text-sm text-muted-foreground">{p.desc}</p>
                 <div className="mt-6 flex items-baseline gap-1.5">
-                  <span className="text-4xl font-bold text-foreground">
+                  <span className="text-3xl font-bold text-foreground">
                     {p.price === "Individuell" ? p.price : `${p.price} €`}
                   </span>
                   {p.period && <span className="text-sm text-muted-foreground">{p.period}</span>}
