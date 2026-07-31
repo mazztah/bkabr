@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { chatWithContext } from "@/lib/ai";
-import { getAbrechnung, listAbrechnungen } from "@/lib/db";
+import {
+  getAbrechnung,
+  listAbrechnungen,
+  liegenschaftenDb,
+  gebaeudeDb,
+  wohnungenDb,
+  mieterDb,
+  mietvertraegeDb,
+} from "@/lib/db";
 
 export async function POST(req: NextRequest) {
   try {
@@ -9,8 +17,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Nachricht fehlt" }, { status: 400 });
     }
 
-    const all = await listAbrechnungen();
-    const current = id ? (await getAbrechnung(id)) ?? null : null;
+    const [all, current, liegenschaften, gebaeude, wohnungen, mieter, mietvertraege] =
+      await Promise.all([
+        listAbrechnungen(),
+        id ? getAbrechnung(id) : Promise.resolve(null),
+        liegenschaftenDb.list(),
+        gebaeudeDb.list(),
+        wohnungenDb.list(),
+        mieterDb.list(),
+        mietvertraegeDb.list(),
+      ]);
 
     const safeHistory = Array.isArray(history)
       ? history
@@ -20,8 +36,13 @@ export async function POST(req: NextRequest) {
 
     const reply = await chatWithContext({
       message,
-      current,
+      current: current ?? null,
       all,
+      liegenschaften,
+      gebaeude,
+      wohnungen,
+      mieter,
+      mietvertraege,
       history: safeHistory,
       path: typeof path === "string" ? path : "/",
     });

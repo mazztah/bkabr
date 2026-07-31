@@ -224,6 +224,17 @@ export interface SollIstEintrag {
   notiz?: string;
 }
 
+export type MietkontoBuchungTyp = "Miete" | "Nebenkosten" | "Kaution" | "Sonstiges";
+
+export interface MietkontoBuchung {
+  id: string;
+  datum: string; // ISO Datum, für welchen Monat/Zeitpunkt die Buchung gilt
+  typ: MietkontoBuchungTyp;
+  soll: number; // erwarteter Betrag
+  ist: number; // tatsächlich eingegangener Betrag
+  text?: string;
+}
+
 export interface Mieter {
   id: string;
   nummer?: string;
@@ -237,6 +248,7 @@ export interface Mieter {
   nebenkostenVorauszahlung?: number;
   notizen?: string;
   sollIst?: SollIstEintrag[];
+  mietkonto?: MietkontoBuchung[];
   createdAt: string;
   updatedAt: string;
 }

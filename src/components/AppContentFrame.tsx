@@ -11,10 +11,10 @@ export default function AppContentFrame({ children }: { children: React.ReactNod
     <div
       className={cn(
         "min-h-0 flex-1 overflow-hidden",
-        // On phones the hamburger (top-left) and theme/sandbox/quick-create
-        // buttons (top-right) float above the page — push content below them
-        // so nothing gets covered. From lg upward there's enough room again.
-        !isMarketing && "pt-14 lg:pt-0"
+        // The theme/sandbox/quick-create buttons (top-right) and, on phones,
+        // the hamburger (top-left) float above every page. Push content
+        // below them everywhere so page headers/links never get covered.
+        !isMarketing && "pt-14"
       )}
     >
       {children}

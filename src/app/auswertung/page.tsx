@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { formatCurrency } from "@/lib/utils";
 import { Abrechnung, Gebaeude, Liegenschaft, Mieter, Wohnung } from "@/lib/types";
 import { zeitraumEnthaeltJahr } from "@/lib/matching";
+import { mietRueckstand } from "@/lib/mietkonto";
 
 interface Data {
   abrechnungen: Abrechnung[];
@@ -119,6 +120,18 @@ export default function AuswertungPage() {
   const sollGesamt = relevanteMieter.flatMap((m) => m.sollIst || []).reduce((s, e) => s + e.sollVorauszahlung, 0);
   const istGesamt = relevanteMieter.flatMap((m) => m.sollIst || []).reduce((s, e) => s + e.istZahlungen, 0);
 
+  const mietRueckstaende = useMemo(
+    () =>
+      relevanteMieter
+        .map((m) => ({ mieter: m, rueckstand: mietRueckstand(m) }))
+        .filter((r) => Math.round(r.rueckstand * 100) !== 0)
+        .sort((a, b) => b.rueckstand - a.rueckstand),
+    [relevanteMieter]
+  );
+  const rueckstandGesamt = mietRueckstaende
+    .filter((r) => r.rueckstand > 0)
+    .reduce((s, r) => s + r.rueckstand, 0);
+
   return (
     <div className="h-full overflow-y-auto p-6">
       <h1 className="mb-1 text-xl font-bold">📊 Auswertung</h1>
@@ -223,7 +236,39 @@ export default function AuswertungPage() {
               value={formatCurrency(istGesamt - sollGesamt)}
               sub={`Soll ${formatCurrency(sollGesamt)} · Ist ${formatCurrency(istGesamt)}`}
             />
+            <StatCard
+              label="Mietrückstände gesamt"
+              value={formatCurrency(rueckstandGesamt)}
+              sub={`${mietRueckstaende.filter((r) => r.rueckstand > 0).length} Mieter betroffen`}
+            />
           </div>
+
+          <h2 className="mb-2 text-sm font-semibold">🏚️ Mietrückstände</h2>
+          {mietRueckstaende.length === 0 ? (
+            <p className="mb-6 text-sm text-muted-foreground">
+              Keine offenen Salden im Mietkonto der gefilterten Mieter.
+            </p>
+          ) : (
+            <div className="mb-6 space-y-2">
+              {mietRueckstaende.map(({ mieter, rueckstand }) => (
+                <div
+                  key={mieter.id}
+                  className="flex items-center justify-between rounded-lg border border-border bg-card p-3 text-sm"
+                >
+                  <span className="font-medium">{mieter.name}</span>
+                  <span
+                    className={
+                      rueckstand > 0 ? "font-semibold text-[var(--destructive)]" : "font-semibold text-[var(--success)]"
+                    }
+                  >
+                    {rueckstand > 0
+                      ? `⚠️ ${formatCurrency(rueckstand)} offen`
+                      : `Guthaben ${formatCurrency(-rueckstand)}`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
 
           <h2 className="mb-2 text-sm font-semibold">Abrechnungen im Filter</h2>
           {gefiltert.length === 0 ? (

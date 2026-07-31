@@ -1,5 +1,6 @@
 import Groq from "groq-sdk";
-import { Abrechnung, ExtractedData } from "./types";
+import { Abrechnung, ExtractedData, Liegenschaft, Gebaeude, Wohnung, Mieter, Mietvertrag } from "./types";
+import { mietRueckstand } from "./mietkonto";
 
 // Textmodell für Zusammenfassungen, Abrechnungen, Anschreiben, Chat & Recht-Check
 const TEXT_MODEL = process.env.GROQ_TEXT_MODEL || "llama-3.3-70b-versatile";
@@ -375,10 +376,26 @@ export async function chatWithContext(params: {
   message: string;
   current: Abrechnung | null;
   all: Abrechnung[];
+  liegenschaften?: Liegenschaft[];
+  gebaeude?: Gebaeude[];
+  wohnungen?: Wohnung[];
+  mieter?: Mieter[];
+  mietvertraege?: Mietvertrag[];
   history: { role: "user" | "assistant"; content: string }[];
   path?: string;
 }): Promise<string> {
-  const { message, current, all, history, path = "/" } = params;
+  const {
+    message,
+    current,
+    all,
+    liegenschaften = [],
+    gebaeude = [],
+    wohnungen = [],
+    mieter = [],
+    mietvertraege = [],
+    history,
+    path = "/",
+  } = params;
   const groq = getClient();
 
   const overview = all.map((a) => ({
@@ -390,25 +407,101 @@ export async function chatWithContext(params: {
     status: a.status,
   }));
 
+  // Bestand als Hierarchie Liegenschaft -> Gebäude -> Wohnung -> Mieter/Mietvertrag
+  // aufbauen, inkl. berechnetem Mietrückstand aus dem Mietkonto, damit der Bot
+  // reale Fragen zum Bestand beantworten kann statt aus Abrechnungs-Adressen zu raten.
+  const portfolio = liegenschaften.map((lg) => {
+    const lgGebaeude = gebaeude.filter((g) => g.liegenschaftId === lg.id);
+    return {
+      id: lg.id,
+      nummer: lg.nummer,
+      name: lg.name,
+      adresse: `${lg.strasse} ${lg.hausnummer}, ${lg.plz} ${lg.ort}`,
+      gebaeude: lgGebaeude.map((g) => {
+        const gWohnungen = wohnungen.filter((w) => w.gebaeudeId === g.id);
+        return {
+          id: g.id,
+          name: g.name,
+          baujahr: g.baujahr,
+          wohnungen: gWohnungen.map((w) => {
+            const wMieter = mieter.filter((m) => m.wohnungId === w.id);
+            const wVertraege = mietvertraege.filter((mv) => mv.wohnungId === w.id);
+            return {
+              id: w.id,
+              bezeichnung: w.bezeichnung,
+              typ: w.typ,
+              flaeche: w.flaeche,
+              mieter: wMieter.map((m) => ({
+                id: m.id,
+                name: m.name,
+                mietbeginn: m.mietbeginn,
+                mietende: m.mietende,
+                kaltmiete: m.kaltmiete,
+                nebenkostenVorauszahlung: m.nebenkostenVorauszahlung,
+                mietrueckstand: mietRueckstand(m),
+              })),
+              mietvertraege: wVertraege.map((mv) => ({
+                id: mv.id,
+                status: mv.status,
+                sollMiete: mv.sollMiete,
+                mietbeginn: mv.mietbeginn,
+                mietende: mv.mietende,
+              })),
+            };
+          }),
+        };
+      }),
+    };
+  });
+
+  // Zusätzlich eine flache Rückstandsliste über alle Mieter, sortiert nach Höhe,
+  // damit Fragen wie "wie hoch sind die Mietrückstände" direkt beantwortbar sind.
+  const mietrueckstaende = mieter
+    .map((m) => {
+      const wohnung = wohnungen.find((w) => w.id === m.wohnungId);
+      const geb = wohnung ? gebaeude.find((g) => g.id === wohnung.gebaeudeId) : undefined;
+      const lg = geb ? liegenschaften.find((l) => l.id === geb.liegenschaftId) : undefined;
+      return {
+        mieterId: m.id,
+        mieterName: m.name,
+        wohnung: wohnung?.bezeichnung,
+        liegenschaft: lg?.name,
+        rueckstand: mietRueckstand(m),
+      };
+    })
+    .filter((r) => Math.round(r.rueckstand * 100) !== 0)
+    .sort((a, b) => b.rueckstand - a.rueckstand);
+
   const pageLabel = PAGE_LABELS[path] || path;
 
-  const system = `Du bist "BetriebsKostenBot", der KI-Assistent dieser Betriebskosten-App. Du bist app-weit über einen schwebenden Chat auf JEDER Seite erreichbar, nicht nur auf einer einzelnen Seite. Du siehst immer den gesamten Kontext:
+  const system = `Du bist "BetriebsKostenBot", der KI-Assistent dieser Hausverwaltungs-App. Du bist app-weit über einen schwebenden Chat auf JEDER Seite erreichbar. Du siehst immer den gesamten Kontext:
 - Die Seite, auf der sich der Nutzer gerade befindet
+- Den kompletten Immobilienbestand als Hierarchie: Liegenschaft → Gebäude → Wohnung/Einheit → Mieter & Mietvertrag (Feld "portfolio")
+- Eine vorberechnete Liste offener Mietrückstände je Mieter (Feld "mietrueckstaende"; positiver Wert = Mieter schuldet Geld, negativer Wert = Guthaben)
 - Aktuell ausgewählte Abrechnung (Rohdaten + Workspace), falls vorhanden
-- Liste aller anderen Abrechnungen
-Du machst Optimierungsvorschläge (z.B. fehlende Positionen), erkennst fehlende Punkte (z.B. USt bei Gewerbeobjekten), schlägst Formulierungen für Anschreiben vor und beantwortest Fragen zu Betriebskosten- und Mietrecht sowie allgemeine Fragen zur Nutzung der App. Antworte präzise, hilfreich und auf Deutsch.
+- Liste aller Betriebskosten-Abrechnungen (Feld "abrechnungen")
+
+WICHTIG: Für Fragen zu Liegenschaften, Gebäuden, Wohnungen, Mietern, Mietverträgen oder Mietrückständen nutzt du AUSSCHLIESSLICH die Daten aus "portfolio" bzw. "mietrueckstaende" – NICHT die Adressen aus "abrechnungen" (das sind reine Belege/Rechnungen und keine verlässliche Liegenschaftsliste). Wenn "portfolio" leer ist, sag das offen statt zu raten oder Abrechnungsadressen als Liegenschaften auszugeben.
+
+Du machst Optimierungsvorschläge (z.B. fehlende Positionen in Abrechnungen), erkennst fehlende Punkte (z.B. USt bei Gewerbeobjekten), schlägst Formulierungen für Anschreiben vor, gibst Übersichten zu Mietern/Mietverträgen/Mietrückständen einer Liegenschaft und beantwortest Fragen zu Betriebskosten- und Mietrecht sowie zur Nutzung der App. Antworte präzise, hilfreich, in kompakten Listen wo sinnvoll, und auf Deutsch.
 
 Nutzer befindet sich aktuell auf der Seite: ${pageLabel} (${path})
+
+portfolio (Liegenschaften → Gebäude → Wohnungen → Mieter/Mietverträge):
+${JSON.stringify(portfolio, null, 2)}
+
+mietrueckstaende (nur Mieter mit offenem Saldo ungleich 0):
+${JSON.stringify(mietrueckstaende, null, 2)}
 
 Aktuelle Abrechnung:
 ${current ? JSON.stringify(current, null, 2) : "Keine ausgewählt"}
 
-Alle Abrechnungen (Übersicht):
+abrechnungen (Übersicht aller Betriebskosten-Abrechnungen/Belege, NICHT als Liegenschaftsliste verwenden):
 ${JSON.stringify(overview, null, 2)}`;
 
   const completion = await groq.chat.completions.create({
     model: TEXT_MODEL,
-    max_completion_tokens: 1200,
+    max_completion_tokens: 1500,
     messages: [
       { role: "system", content: system },
       ...history.map((h) => ({ role: h.role, content: h.content }) as Groq.Chat.Completions.ChatCompletionMessageParam),

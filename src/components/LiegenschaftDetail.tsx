@@ -8,10 +8,13 @@ import {
   Gebaeude,
   Liegenschaft,
   Mieter,
+  MietkontoBuchung,
+  MietkontoBuchungTyp,
   PmVertrag,
   SollIstEintrag,
   Wohnung,
 } from "@/lib/types";
+import { mietRueckstand } from "@/lib/mietkonto";
 import { HierarchyData } from "@/lib/use-hierarchy-data";
 import { NodeSelection } from "./LiegenschaftenTree";
 import Modal from "./Modal";
@@ -32,6 +35,7 @@ const TABS = [
   "Abrechnungen",
   "Dokumente",
   "Soll/Ist Vorauszahlungen",
+  "Mietkonto",
 ] as const;
 type Tab = (typeof TABS)[number];
 
@@ -215,7 +219,7 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
 
   const visibleTabs = TABS.filter((t) => {
     if (t === "Struktur" && mieter) return false;
-    if (t === "Soll/Ist Vorauszahlungen" && !mieter) return false;
+    if ((t === "Soll/Ist Vorauszahlungen" || t === "Mietkonto") && !mieter) return false;
     if ((t === "Eigentümer" || t === "PM-Vertrag") && !liegenschaft) return false;
     return true;
   });
@@ -990,6 +994,10 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
         {tab === "Soll/Ist Vorauszahlungen" && mieter && (
           <SollIstTab mieter={mieter} onChanged={onChanged} />
         )}
+
+        {tab === "Mietkonto" && mieter && (
+          <MietkontoTab mieter={mieter} onChanged={onChanged} />
+        )}
       </div>
 
       {liegenschaftVorschlag && (
@@ -1203,6 +1211,167 @@ function SollIstTab({ mieter, onChanged }: { mieter: Mieter; onChanged: () => vo
           className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
         >
           Hinzufügen
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const MIETKONTO_TYPEN: MietkontoBuchungTyp[] = ["Miete", "Nebenkosten", "Kaution", "Sonstiges"];
+
+function MietkontoTab({ mieter, onChanged }: { mieter: Mieter; onChanged: () => void }) {
+  const [datum, setDatum] = useState(new Date().toISOString().slice(0, 10));
+  const [typ, setTyp] = useState<MietkontoBuchungTyp>("Miete");
+  const [soll, setSoll] = useState(mieter.kaltmiete ? String(mieter.kaltmiete) : "");
+  const [ist, setIst] = useState("");
+  const [text, setText] = useState("");
+  const entries = mieter.mietkonto || [];
+  const rueckstand = mietRueckstand(mieter);
+
+  const addEntry = async () => {
+    const buchung: MietkontoBuchung = {
+      id: crypto.randomUUID(),
+      datum,
+      typ,
+      soll: Number(soll) || 0,
+      ist: Number(ist) || 0,
+      text: text || undefined,
+    };
+    const sorted = [...entries, buchung].sort((a, b) => a.datum.localeCompare(b.datum));
+    await patchEntity(`/api/mieter/${mieter.id}`, { mietkonto: sorted });
+    setIst("");
+    setText("");
+    onChanged();
+  };
+
+  const removeEntry = async (id: string) => {
+    await patchEntity(`/api/mieter/${mieter.id}`, {
+      mietkonto: entries.filter((e) => e.id !== id),
+    });
+    onChanged();
+  };
+
+  return (
+    <div>
+      <div
+        className={cn(
+          "mb-4 inline-flex max-w-xl items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium",
+          rueckstand > 0
+            ? "border-[var(--destructive)]/30 bg-[var(--danger-bg)] text-[var(--destructive)]"
+            : "border-[var(--success)]/30 bg-[var(--success-bg)] text-[var(--success)]"
+        )}
+      >
+        {rueckstand > 0
+          ? `⚠️ Mietrückstand: ${formatCurrency(rueckstand)}`
+          : rueckstand < 0
+          ? `Guthaben: ${formatCurrency(-rueckstand)}`
+          : "✅ Mietkonto ausgeglichen"}
+      </div>
+
+      <table className="mb-4 w-full max-w-2xl text-sm">
+        <thead>
+          <tr className="border-b border-border text-left text-xs text-muted-foreground">
+            <th className="py-1.5">Datum</th>
+            <th className="py-1.5">Typ</th>
+            <th className="py-1.5">Soll</th>
+            <th className="py-1.5">Ist</th>
+            <th className="py-1.5">Saldo</th>
+            <th className="py-1.5">Notiz</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((e) => (
+            <tr key={e.id} className="border-b border-border/50">
+              <td className="py-1.5">{formatDate(e.datum)}</td>
+              <td className="py-1.5">{e.typ}</td>
+              <td className="py-1.5">{formatCurrency(e.soll)}</td>
+              <td className="py-1.5">{formatCurrency(e.ist)}</td>
+              <td
+                className={cn(
+                  "py-1.5",
+                  e.soll - e.ist > 0 ? "text-[var(--destructive)]" : "text-[var(--success)]"
+                )}
+              >
+                {formatCurrency(e.soll - e.ist)}
+              </td>
+              <td className="py-1.5 text-muted-foreground">{e.text}</td>
+              <td className="py-1.5 text-right">
+                <button
+                  onClick={() => removeEntry(e.id)}
+                  className="text-xs text-muted-foreground hover:text-[var(--destructive)]"
+                >
+                  entfernen
+                </button>
+              </td>
+            </tr>
+          ))}
+          {entries.length === 0 && (
+            <tr>
+              <td colSpan={7} className="py-3 text-sm text-muted-foreground">
+                Noch keine Buchungen. Lege z.B. pro Monat eine Miet-Buchung mit Soll/Ist an.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+
+      <div className="flex max-w-2xl flex-wrap items-end gap-2">
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-muted-foreground">Datum</span>
+          <input
+            type="date"
+            value={datum}
+            onChange={(e) => setDatum(e.target.value)}
+            className="w-36 rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-muted-foreground">Typ</span>
+          <select
+            value={typ}
+            onChange={(e) => setTyp(e.target.value as MietkontoBuchungTyp)}
+            className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+          >
+            {MIETKONTO_TYPEN.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-muted-foreground">Soll (€)</span>
+          <input
+            type="number"
+            value={soll}
+            onChange={(e) => setSoll(e.target.value)}
+            className="w-28 rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-muted-foreground">Ist (€)</span>
+          <input
+            type="number"
+            value={ist}
+            onChange={(e) => setIst(e.target.value)}
+            className="w-28 rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
+        </label>
+        <label className="block flex-1 min-w-[10rem]">
+          <span className="mb-1 block text-xs font-medium text-muted-foreground">Notiz</span>
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="z.B. Überweisung Mai"
+            className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
+        </label>
+        <button
+          onClick={addEntry}
+          className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
+        >
+          Buchen
         </button>
       </div>
     </div>
