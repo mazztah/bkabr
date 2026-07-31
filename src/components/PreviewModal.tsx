@@ -27,7 +27,7 @@ export default function PreviewModal({
   const mieterAnschrift = abrechnung.mieterAnschrift;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/50 p-4">
       <div className="bg-card rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between p-4 border-b border-border no-print">
           <h2 className="font-semibold">Vorschau – Druckbar</h2>

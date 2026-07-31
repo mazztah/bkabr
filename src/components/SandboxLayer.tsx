@@ -26,7 +26,7 @@ export default function SandboxLayer() {
 
   return (
     <div className="pointer-events-none fixed inset-0 z-[150]">
-      <div className="pointer-events-auto fixed left-1/2 top-4 z-[160] flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-xs shadow-lg">
+      <div className="pointer-events-auto fixed left-1/2 top-20 z-[160] flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-xs shadow-lg lg:top-4">
         <span className="font-semibold">✨ Sandbox-Modus</span>
         <button
           onClick={addNote}
@@ -42,7 +42,9 @@ export default function SandboxLayer() {
             ↩ Wiederherstellen
           </button>
         )}
-        <span className="text-muted-foreground">Frei platzierbare Notizen – zum Beenden ✨ oben rechts klicken</span>
+        <span className="hidden text-muted-foreground md:inline">
+          Frei platzierbare Notizen – zum Beenden ✨ oben rechts klicken
+        </span>
       </div>
 
       {notes.map((n) => (

@@ -18,11 +18,17 @@ interface StoreState {
   error: string | null;
   filters: Filters;
   chatOpen: boolean;
+  chatHistory: ChatMessage[];
+  chatSending: boolean;
+  mobileNavOpen: boolean;
 
   fetchAll: () => Promise<void>;
   select: (id: string | null) => void;
   setFilters: (f: Partial<Filters>) => void;
   toggleChat: () => void;
+  openChat: () => void;
+  toggleMobileNav: () => void;
+  closeMobileNav: () => void;
 
   uploadFiles: (files: File[]) => Promise<void>;
   patchAbrechnung: (id: string, patch: Partial<Abrechnung>) => Promise<void>;
@@ -44,7 +50,10 @@ export const useStore = create<StoreState>((set, get) => ({
   isChecking: false,
   error: null,
   filters: { objektTyp: "Alle", status: "Alle", jahr: "Alle", suche: "" },
-  chatOpen: true,
+  chatOpen: false,
+  chatHistory: [],
+  chatSending: false,
+  mobileNavOpen: false,
 
   fetchAll: async () => {
     set({ loading: true, error: null });
@@ -63,8 +72,11 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   select: (id) => set({ selectedId: id }),
+  toggleMobileNav: () => set((s) => ({ mobileNavOpen: !s.mobileNavOpen })),
+  closeMobileNav: () => set({ mobileNavOpen: false }),
   setFilters: (f) => set((s) => ({ filters: { ...s.filters, ...f } })),
   toggleChat: () => set((s) => ({ chatOpen: !s.chatOpen })),
+  openChat: () => set({ chatOpen: true }),
 
   uploadFiles: async (files: File[]) => {
     set({ isAnalyzing: true, error: null });
@@ -190,8 +202,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   sendChat: async (message: string) => {
-    const { selectedId, abrechnungen } = get();
-    const current = abrechnungen.find((a) => a.id === selectedId) || null;
+    const { selectedId } = get();
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -200,29 +211,30 @@ export const useStore = create<StoreState>((set, get) => ({
       timestamp: new Date().toISOString(),
     };
 
-    if (current) {
-      set((s) => ({
-        abrechnungen: s.abrechnungen.map((a) =>
-          a.id === current.id ? { ...a, chat: [...a.chat, userMsg] } : a
-        ),
-      }));
-    }
+    set((s) => ({ chatHistory: [...s.chatHistory, userMsg], chatSending: true }));
+
+    const path = typeof window !== "undefined" ? window.location.pathname : "/";
+    const history = get()
+      .chatHistory.slice(-10)
+      .map((m) => ({ role: m.role, content: m.content }));
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, id: selectedId }),
+        body: JSON.stringify({ message, id: selectedId, path, history }),
       });
       if (!res.ok) throw new Error("Chat fehlgeschlagen");
       const data = await res.json();
-      if (current) {
-        set((s) => ({
-          abrechnungen: s.abrechnungen.map((a) => (a.id === current.id ? data.abrechnung : a)),
-        }));
-      }
+      const assistantMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: data.reply,
+        timestamp: new Date().toISOString(),
+      };
+      set((s) => ({ chatHistory: [...s.chatHistory, assistantMsg], chatSending: false }));
     } catch (e: any) {
-      set({ error: e.message });
+      set({ error: e.message, chatSending: false });
     }
   },
 }));

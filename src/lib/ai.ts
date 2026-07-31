@@ -351,13 +351,34 @@ export async function rechtCheck(abr: Abrechnung | null, staticContent: string):
   return completion.choices[0]?.message?.content || "";
 }
 
+const PAGE_LABELS: Record<string, string> = {
+  "/": "Dashboard / Abrechnungen",
+  "/liegenschaften": "Liegenschaften",
+  "/gebaeude": "Gebäude",
+  "/mieter": "Mieter",
+  "/mietvertraege": "Mietverträge",
+  "/eigentuemer": "Eigentümer",
+  "/investoren": "Investoren",
+  "/pm-vertrag": "PM-Vertrag",
+  "/dienstleistungsvertraege": "Dienstleistungsverträge",
+  "/vorauszahlungen": "Vorauszahlungen",
+  "/budgetierung": "Budgetierung",
+  "/finanzierung": "Finanzierung",
+  "/instandhaltung": "Instandhaltung",
+  "/auftraege": "Aufträge",
+  "/rechnungen": "Rechnungen",
+  "/assetmanagement": "Assetmanagement",
+  "/auswertung": "Auswertung",
+};
+
 export async function chatWithContext(params: {
   message: string;
   current: Abrechnung | null;
   all: Abrechnung[];
   history: { role: "user" | "assistant"; content: string }[];
+  path?: string;
 }): Promise<string> {
-  const { message, current, all, history } = params;
+  const { message, current, all, history, path = "/" } = params;
   const groq = getClient();
 
   const overview = all.map((a) => ({
@@ -369,10 +390,15 @@ export async function chatWithContext(params: {
     status: a.status,
   }));
 
-  const system = `Du bist "BetriebsKostenBot", der KI-Assistent dieser Betriebskosten-App. Du siehst immer den gesamten Kontext der Seite:
-- Aktuell ausgewählte Abrechnung (Rohdaten + Workspace)
+  const pageLabel = PAGE_LABELS[path] || path;
+
+  const system = `Du bist "BetriebsKostenBot", der KI-Assistent dieser Betriebskosten-App. Du bist app-weit über einen schwebenden Chat auf JEDER Seite erreichbar, nicht nur auf einer einzelnen Seite. Du siehst immer den gesamten Kontext:
+- Die Seite, auf der sich der Nutzer gerade befindet
+- Aktuell ausgewählte Abrechnung (Rohdaten + Workspace), falls vorhanden
 - Liste aller anderen Abrechnungen
-Du machst Optimierungsvorschläge (z.B. fehlende Positionen), erkennst fehlende Punkte (z.B. USt bei Gewerbeobjekten), schlägst Formulierungen für Anschreiben vor und beantwortest Fragen zu Betriebskosten- und Mietrecht. Antworte präzise, hilfreich und auf Deutsch.
+Du machst Optimierungsvorschläge (z.B. fehlende Positionen), erkennst fehlende Punkte (z.B. USt bei Gewerbeobjekten), schlägst Formulierungen für Anschreiben vor und beantwortest Fragen zu Betriebskosten- und Mietrecht sowie allgemeine Fragen zur Nutzung der App. Antworte präzise, hilfreich und auf Deutsch.
+
+Nutzer befindet sich aktuell auf der Seite: ${pageLabel} (${path})
 
 Aktuelle Abrechnung:
 ${current ? JSON.stringify(current, null, 2) : "Keine ausgewählt"}

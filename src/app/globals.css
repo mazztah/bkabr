@@ -85,6 +85,17 @@ body {
   border-radius: 8px;
 }
 
+/* Mobile (Android/iOS): browsers auto-zoom into inputs with font-size < 16px
+   on focus, which shifts/overlaps the fixed UI (top bar, chat, nav). Force
+   16px on small screens while keeping the compact text-sm look on desktop. */
+@media (max-width: 1023px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
 @media print {
   .no-print {
     display: none !important;

@@ -4,7 +4,6 @@ import { useEffect } from "react";
 import { useStore } from "@/lib/store";
 import Sidebar from "@/components/Sidebar";
 import WorkspacePanel from "@/components/Workspace";
-import ChatWindow from "@/components/ChatWindow";
 
 export default function DashboardPage() {
   const { fetchAll, error, abrechnungen } = useStore();
@@ -30,7 +29,6 @@ export default function DashboardPage() {
         )}
         <WorkspacePanel />
       </div>
-      <ChatWindow />
     </div>
   );
 }

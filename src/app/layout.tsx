@@ -3,7 +3,16 @@ import "./globals.css";
 import LeftNav from "@/components/LeftNav";
 import GlobalTopBar from "@/components/GlobalTopBar";
 import SandboxLayer from "@/components/SandboxLayer";
+import ChatWindow from "@/components/ChatWindow";
+import MobileNavToggle from "@/components/MobileNavToggle";
+import AppContentFrame from "@/components/AppContentFrame";
 import { SandboxProvider } from "@/lib/sandbox-context";
+
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+};
 
 export const metadata: Metadata = {
   title: "BetriebsKostenBot – Automatische Betriebskostenabrechnungen",
@@ -39,10 +48,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <SandboxProvider>
           <div className="flex h-screen overflow-hidden">
             <LeftNav />
-            <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
+            <AppContentFrame>{children}</AppContentFrame>
           </div>
           <GlobalTopBar />
           <SandboxLayer />
+          <ChatWindow />
+          <MobileNavToggle />
         </SandboxProvider>
       </body>
     </html>
