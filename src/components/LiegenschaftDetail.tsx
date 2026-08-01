@@ -15,6 +15,7 @@ import {
   Wohnung,
 } from "@/lib/types";
 import { mietRueckstand, fehlendeSollstellungen } from "@/lib/mietkonto";
+import SchriftverkehrPanel from "./SchriftverkehrPanel";
 import { HierarchyData } from "@/lib/use-hierarchy-data";
 import { NodeSelection } from "./LiegenschaftenTree";
 import Modal from "./Modal";
@@ -36,6 +37,7 @@ const TABS = [
   "Dokumente",
   "Soll/Ist Vorauszahlungen",
   "Mietkonto",
+  "Schriftverkehr",
 ] as const;
 type Tab = (typeof TABS)[number];
 
@@ -151,6 +153,13 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
     (w) => selection?.type === "wohnung" && w.id === selection.id
   );
   const mieter = data.mieter.find((m) => selection?.type === "mieter" && m.id === selection.id);
+  const mieterWohnung = mieter ? data.wohnungen.find((w) => w.id === mieter.wohnungId) : undefined;
+  const mieterGebaeude = mieterWohnung
+    ? data.gebaeude.find((g) => g.id === mieterWohnung.gebaeudeId)
+    : undefined;
+  const mieterLiegenschaft = mieterGebaeude
+    ? data.liegenschaften.find((l) => l.id === mieterGebaeude.liegenschaftId)
+    : undefined;
 
   // Deszendenten-IDs ermitteln, um Abrechnungen/Dokumente auf allen Ebenen filtern zu können
   const scope = useMemo(() => {
@@ -219,7 +228,8 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
 
   const visibleTabs = TABS.filter((t) => {
     if (t === "Struktur" && mieter) return false;
-    if ((t === "Soll/Ist Vorauszahlungen" || t === "Mietkonto") && !mieter) return false;
+    if ((t === "Soll/Ist Vorauszahlungen" || t === "Mietkonto" || t === "Schriftverkehr") && !mieter)
+      return false;
     if ((t === "Eigentümer" || t === "PM-Vertrag") && !liegenschaft) return false;
     return true;
   });
@@ -997,6 +1007,15 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
 
         {tab === "Mietkonto" && mieter && (
           <MietkontoTab mieter={mieter} onChanged={onChanged} />
+        )}
+
+        {tab === "Schriftverkehr" && mieter && (
+          <SchriftverkehrPanel
+            mieter={mieter}
+            wohnung={mieterWohnung}
+            gebaeude={mieterGebaeude}
+            liegenschaft={mieterLiegenschaft}
+          />
         )}
       </div>
 
