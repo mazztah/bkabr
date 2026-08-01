@@ -22,20 +22,9 @@ import {
   initialWerte,
   renderBrief,
 } from "./schriftverkehr";
+import { createChatCompletion } from "./groq-client";
 
-const TEXT_MODEL = process.env.GROQ_TEXT_MODEL || "llama-3.3-70b-versatile";
 const MAX_AGENT_STEPS = 12;
-
-let client: Groq | null = null;
-function getClient(): Groq {
-  if (!process.env.GROQ_API_KEY) {
-    throw new Error(
-      "GROQ_API_KEY ist nicht gesetzt. Bitte in .env.local bzw. als Fly.io Secret hinterlegen."
-    );
-  }
-  if (!client) client = new Groq({ apiKey: process.env.GROQ_API_KEY });
-  return client;
-}
 
 // -------- Tool-Definitionen (OpenAI-/Groq-kompatibel) --------
 
@@ -526,7 +515,6 @@ export async function runAgent(params: {
   history?: { role: "user" | "assistant"; content: string }[];
   path?: string;
 }): Promise<AgentResult> {
-  const groq = getClient();
   const steps: AgentResult["steps"] = [];
   const createdBriefIds: string[] = [];
 
@@ -549,8 +537,7 @@ export async function runAgent(params: {
 
   try {
     for (let step = 0; step < MAX_AGENT_STEPS; step++) {
-      const completion = await groq.chat.completions.create({
-        model: TEXT_MODEL,
+      const completion = await createChatCompletion({
         max_completion_tokens: 2000,
         temperature: 0.2,
         tools: AGENT_TOOLS,

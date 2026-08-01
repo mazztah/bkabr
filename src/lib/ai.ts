@@ -1,22 +1,7 @@
 import Groq from "groq-sdk";
 import { Abrechnung, ExtractedData, Liegenschaft, Gebaeude, Wohnung, Mieter, Mietvertrag, KontoauszugTransaktion } from "./types";
 import { mietRueckstand } from "./mietkonto";
-
-// Textmodell für Zusammenfassungen, Abrechnungen, Anschreiben, Chat & Recht-Check
-const TEXT_MODEL = process.env.GROQ_TEXT_MODEL || "llama-3.3-70b-versatile";
-// Vision-Modell für Bild-Uploads (JPG/PNG) – wird für OCR/Dokumentenerkennung genutzt
-const VISION_MODEL = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
-
-let client: Groq | null = null;
-function getClient(): Groq {
-  if (!process.env.GROQ_API_KEY) {
-    throw new Error(
-      "GROQ_API_KEY ist nicht gesetzt. Bitte in .env.local bzw. als Fly.io Secret hinterlegen."
-    );
-  }
-  if (!client) client = new Groq({ apiKey: process.env.GROQ_API_KEY });
-  return client;
-}
+import { createChatCompletion, VISION_MODEL } from "./groq-client";
 
 function extractJson(text: string): any {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -66,9 +51,7 @@ export async function visionTranscribe(params: {
   fileName: string;
 }): Promise<string> {
   const { base64, mimeType, fileName } = params;
-  const groq = getClient();
-
-  const completion = await groq.chat.completions.create({
+  const completion = await createChatCompletion({
     model: VISION_MODEL,
     max_completion_tokens: 2000,
     temperature: 0,
@@ -97,10 +80,7 @@ export async function analyzeDocument(params: {
   fileName: string;
 }): Promise<ExtractedData> {
   const { text, fileName } = params;
-  const groq = getClient();
-
-  const completion = await groq.chat.completions.create({
-    model: TEXT_MODEL,
+  const completion = await createChatCompletion({
     max_completion_tokens: 2000,
     temperature: 0,
     response_format: { type: "json_object" },
@@ -137,10 +117,7 @@ export async function extractMietvertrag(params: {
   fileName: string;
 }): Promise<import("./types").MietvertragExtraktion> {
   const { text, fileName } = params;
-  const groq = getClient();
-
-  const completion = await groq.chat.completions.create({
-    model: TEXT_MODEL,
+  const completion = await createChatCompletion({
     max_completion_tokens: 1200,
     temperature: 0,
     response_format: { type: "json_object" },
@@ -176,10 +153,7 @@ export async function extractKontoauszug(params: {
   fileName: string;
 }): Promise<KontoauszugTransaktion[]> {
   const { text, fileName } = params;
-  const groq = getClient();
-
-  const completion = await groq.chat.completions.create({
-    model: TEXT_MODEL,
+  const completion = await createChatCompletion({
     max_completion_tokens: 3000,
     temperature: 0,
     response_format: { type: "json_object" },
@@ -218,10 +192,7 @@ export async function extractEigentuemerDokument(params: {
   fileName: string;
 }): Promise<import("./types").EigentuemerExtraktion> {
   const { text, fileName } = params;
-  const groq = getClient();
-
-  const completion = await groq.chat.completions.create({
-    model: TEXT_MODEL,
+  const completion = await createChatCompletion({
     max_completion_tokens: 1200,
     temperature: 0,
     response_format: { type: "json_object" },
@@ -259,10 +230,7 @@ export async function extractPmVertrag(params: {
   fileName: string;
 }): Promise<import("./types").PmVertragExtraktion> {
   const { text, fileName } = params;
-  const groq = getClient();
-
-  const completion = await groq.chat.completions.create({
-    model: TEXT_MODEL,
+  const completion = await createChatCompletion({
     max_completion_tokens: 1200,
     temperature: 0,
     response_format: { type: "json_object" },
@@ -280,9 +248,7 @@ export async function extractPmVertrag(params: {
 }
 
 export async function generateBetriebskostenabrechnung(abr: Abrechnung): Promise<string> {
-  const groq = getClient();
-  const completion = await groq.chat.completions.create({
-    model: TEXT_MODEL,
+  const completion = await createChatCompletion({
     max_completion_tokens: 1200,
     messages: [
       {
@@ -320,10 +286,8 @@ export async function generateBetriebskostenabrechnung(abr: Abrechnung): Promise
 }
 
 export async function generateAnschreiben(abr: Abrechnung, anlass: string): Promise<string> {
-  const groq = getClient();
   const saldo = abr.workspace.nebenkosten - (abr.workspace.vorauszahlungen ?? 0);
-  const completion = await groq.chat.completions.create({
-    model: TEXT_MODEL,
+  const completion = await createChatCompletion({
     max_completion_tokens: 1200,
     messages: [
       {
@@ -362,9 +326,7 @@ export async function generateAnschreiben(abr: Abrechnung, anlass: string): Prom
 }
 
 export async function rechtCheck(abr: Abrechnung | null, staticContent: string): Promise<string> {
-  const groq = getClient();
-  const completion = await groq.chat.completions.create({
-    model: TEXT_MODEL,
+  const completion = await createChatCompletion({
     max_completion_tokens: 1500,
     messages: [
       {
@@ -439,8 +401,6 @@ export async function chatWithContext(params: {
     history,
     path = "/",
   } = params;
-  const groq = getClient();
-
   const overview = all.map((a) => ({
     id: a.id,
     name: a.name,
@@ -544,8 +504,7 @@ ${current ? JSON.stringify(current, null, 2) : "Keine ausgewählt"}
 abrechnungen (Übersicht aller Betriebskosten-Abrechnungen/Belege, NICHT als Liegenschaftsliste verwenden):
 ${JSON.stringify(overview, null, 2)}`;
 
-  const completion = await groq.chat.completions.create({
-    model: TEXT_MODEL,
+  const completion = await createChatCompletion({
     max_completion_tokens: 1500,
     messages: [
       { role: "system", content: system },
