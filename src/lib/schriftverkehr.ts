@@ -365,6 +365,51 @@ Die Abrechnung wurde mit Unterstützung von BetriebsKostenBot AI erstellt und be
 Einwendungen gegen die Abrechnung sind innerhalb von 12 Monaten nach Zugang schriftlich geltend zu machen (§ 556 Abs. 3 BGB).`;
     },
   },
+  {
+    id: "mieterbegruessung",
+    label: "Mieterbegrüßung Eigentümerwechsel",
+    icon: "🏠",
+    betreff: (ctx) =>
+      `Eigentümerwechsel – Begrüßung und Informationen zu Ihrem Mietverhältnis – ${objektadresse(ctx)}, Wohnung ${ctx.wohnung?.bezeichnung || ""}`,
+    fields: [
+      { key: "uebergangsdatum", label: "Übergangsdatum Eigentum", type: "date", default: () => heuteDe() },
+      { key: "neuerEigentuemer", label: "Name neuer Eigentümer", type: "text", default: () => "Muster Immobilien GmbH" },
+      { key: "iban", label: "IBAN Mietkonto", type: "text", default: () => "DE45 2505 0000 9876 5432 10" },
+      { key: "bic", label: "BIC", type: "text", default: () => "SPKHDE2HXXX" },
+      { key: "kontoinhaber", label: "Kontoinhaber", type: "text", default: () => "Muster Immobilien GmbH" },
+      { key: "mietBeginnNeu", label: "Mietzahlungen ab (Datum)", type: "date", default: () => heuteDe() },
+      { key: "telefon", label: "Telefon Hausverwaltung", type: "text", default: () => "0511 / 123 456-0" },
+      { key: "email", label: "E-Mail Hausverwaltung", type: "text", default: () => "info@betriebskostenbot-dummy.de" },
+      { key: "ansprechpartner", label: "Ansprechpartner/in", type: "text", default: () => "" },
+    ],
+    body: (ctx) => `sehr geehrte/r ${ctx.mieter.name},
+
+hiermit informieren wir Sie darüber, dass das Eigentum an dem Anwesen ${objektadresse(ctx)} mit Wirkung zum ${ctx.werte.uebergangsdatum} auf den neuen Eigentümer ${ctx.werte.neuerEigentuemer} übergegangen ist.
+
+Ihr bestehendes Mietverhältnis bleibt davon unberührt und wird mit allen Rechten und Pflichten fortgesetzt (§ 566 BGB – „Kauf bricht nicht Miete"). Eine Kündigung allein wegen des Eigentümerwechsels ist gesetzlich ausgeschlossen.
+
+Neue Kontaktdaten der Hausverwaltung / des Vermieters:
+
+ProManage Immobilienverwaltung GmbH
+Am Friedrichswall 10, 30159 Hannover
+Tel.: ${ctx.werte.telefon} · E-Mail: ${ctx.werte.email}
+${ctx.werte.ansprechpartner ? `Ansprechpartner/in: ${ctx.werte.ansprechpartner}` : ""}
+
+Mietzahlungen ab ${ctx.werte.mietBeginnNeu}:
+
+Bitte überweisen Sie die Miete (Kaltmiete zzgl. Betriebskosten- und Heizkostenvorauszahlung) ab dem genannten Zeitpunkt auf das folgende Konto:
+
+Kontoinhaber: ${ctx.werte.kontoinhaber}
+IBAN: ${ctx.werte.iban}
+BIC: ${ctx.werte.bic}
+Verwendungszweck: Miete ${objektadresse(ctx)} ${ctx.wohnung?.bezeichnung || ""} ${ctx.mieter.name} [Monat]
+
+Kaution und etwaige Guthaben aus Nebenkostenabrechnungen gehen im Rahmen der Eigentumsübertragung auf den neuen Eigentümer über. Eine gesonderte Rückforderung gegenüber dem bisherigen Eigentümer ist in der Regel nicht erforderlich.
+
+Wir freuen uns auf die weitere Zusammenarbeit und stehen Ihnen für Fragen zu Miete, Betriebskosten, Instandhaltung und Ihrem Mietvertrag gerne zur Verfügung.
+
+Mit freundlichen Grüßen und herzlichem Willkommen im Namen des neuen Eigentümers`,
+  },
 ];
 
 export function renderBrief(template: SchriftverkehrTemplate, ctx: BriefKontext): string {

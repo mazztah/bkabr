@@ -253,6 +253,60 @@ export interface Mieter {
   updatedAt: string;
 }
 
+// -------- Dokumentarten (Batch-Klassifikation) --------
+
+export type DokumentArt =
+  | "rechnung"
+  | "betriebskostenabrechnung"
+  | "heizkostenabrechnung"
+  | "mietvertrag"
+  | "mietvertrag_nachtrag"
+  | "uebergabeprotokoll"
+  | "kontoauszug"
+  | "pm_vertrag"
+  | "eigentuemer_vollmacht"
+  | "grundbuchauszug"
+  | "kaufvertrag"
+  | "liegenschaftskarte"
+  | "flurstueckskarte"
+  | "objektbeschreibung"
+  | "gebaeude_mieterliste"
+  | "anschreiben"
+  | "sonstiges";
+
+export const DOKUMENT_ART_LABELS: Record<DokumentArt, string> = {
+  rechnung: "Eingangsrechnung",
+  betriebskostenabrechnung: "Betriebskostenabrechnung",
+  heizkostenabrechnung: "Heizkostenabrechnung",
+  mietvertrag: "Mietvertrag",
+  mietvertrag_nachtrag: "Mietvertrags-Nachtrag",
+  uebergabeprotokoll: "Übergabeprotokoll",
+  kontoauszug: "Kontoauszug",
+  pm_vertrag: "PM-/Hausverwaltervertrag",
+  eigentuemer_vollmacht: "Eigentümer-Vollmacht",
+  grundbuchauszug: "Grundbuchauszug",
+  kaufvertrag: "Kaufvertrag",
+  liegenschaftskarte: "Liegenschaftskarte",
+  flurstueckskarte: "Flurstückskarte",
+  objektbeschreibung: "Objektbeschreibung",
+  gebaeude_mieterliste: "Gebäude-/Mieterliste",
+  anschreiben: "Anschreiben / Schriftverkehr",
+  sonstiges: "Sonstiges Dokument",
+};
+
+/** Zusätzliche Unterlagen an PM-Vertrag, Eigentümer, Mietvertrag */
+export interface AnhangDokument {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  uploadedAt: string;
+  storedFileName?: string;
+  dokumentArt: DokumentArt;
+  extraktText?: string;
+  notizen?: string;
+}
+
 // -------- Mietverträge --------
 
 export type MietvertragStatus = "Entwurf" | "Aktiv" | "Beendet";
@@ -268,11 +322,14 @@ export interface Mietvertrag {
   hochgeladenAm: string;
   sollMiete?: number;
   nebenkostenVorauszahlung?: number;
+  heizkostenVorauszahlung?: number;
   kaution?: number;
   mietbeginn?: string;
   mietende?: string;
   status: MietvertragStatus;
   extraktText?: string;
+  /** Nachträge, Übergabeprotokolle – können Stammdaten aktualisieren */
+  anhaenge?: AnhangDokument[];
   createdAt: string;
   updatedAt: string;
 }
@@ -313,6 +370,8 @@ export interface Eigentuemer {
   storedFileName?: string;
   mimeType?: string;
   extraktText?: string;
+  /** Zusatzunterlagen: Grundbuchauszug, Kaufvertrag etc. */
+  anhaenge?: AnhangDokument[];
   notizen?: string;
   createdAt: string;
   updatedAt: string;
@@ -329,6 +388,41 @@ export interface EigentuemerExtraktion {
   dokumentTyp?: string; // z.B. "Vollmacht", "Grundbuchauszug", "Eigentümerbeschluss"
   objektAdresse?: string;
   liegenschaftName?: string;
+}
+
+/** Vorschlag aus Batch-Analyse: Stammdaten + Ablageort, wartet auf User-Bestätigung */
+export interface StammdatenVorschlag {
+  id: string;
+  dokumentArt: DokumentArt;
+  dateiName: string;
+  confidence: number; // 0..1
+  // vorgeschlagene Hierarchie
+  liegenschaft?: Partial<Liegenschaft> & { matchId?: string };
+  gebaeude?: Partial<Gebaeude> & { matchId?: string };
+  wohnung?: Partial<Wohnung> & { matchId?: string };
+  mieter?: Partial<Mieter> & { matchId?: string };
+  mietvertrag?: Partial<MietvertragExtraktion>;
+  pmVertrag?: Partial<PmVertragExtraktion>;
+  eigentuemer?: Partial<EigentuemerExtraktion>;
+  rechnung?: Partial<ExtractedData>;
+  kontoauszugTransaktionen?: KontoauszugTransaktion[];
+  // wo abgelegt werden soll
+  ablageZiel:
+    | "rechnung"
+    | "mietvertrag"
+    | "mietvertrag_nachtrag"
+    | "kontoauszug"
+    | "pm_vertrag"
+    | "pm_vertrag_anhang"
+    | "eigentuemer"
+    | "eigentuemer_anhang"
+    | "liegenschaft_anhang"
+    | "schriftverkehr"
+    | "sonstiges";
+  rawSummary?: string;
+  storedFileName?: string;
+  mimeType?: string;
+  size?: number;
 }
 
 // -------- Property-Management-Vertrag --------
@@ -353,6 +447,8 @@ export interface PmVertrag {
   kuendigungsfrist?: string;
   status: PmVertragStatus;
   extraktText?: string;
+  /** Zusatzunterlagen: Liegenschaftskarte, Flurstückskarte, Objektbeschreibung etc. */
+  anhaenge?: AnhangDokument[];
   createdAt: string;
   updatedAt: string;
 }
@@ -404,6 +500,9 @@ export interface SchriftverkehrDokument {
   status: SchriftverkehrStatus;
   /** Wie entstand der Brief: manuell im Panel oder per Agent */
   quelle: "manuell" | "agent";
+  /** Finale PDF-Version mit Corporate Design (nach „Fertigstellen“) */
+  storedPdfFileName?: string;
+  finalisiertAm?: string;
   createdAt: string;
   updatedAt: string;
 }
