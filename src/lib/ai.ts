@@ -401,54 +401,40 @@ export async function chatWithContext(params: {
     history,
     path = "/",
   } = params;
-  const overview = all.map((a) => ({
+
+  // Kompakte Übersicht (max. 30 Abrechnungen, ohne Pretty-Print → spart Tokens)
+  const overview = all.slice(0, 30).map((a) => ({
     id: a.id,
     name: a.name,
     adresse: a.adresse,
     zeitraum: a.zeitraum,
-    gesamtSumme: a.gesamtSumme,
+    summe: a.gesamtSumme,
     status: a.status,
   }));
 
-  // Bestand als Hierarchie Liegenschaft -> Gebäude -> Wohnung -> Mieter/Mietvertrag
-  // aufbauen, inkl. berechnetem Mietrückstand aus dem Mietkonto, damit der Bot
-  // reale Fragen zum Bestand beantworten kann statt aus Abrechnungs-Adressen zu raten.
+  // Portfolio kompakt: nur relevante Felder, keine leeren Arrays aufblasen
   const portfolio = liegenschaften.map((lg) => {
     const lgGebaeude = gebaeude.filter((g) => g.liegenschaftId === lg.id);
     return {
       id: lg.id,
-      nummer: lg.nummer,
       name: lg.name,
-      adresse: `${lg.strasse} ${lg.hausnummer}, ${lg.plz} ${lg.ort}`,
-      gebaeude: lgGebaeude.map((g) => {
+      adr: `${lg.strasse} ${lg.hausnummer}, ${lg.plz} ${lg.ort}`,
+      geb: lgGebaeude.map((g) => {
         const gWohnungen = wohnungen.filter((w) => w.gebaeudeId === g.id);
         return {
           id: g.id,
           name: g.name,
-          baujahr: g.baujahr,
-          wohnungen: gWohnungen.map((w) => {
+          eh: gWohnungen.map((w) => {
             const wMieter = mieter.filter((m) => m.wohnungId === w.id);
-            const wVertraege = mietvertraege.filter((mv) => mv.wohnungId === w.id);
             return {
               id: w.id,
-              bezeichnung: w.bezeichnung,
-              typ: w.typ,
-              flaeche: w.flaeche,
+              bez: w.bezeichnung,
               mieter: wMieter.map((m) => ({
                 id: m.id,
                 name: m.name,
-                mietbeginn: m.mietbeginn,
-                mietende: m.mietende,
-                kaltmiete: m.kaltmiete,
-                nebenkostenVorauszahlung: m.nebenkostenVorauszahlung,
-                mietrueckstand: mietRueckstand(m),
-              })),
-              mietvertraege: wVertraege.map((mv) => ({
-                id: mv.id,
-                status: mv.status,
-                sollMiete: mv.sollMiete,
-                mietbeginn: mv.mietbeginn,
-                mietende: mv.mietende,
+                km: m.kaltmiete,
+                nk: m.nebenkostenVorauszahlung,
+                rs: Math.round(mietRueckstand(m) * 100) / 100,
               })),
             };
           }),
@@ -457,61 +443,121 @@ export async function chatWithContext(params: {
     };
   });
 
-  // Zusätzlich eine flache Rückstandsliste über alle Mieter, sortiert nach Höhe,
-  // damit Fragen wie "wie hoch sind die Mietrückstände" direkt beantwortbar sind.
   const mietrueckstaende = mieter
     .map((m) => {
       const wohnung = wohnungen.find((w) => w.id === m.wohnungId);
       const geb = wohnung ? gebaeude.find((g) => g.id === wohnung.gebaeudeId) : undefined;
       const lg = geb ? liegenschaften.find((l) => l.id === geb.liegenschaftId) : undefined;
+      const rs = Math.round(mietRueckstand(m) * 100) / 100;
       return {
-        mieterId: m.id,
-        mieterName: m.name,
-        wohnung: wohnung?.bezeichnung,
-        liegenschaft: lg?.name,
-        rueckstand: mietRueckstand(m),
+        id: m.id,
+        name: m.name,
+        eh: wohnung?.bezeichnung,
+        lg: lg ? `${lg.strasse} ${lg.hausnummer}` : undefined,
+        rs,
       };
     })
-    .filter((r) => Math.round(r.rueckstand * 100) !== 0)
-    .sort((a, b) => b.rueckstand - a.rueckstand);
+    .filter((r) => Math.round(r.rs * 100) !== 0)
+    .sort((a, b) => b.rs - a.rs)
+    .slice(0, 40);
+
+  const currentKurz = current
+    ? {
+        id: current.id,
+        name: current.name,
+        adresse: current.adresse,
+        zeitraum: current.zeitraum,
+        status: current.status,
+        summe: current.gesamtSumme,
+        pos: (current.workspace?.positionen || []).slice(0, 25).map((p) => ({
+          n: p.name,
+          b: p.betrag,
+        })),
+        nk: current.workspace?.nebenkosten,
+        vz: current.workspace?.vorauszahlungen,
+      }
+    : null;
 
   const pageLabel = PAGE_LABELS[path] || path;
 
-  const system = `Du bist "BetriebsKostenBot", der KI-Assistent dieser Hausverwaltungs-App. Du bist app-weit über einen schwebenden Chat auf JEDER Seite erreichbar. Du siehst immer den gesamten Kontext:
-- Die Seite, auf der sich der Nutzer gerade befindet
-- Den kompletten Immobilienbestand als Hierarchie: Liegenschaft → Gebäude → Wohnung/Einheit → Mieter & Mietvertrag (Feld "portfolio")
-- Eine vorberechnete Liste offener Mietrückstände je Mieter (Feld "mietrueckstaende"; positiver Wert = Mieter schuldet Geld, negativer Wert = Guthaben)
-- Aktuell ausgewählte Abrechnung (Rohdaten + Workspace), falls vorhanden
-- Liste aller Betriebskosten-Abrechnungen (Feld "abrechnungen")
+  const systemBase = `Du bist "BetriebsKostenBot", KI-Assistent der Hausverwaltungs-App (app-weit im Chat).
+Seite: ${pageLabel} (${path})
 
-WICHTIG: Für Fragen zu Liegenschaften, Gebäuden, Wohnungen, Mietern, Mietverträgen oder Mietrückständen nutzt du AUSSCHLIESSLICH die Daten aus "portfolio" bzw. "mietrueckstaende" – NICHT die Adressen aus "abrechnungen" (das sind reine Belege/Rechnungen und keine verlässliche Liegenschaftsliste). Wenn "portfolio" leer ist, sag das offen statt zu raten oder Abrechnungsadressen als Liegenschaften auszugeben.
+Regeln:
+- Für Liegenschaften/Mieter/Rückstände NUR "portfolio" und "mietrueckstaende" nutzen – NICHT "abrechnungen" (Belege).
+- Wenn portfolio leer: das sagen, nicht raten.
+- Knapp, Deutsch, Listen ok.
+- Handlungsaufträge (Mahnungen erstellen) erledigt der Server-Agent; du informierst nur.`;
 
-Du machst Optimierungsvorschläge (z.B. fehlende Positionen in Abrechnungen), erkennst fehlende Punkte (z.B. USt bei Gewerbeobjekten), schlägst Formulierungen für Anschreiben vor, gibst Übersichten zu Mietern/Mietverträgen/Mietrückständen einer Liegenschaft und beantwortest Fragen zu Betriebskosten- und Mietrecht sowie zur Nutzung der App. Antworte präzise, hilfreich, in kompakten Listen wo sinnvoll, und auf Deutsch.
+  function buildSystem(compact: boolean): string {
+    const space = compact ? 0 : undefined;
+    const body = compact
+      ? `portfolio:${JSON.stringify(portfolio)}
+rs:${JSON.stringify(mietrueckstaende)}
+abr:${JSON.stringify(currentKurz)}
+liste:${JSON.stringify(overview)}`
+      : `portfolio:
+${JSON.stringify(portfolio, null, space)}
+mietrueckstaende:
+${JSON.stringify(mietrueckstaende, null, space)}
+aktuelle_abrechnung:
+${JSON.stringify(currentKurz, null, space)}
+abrechnungen:
+${JSON.stringify(overview, null, space)}`;
+    return `${systemBase}\n\n${body}`;
+  }
 
-Hinweis: Handlungsaufträge wie „Erstelle alle Mahnungen für Straße X“ werden serverseitig vom Agenten mit Tools ausgeführt (Briefe landen unter Schriftverkehr). Bei reinen Fragen bleibst du informativ und legst keine Dokumente an.
+  const hist = history.slice(-6).map(
+    (h) =>
+      ({
+        role: h.role,
+        content: h.content.length > 1500 ? h.content.slice(0, 1500) + "…" : h.content,
+      }) as Groq.Chat.Completions.ChatCompletionMessageParam
+  );
 
-Nutzer befindet sich aktuell auf der Seite: ${pageLabel} (${path})
+  // 1. Versuch: normal kompakt (ohne Pretty-Print)
+  try {
+    const completion = await createChatCompletion({
+      max_completion_tokens: 1200,
+      messages: [
+        { role: "system", content: buildSystem(true) },
+        ...hist,
+        { role: "user", content: message },
+      ],
+    });
+    return completion.choices[0]?.message?.content || "";
+  } catch (err: any) {
+    const msg = String(err?.message || err || "").toLowerCase();
+    const tooLarge =
+      msg.includes("request too large") ||
+      msg.includes("please reduce your message size") ||
+      (msg.includes("tpm") && msg.includes("requested"));
+    if (!tooLarge) throw err;
 
-portfolio (Liegenschaften → Gebäude → Wohnungen → Mieter/Mietverträge):
-${JSON.stringify(portfolio, null, 2)}
+    // 2. Versuch: nur Rückstände + kurze Portfolio-Namen, keine Abrechnungsliste
+    const miniPortfolio = portfolio.map((lg) => ({
+      id: lg.id,
+      name: lg.name,
+      adr: lg.adr,
+      mieter: lg.geb.flatMap((g) =>
+        g.eh.flatMap((e) => e.mieter.map((m) => ({ id: m.id, name: m.name, rs: m.rs, eh: e.bez })))
+      ),
+    }));
+    const miniSystem = `${systemBase}
 
-mietrueckstaende (nur Mieter mit offenem Saldo ungleich 0):
-${JSON.stringify(mietrueckstaende, null, 2)}
+bestand:${JSON.stringify(miniPortfolio)}
+rs:${JSON.stringify(mietrueckstaende.slice(0, 20))}
+abr:${JSON.stringify(currentKurz ? { id: currentKurz.id, name: currentKurz.name, status: currentKurz.status } : null)}`;
 
-Aktuelle Abrechnung:
-${current ? JSON.stringify(current, null, 2) : "Keine ausgewählt"}
-
-abrechnungen (Übersicht aller Betriebskosten-Abrechnungen/Belege, NICHT als Liegenschaftsliste verwenden):
-${JSON.stringify(overview, null, 2)}`;
-
-  const completion = await createChatCompletion({
-    max_completion_tokens: 1500,
-    messages: [
-      { role: "system", content: system },
-      ...history.map((h) => ({ role: h.role, content: h.content }) as Groq.Chat.Completions.ChatCompletionMessageParam),
-      { role: "user", content: message },
-    ],
-  });
-
-  return completion.choices[0]?.message?.content || "";
+    const completion = await createChatCompletion({
+      max_completion_tokens: 1000,
+      messages: [
+        { role: "system", content: miniSystem },
+        ...hist.slice(-3),
+        { role: "user", content: message.slice(0, 2000) },
+      ],
+    });
+    return completion.choices[0]?.message?.content || "";
+  }
 }
+

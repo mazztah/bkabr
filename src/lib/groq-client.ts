@@ -9,9 +9,10 @@ import Groq from "groq-sdk";
  *   GROQ_TEXT_MODELS=model-a,model-b,model-c   (Komma-getrennt, ersetzt die Default-Kette)
  */
 const DEFAULT_TEXT_MODELS = [
-  process.env.GROQ_TEXT_MODEL || "llama-3.3-70b-versatile",
-  "openai/gpt-oss-120b",
+  // gpt-oss-120b zuerst: höheres TPM-Limit, Llama oft am Tageslimit (TPD)
+  process.env.GROQ_TEXT_MODEL || "openai/gpt-oss-120b",
   "openai/gpt-oss-20b",
+  "llama-3.3-70b-versatile",
 ];
 
 export function getTextModels(): string[] {
@@ -46,9 +47,12 @@ function isRetryableModelError(err: any): boolean {
   const msg = String(err?.message || err || "").toLowerCase();
   const code = String(err?.error?.code || err?.code || "").toLowerCase();
   if (status === 429) return true;
+  if (status === 413) return true;
   if (code.includes("rate_limit")) return true;
   if (msg.includes("rate limit") || msg.includes("rate_limit")) return true;
   if (msg.includes("tokens per day") || msg.includes("tpd")) return true;
+  if (msg.includes("tokens per minute") || msg.includes("tpm")) return true;
+  if (msg.includes("request too large") || msg.includes("reduce your message size")) return true;
   // Modell nicht verfügbar / deaktiviert
   if (status === 404 || status === 400) {
     if (msg.includes("model") || msg.includes("deprecat") || msg.includes("not found")) {
