@@ -40,6 +40,7 @@ const GROUPS: NavGroup[] = [
     title: "Kaufmännisch",
     items: [
       { href: "/", label: "Abrechnungen", icon: "🧾" },
+      { href: "/kontoauszuege", label: "Kontoauszüge", icon: "💳" },
       { href: "/vorauszahlungen", label: "Vorauszahlungen", icon: "💶" },
       { href: "/mietvertraege", label: "Mietverträge", icon: "📄" },
       { href: "/rechnungen", label: "Rechnungen", icon: "📥" },

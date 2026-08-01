@@ -289,6 +289,13 @@ export interface MietvertragExtraktion {
   wohnungsbezeichnung?: string;
 }
 
+export interface KontoauszugTransaktion {
+  datum?: string;
+  betrag?: number; // positiv = Zahlungseingang
+  verwendungszweck?: string;
+  absender?: string;
+}
+
 // -------- Eigentümer --------
 
 export interface Eigentuemer {

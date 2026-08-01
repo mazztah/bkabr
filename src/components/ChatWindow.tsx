@@ -14,6 +14,7 @@ const PAGE_LABELS: Record<string, string> = {
   "/investoren": "Investoren",
   "/pm-vertrag": "PM-Vertrag",
   "/dienstleistungsvertraege": "Dienstleistungsverträge",
+  "/kontoauszuege": "Kontoauszüge",
   "/vorauszahlungen": "Vorauszahlungen",
   "/budgetierung": "Budgetierung",
   "/finanzierung": "Finanzierung",

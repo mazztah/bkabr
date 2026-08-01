@@ -14,7 +14,7 @@ import {
   SollIstEintrag,
   Wohnung,
 } from "@/lib/types";
-import { mietRueckstand } from "@/lib/mietkonto";
+import { mietRueckstand, fehlendeSollstellungen } from "@/lib/mietkonto";
 import { HierarchyData } from "@/lib/use-hierarchy-data";
 import { NodeSelection } from "./LiegenschaftenTree";
 import Modal from "./Modal";
@@ -1227,6 +1227,14 @@ function MietkontoTab({ mieter, onChanged }: { mieter: Mieter; onChanged: () => 
   const [text, setText] = useState("");
   const entries = mieter.mietkonto || [];
   const rueckstand = mietRueckstand(mieter);
+  const fehlend = fehlendeSollstellungen(mieter);
+
+  const nachbuchen = async () => {
+    if (fehlend.length === 0) return;
+    const sorted = [...entries, ...fehlend].sort((a, b) => a.datum.localeCompare(b.datum));
+    await patchEntity(`/api/mieter/${mieter.id}`, { mietkonto: sorted });
+    onChanged();
+  };
 
   const addEntry = async () => {
     const buchung: MietkontoBuchung = {
@@ -1253,19 +1261,30 @@ function MietkontoTab({ mieter, onChanged }: { mieter: Mieter; onChanged: () => 
 
   return (
     <div>
-      <div
-        className={cn(
-          "mb-4 inline-flex max-w-xl items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium",
-          rueckstand > 0
-            ? "border-[var(--destructive)]/30 bg-[var(--danger-bg)] text-[var(--destructive)]"
-            : "border-[var(--success)]/30 bg-[var(--success-bg)] text-[var(--success)]"
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <div
+          className={cn(
+            "inline-flex max-w-xl items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium",
+            rueckstand > 0
+              ? "border-[var(--destructive)]/30 bg-[var(--danger-bg)] text-[var(--destructive)]"
+              : "border-[var(--success)]/30 bg-[var(--success-bg)] text-[var(--success)]"
+          )}
+        >
+          {rueckstand > 0
+            ? `⚠️ Mietrückstand: ${formatCurrency(rueckstand)}`
+            : rueckstand < 0
+            ? `Guthaben: ${formatCurrency(-rueckstand)}`
+            : "✅ Mietkonto ausgeglichen"}
+        </div>
+        {fehlend.length > 0 && (
+          <button
+            onClick={nachbuchen}
+            className="rounded-lg border border-primary/40 bg-secondary px-3 py-2 text-sm font-medium text-primary hover:bg-secondary/80"
+            title={`Bucht ${fehlend.length} fehlende Monats-Sollstellung(en) nach`}
+          >
+            📅 {fehlend.length} fehlende Sollstellung{fehlend.length > 1 ? "en" : ""} nachbuchen
+          </button>
         )}
-      >
-        {rueckstand > 0
-          ? `⚠️ Mietrückstand: ${formatCurrency(rueckstand)}`
-          : rueckstand < 0
-          ? `Guthaben: ${formatCurrency(-rueckstand)}`
-          : "✅ Mietkonto ausgeglichen"}
       </div>
 
       <table className="mb-4 w-full max-w-2xl text-sm">

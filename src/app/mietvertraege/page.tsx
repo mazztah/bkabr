@@ -2,7 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { formatCurrency, formatDate } from "@/lib/utils";
-import { Mieter, MietvertragExtraktion, Mietvertrag, Wohnung } from "@/lib/types";
+import {
+  Mieter,
+  MietvertragExtraktion,
+  Mietvertrag,
+  Wohnung,
+  Gebaeude,
+  Liegenschaft,
+  EinheitTyp,
+} from "@/lib/types";
 import Modal from "@/components/Modal";
 
 interface AnalyseErgebnis {
@@ -17,12 +25,19 @@ export default function MietvertraegePage() {
   const [mietvertraege, setMietvertraege] = useState<Mietvertrag[]>([]);
   const [mieter, setMieter] = useState<Mieter[]>([]);
   const [wohnungen, setWohnungen] = useState<Wohnung[]>([]);
+  const [gebaeude, setGebaeude] = useState<Gebaeude[]>([]);
+  const [liegenschaften, setLiegenschaften] = useState<Liegenschaft[]>([]);
   const [uploading, setUploading] = useState(false);
   const [ergebnis, setErgebnis] = useState<AnalyseErgebnis | null>(null);
   const [gewaehlteWohnung, setGewaehlteWohnung] = useState("");
   const [gewaehlterMieter, setGewaehlterMieter] = useState("");
   const [mieterModus, setMieterModus] = useState<"vorhanden" | "neu">("vorhanden");
   const [neuerMieterName, setNeuerMieterName] = useState("");
+  const [wohnungModus, setWohnungModus] = useState<"vorhanden" | "neu">("vorhanden");
+  const [neueWohnungGebaeudeId, setNeueWohnungGebaeudeId] = useState("");
+  const [neueWohnungBezeichnung, setNeueWohnungBezeichnung] = useState("");
+  const [neueWohnungTyp, setNeueWohnungTyp] = useState<EinheitTyp>("Wohnung");
+  const [neueWohnungFlaeche, setNeueWohnungFlaeche] = useState("");
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -31,10 +46,14 @@ export default function MietvertraegePage() {
       fetch("/api/mietvertraege").then((r) => r.json()),
       fetch("/api/mieter").then((r) => r.json()),
       fetch("/api/wohnungen").then((r) => r.json()),
-    ]).then(([mv, m, w]) => {
+      fetch("/api/gebaeude").then((r) => r.json()),
+      fetch("/api/liegenschaften").then((r) => r.json()),
+    ]).then(([mv, m, w, g, l]) => {
       setMietvertraege(mv.mietvertraege || []);
       setMieter(m.mieter || []);
       setWohnungen(w.wohnungen || []);
+      setGebaeude(g.gebaeude || []);
+      setLiegenschaften(l.liegenschaften || []);
     });
   };
 
@@ -56,6 +75,10 @@ export default function MietvertraegePage() {
         setGewaehlterMieter(json.vorschlag.mieterId || "");
         setNeuerMieterName(json.extraktion.mieterName || "");
         setMieterModus(json.vorschlag.mieterId ? "vorhanden" : "neu");
+        setWohnungModus(json.vorschlag.wohnungId ? "vorhanden" : "neu");
+        setNeueWohnungBezeichnung(json.extraktion.wohnungsbezeichnung || "");
+        setNeueWohnungGebaeudeId("");
+        setNeueWohnungFlaeche("");
       }
     } catch {
       setError("Analyse fehlgeschlagen");
@@ -65,8 +88,27 @@ export default function MietvertraegePage() {
   };
 
   const bestaetigen = async () => {
-    if (!ergebnis || !gewaehlteWohnung) return;
+    if (!ergebnis) return;
+    if (wohnungModus === "vorhanden" && !gewaehlteWohnung) return;
+    if (wohnungModus === "neu" && (!neueWohnungGebaeudeId || !neueWohnungBezeichnung.trim())) return;
     const e = ergebnis.extraktion;
+
+    let wohnungId = gewaehlteWohnung;
+    if (wohnungModus === "neu") {
+      const res = await fetch("/api/wohnungen", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          gebaeudeId: neueWohnungGebaeudeId,
+          bezeichnung: neueWohnungBezeichnung,
+          typ: neueWohnungTyp,
+          flaeche: neueWohnungFlaeche ? Number(neueWohnungFlaeche) : undefined,
+        }),
+      });
+      const json = await res.json();
+      wohnungId = json.wohnung?.id;
+    }
+    if (!wohnungId) return;
 
     let mieterId = gewaehlterMieter || undefined;
     if (mieterModus === "neu") {
@@ -74,7 +116,7 @@ export default function MietvertraegePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          wohnungId: gewaehlteWohnung,
+          wohnungId,
           name: neuerMieterName || e.mieterName || "Neuer Mieter",
           mietbeginn: e.mietbeginn,
           mietende: e.mietende,
@@ -90,7 +132,7 @@ export default function MietvertraegePage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        wohnungId: gewaehlteWohnung,
+        wohnungId,
         mieterId,
         dateiName: ergebnis.dateiName,
         storedFileName: ergebnis.storedFileName,
@@ -204,21 +246,103 @@ export default function MietvertraegePage() {
             {ergebnis.extraktion.mietbeginn && <span>Beginn: {ergebnis.extraktion.mietbeginn}</span>}
           </div>
 
-          <label className="mb-2 block">
+          <div className="mb-3">
             <span className="mb-1 block text-xs font-medium text-muted-foreground">Wohnung</span>
-            <select
-              value={gewaehlteWohnung}
-              onChange={(e) => setGewaehlteWohnung(e.target.value)}
-              className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
-            >
-              <option value="">— bitte wählen —</option>
-              {wohnungen.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.bezeichnung}
-                </option>
-              ))}
-            </select>
-          </label>
+            <div className="flex gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setWohnungModus("vorhanden")}
+                className={`rounded-md border px-2.5 py-1.5 ${
+                  wohnungModus === "vorhanden"
+                    ? "border-primary bg-secondary font-medium"
+                    : "border-border hover:bg-muted"
+                }`}
+              >
+                Bestehende Wohnung wählen
+              </button>
+              <button
+                type="button"
+                onClick={() => setWohnungModus("neu")}
+                className={`rounded-md border px-2.5 py-1.5 ${
+                  wohnungModus === "neu"
+                    ? "border-primary bg-secondary font-medium"
+                    : "border-border hover:bg-muted"
+                }`}
+              >
+                ✨ Neue Wohnung anlegen
+              </button>
+            </div>
+          </div>
+
+          {wohnungModus === "vorhanden" ? (
+            <label className="mb-2 block">
+              <select
+                value={gewaehlteWohnung}
+                onChange={(e) => setGewaehlteWohnung(e.target.value)}
+                className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+              >
+                <option value="">— bitte wählen —</option>
+                {wohnungen.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.bezeichnung}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <div className="mb-2 space-y-2">
+              {gebaeude.length === 0 ? (
+                <p className="text-xs text-[var(--destructive)]">
+                  Es ist noch kein Gebäude angelegt. Lege zuerst unter „Gebäude“ ein Gebäude an,
+                  bevor du hier eine Wohnung erstellen kannst.
+                </p>
+              ) : (
+                <>
+                  <select
+                    value={neueWohnungGebaeudeId}
+                    onChange={(e) => setNeueWohnungGebaeudeId(e.target.value)}
+                    className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+                  >
+                    <option value="">— Gebäude wählen —</option>
+                    {gebaeude.map((g) => {
+                      const lg = liegenschaften.find((l) => l.id === g.liegenschaftId);
+                      return (
+                        <option key={g.id} value={g.id}>
+                          {lg ? `${lg.name} – ` : ""}
+                          {g.name}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <div className="flex gap-2">
+                    <input
+                      value={neueWohnungBezeichnung}
+                      onChange={(e) => setNeueWohnungBezeichnung(e.target.value)}
+                      placeholder="Bezeichnung, z.B. 1. OG links"
+                      className="flex-1 rounded border border-border bg-background px-2 py-1.5 text-sm"
+                    />
+                    <select
+                      value={neueWohnungTyp}
+                      onChange={(e) => setNeueWohnungTyp(e.target.value as EinheitTyp)}
+                      className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+                    >
+                      <option value="Wohnung">Wohnung</option>
+                      <option value="Gewerbe">Gewerbe</option>
+                      <option value="Stellplatz">Stellplatz</option>
+                      <option value="Sonstige">Sonstige</option>
+                    </select>
+                    <input
+                      type="number"
+                      value={neueWohnungFlaeche}
+                      onChange={(e) => setNeueWohnungFlaeche(e.target.value)}
+                      placeholder="m²"
+                      className="w-20 rounded border border-border bg-background px-2 py-1.5 text-sm"
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           <div className="mb-3">
             <span className="mb-1 block text-xs font-medium text-muted-foreground">Mieter</span>
@@ -299,7 +423,11 @@ export default function MietvertraegePage() {
             </button>
             <button
               onClick={bestaetigen}
-              disabled={!gewaehlteWohnung || (mieterModus === "neu" && !neuerMieterName.trim())}
+              disabled={
+                (wohnungModus === "vorhanden" && !gewaehlteWohnung) ||
+                (wohnungModus === "neu" && (!neueWohnungGebaeudeId || !neueWohnungBezeichnung.trim())) ||
+                (mieterModus === "neu" && !neuerMieterName.trim())
+              }
               className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
             >
               Bestätigen &amp; speichern

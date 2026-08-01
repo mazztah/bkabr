@@ -137,23 +137,29 @@ export async function POST(req: NextRequest) {
       });
 
       if (bestehende) {
-        const neueBetrag = extracted.betrag || extracted.gesamtSumme || 0;
+        const neuePositionen =
+          extracted.positionen && extracted.positionen.length > 0
+            ? extracted.positionen.map((p) => ({ id: uid(), ...p }))
+            : extracted.betrag
+            ? [
+                {
+                  id: uid(),
+                  name: extracted.leistungsart || file.name,
+                  betrag: extracted.betrag,
+                  beschreibung: extracted.firma,
+                },
+              ]
+            : [];
+        const zuwachs = neuePositionen.reduce((sum, p) => sum + (p.betrag || 0), 0);
+        const positionenGesamt = [...bestehende.workspace.positionen, ...neuePositionen];
+
         const updated = await updateAbrechnung(bestehende.id, {
           dokumente: [...bestehende.dokumente, dokument],
-          gesamtSumme: bestehende.gesamtSumme + (extracted.betrag ? neueBetrag : 0),
+          gesamtSumme: bestehende.gesamtSumme + zuwachs,
           workspace: {
             ...bestehende.workspace,
-            positionen: extracted.betrag
-              ? [
-                  ...bestehende.workspace.positionen,
-                  {
-                    id: uid(),
-                    name: extracted.leistungsart || file.name,
-                    betrag: extracted.betrag,
-                    beschreibung: extracted.firma,
-                  },
-                ]
-              : bestehende.workspace.positionen,
+            positionen: positionenGesamt,
+            nebenkosten: positionenGesamt.reduce((sum, p) => sum + (p.betrag || 0), 0),
           },
         });
         return NextResponse.json({ abrechnung: updated, pruefung, liegenschaftVorschlag, ergaenzt: true });

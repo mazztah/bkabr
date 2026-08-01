@@ -1,5 +1,5 @@
 import Groq from "groq-sdk";
-import { Abrechnung, ExtractedData, Liegenschaft, Gebaeude, Wohnung, Mieter, Mietvertrag } from "./types";
+import { Abrechnung, ExtractedData, Liegenschaft, Gebaeude, Wohnung, Mieter, Mietvertrag, KontoauszugTransaktion } from "./types";
 import { mietRueckstand } from "./mietkonto";
 
 // Textmodell für Zusammenfassungen, Abrechnungen, Anschreiben, Chat & Recht-Check
@@ -155,6 +155,46 @@ export async function extractMietvertrag(params: {
 
   const result = completion.choices[0]?.message?.content || "";
   return extractJson(result);
+}
+
+const SYSTEM_KONTOAUSZUG = `Du bist ein Experte für deutsche Bankauszüge/Kontoauszüge (PDF-Text oder CSV-Export). Analysiere den übergebenen Text und extrahiere AUSSCHLIESSLICH die Zahlungseingänge (Gutschriften, positive Beträge) – ignoriere Abbuchungen/Lastschriften/Belastungen.
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt in exakt diesem Format:
+{
+  "transaktionen": [
+    {
+      "datum": "YYYY-MM-DD",
+      "betrag": <Betrag als positive Zahl>,
+      "verwendungszweck": "Verwendungszweck/Buchungstext wie im Auszug",
+      "absender": "Name des Auftraggebers/Einzahlers, falls erkennbar, sonst leerer String"
+    }
+  ]
+}
+Erfinde keine Transaktionen, die nicht im Text stehen. Falls kein Datum erkennbar: leerer String.`;
+
+export async function extractKontoauszug(params: {
+  text: string;
+  fileName: string;
+}): Promise<KontoauszugTransaktion[]> {
+  const { text, fileName } = params;
+  const groq = getClient();
+
+  const completion = await groq.chat.completions.create({
+    model: TEXT_MODEL,
+    max_completion_tokens: 3000,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM_KONTOAUSZUG },
+      {
+        role: "user",
+        content: `Datei: ${fileName}.\n\nInhalt:\n${text.slice(0, 12000)}\n\nExtrahiere die JSON-Daten.`,
+      },
+    ],
+  });
+
+  const result = completion.choices[0]?.message?.content || "";
+  const parsed = extractJson(result) as { transaktionen?: KontoauszugTransaktion[] };
+  return parsed.transaktionen || [];
 }
 
 const SYSTEM_EIGENTUEMER = `Du bist ein Experte für deutsche Hausverwaltungs- und WEG-Dokumente. Analysiere den übergebenen Text eines eigentümerbezogenen Dokuments (z.B. Vollmacht, Eigentümerbeschluss, Grundbuchauszug, Verwaltervollmacht, Kontaktdaten-Schreiben) und extrahiere die relevanten Stammdaten.
@@ -362,6 +402,7 @@ const PAGE_LABELS: Record<string, string> = {
   "/investoren": "Investoren",
   "/pm-vertrag": "PM-Vertrag",
   "/dienstleistungsvertraege": "Dienstleistungsverträge",
+  "/kontoauszuege": "Kontoauszüge",
   "/vorauszahlungen": "Vorauszahlungen",
   "/budgetierung": "Budgetierung",
   "/finanzierung": "Finanzierung",

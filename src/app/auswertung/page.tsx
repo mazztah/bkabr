@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { formatCurrency } from "@/lib/utils";
 import { Abrechnung, Gebaeude, Liegenschaft, Mieter, Wohnung } from "@/lib/types";
 import { zeitraumEnthaeltJahr } from "@/lib/matching";
-import { mietRueckstand } from "@/lib/mietkonto";
+import { mietRueckstand, fehlendeSollstellungen } from "@/lib/mietkonto";
 
 interface Data {
   abrechnungen: Abrechnung[];
@@ -35,7 +35,8 @@ export default function AuswertungPage() {
   const [jahr, setJahr] = useState("");
   const [status, setStatus] = useState("");
 
-  useEffect(() => {
+  const refresh = () => {
+    setLoading(true);
     Promise.all([
       fetch("/api/abrechnungen").then((r) => r.json()),
       fetch("/api/liegenschaften").then((r) => r.json()),
@@ -52,7 +53,9 @@ export default function AuswertungPage() {
       });
       setLoading(false);
     });
-  }, []);
+  };
+
+  useEffect(refresh, []);
 
   const gebaeudeOptions = data.gebaeude.filter(
     (g) => !liegenschaftId || g.liegenschaftId === liegenschaftId
@@ -131,6 +134,34 @@ export default function AuswertungPage() {
   const rueckstandGesamt = mietRueckstaende
     .filter((r) => r.rueckstand > 0)
     .reduce((s, r) => s + r.rueckstand, 0);
+
+  const offeneSollstellungen = useMemo(
+    () =>
+      relevanteMieter
+        .map((m) => ({ mieter: m, fehlend: fehlendeSollstellungen(m) }))
+        .filter((r) => r.fehlend.length > 0),
+    [relevanteMieter]
+  );
+  const [buche, setBuche] = useState(false);
+
+  const alleSollstellungenNachbuchen = async () => {
+    setBuche(true);
+    try {
+      for (const { mieter, fehlend } of offeneSollstellungen) {
+        const sorted = [...(mieter.mietkonto || []), ...fehlend].sort((a, b) =>
+          a.datum.localeCompare(b.datum)
+        );
+        await fetch(`/api/mieter/${mieter.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mietkonto: sorted }),
+        });
+      }
+      refresh();
+    } finally {
+      setBuche(false);
+    }
+  };
 
   return (
     <div className="h-full overflow-y-auto p-6">
@@ -243,7 +274,20 @@ export default function AuswertungPage() {
             />
           </div>
 
-          <h2 className="mb-2 text-sm font-semibold">🏚️ Mietrückstände</h2>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold">🏚️ Mietrückstände</h2>
+            {offeneSollstellungen.length > 0 && (
+              <button
+                onClick={alleSollstellungenNachbuchen}
+                disabled={buche}
+                className="rounded-md border border-primary/40 bg-secondary px-3 py-1.5 text-xs font-medium text-primary hover:bg-secondary/80 disabled:opacity-50"
+              >
+                {buche
+                  ? "Buche…"
+                  : `📅 Sollstellungen für ${offeneSollstellungen.length} Mieter nachbuchen`}
+              </button>
+            )}
+          </div>
           {mietRueckstaende.length === 0 ? (
             <p className="mb-6 text-sm text-muted-foreground">
               Keine offenen Salden im Mietkonto der gefilterten Mieter.
