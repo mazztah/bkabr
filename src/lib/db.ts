@@ -8,6 +8,7 @@ import {
   Mieter,
   Mietvertrag,
   PmVertrag,
+  SchriftverkehrDokument,
   Wohnung,
 } from "./types";
 
@@ -24,6 +25,7 @@ interface DbShape {
   mietvertraege: Mietvertrag[];
   eigentuemer: Eigentuemer[];
   pmVertraege: PmVertrag[];
+  schriftverkehr: SchriftverkehrDokument[];
   counters: Record<string, number>;
 }
 
@@ -44,6 +46,7 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     mietvertraege: db.mietvertraege || [],
     eigentuemer: db.eigentuemer || [],
     pmVertraege: db.pmVertraege || [],
+    schriftverkehr: db.schriftverkehr || [],
     counters: db.counters || {},
   };
 }
@@ -209,3 +212,4 @@ export const mieterDb = makeCrud<Mieter>("mieter", "MI");
 export const mietvertraegeDb = makeCrud<Mietvertrag>("mietvertraege", "MV");
 export const eigentuemerDb = makeCrud<Eigentuemer>("eigentuemer", "EG");
 export const pmVertraegeDb = makeCrud<PmVertrag>("pmVertraege", "PM");
+export const schriftverkehrDb = makeCrud<SchriftverkehrDokument>("schriftverkehr", "SV");

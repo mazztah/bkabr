@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { chatWithContext } from "@/lib/ai";
+import { isAgentIntent, runAgent } from "@/lib/agent";
 import {
   getAbrechnung,
   listAbrechnungen,
@@ -12,9 +13,40 @@ import {
 
 export async function POST(req: NextRequest) {
   try {
-    const { message, id, path, history } = await req.json();
+    const { message, id, path, history, forceAgent } = await req.json();
     if (!message || typeof message !== "string") {
       return NextResponse.json({ error: "Nachricht fehlt" }, { status: 400 });
+    }
+
+    const safeHistory = Array.isArray(history)
+      ? history
+          .filter(
+            (m: any) =>
+              m &&
+              (m.role === "user" || m.role === "assistant") &&
+              typeof m.content === "string"
+          )
+          .slice(-10)
+      : [];
+
+    // Agent-Workflow: Briefe/Mahnungen erstellen, Mahnlisten abarbeiten usw.
+    if (forceAgent || isAgentIntent(message)) {
+      try {
+        const result = await runAgent({
+          message,
+          history: safeHistory,
+          path: typeof path === "string" ? path : "/",
+        });
+        return NextResponse.json({
+          reply: result.reply,
+          agent: true,
+          createdBriefIds: result.createdBriefIds,
+          steps: result.steps.map((s) => s.tool),
+        });
+      } catch (agentErr: any) {
+        console.error("Agent fallback to chat:", agentErr);
+        // Fallback auf normalen Chat, wenn Agent scheitert
+      }
     }
 
     const [all, current, liegenschaften, gebaeude, wohnungen, mieter, mietvertraege] =
@@ -27,12 +59,6 @@ export async function POST(req: NextRequest) {
         mieterDb.list(),
         mietvertraegeDb.list(),
       ]);
-
-    const safeHistory = Array.isArray(history)
-      ? history
-          .filter((m: any) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-          .slice(-10)
-      : [];
 
     const reply = await chatWithContext({
       message,
@@ -47,7 +73,7 @@ export async function POST(req: NextRequest) {
       path: typeof path === "string" ? path : "/",
     });
 
-    return NextResponse.json({ reply });
+    return NextResponse.json({ reply, agent: false });
   } catch (e: any) {
     console.error("Chat error:", e);
     return NextResponse.json({ error: e.message || "Chat fehlgeschlagen" }, { status: 500 });

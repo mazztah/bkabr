@@ -381,3 +381,29 @@ export interface LiegenschaftStammdatenVorschlag {
   plz?: string;
   ort?: string;
 }
+
+// -------- Schriftverkehr (gespeicherte Anschreiben / Mahnungen) --------
+
+export type SchriftverkehrStatus = "Entwurf" | "Versandbereit" | "Versendet" | "Archiviert";
+
+export interface SchriftverkehrDokument {
+  id: string;
+  nummer?: string;
+  /** Template-ID aus SCHRIFTVERKEHR_TEMPLATES, z.B. "mahnung" */
+  templateId: string;
+  templateLabel: string;
+  mieterId: string;
+  mieterName: string;
+  wohnungId?: string;
+  gebaeudeId?: string;
+  liegenschaftId?: string;
+  liegenschaftName?: string;
+  betreff: string;
+  text: string;
+  werte: Record<string, string>;
+  status: SchriftverkehrStatus;
+  /** Wie entstand der Brief: manuell im Panel oder per Agent */
+  quelle: "manuell" | "agent";
+  createdAt: string;
+  updatedAt: string;
+}

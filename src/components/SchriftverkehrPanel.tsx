@@ -1,10 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Mieter, Wohnung, Gebaeude, Liegenschaft } from "@/lib/types";
+import { Mieter, Wohnung, Gebaeude, Liegenschaft, SchriftverkehrDokument } from "@/lib/types";
 import {
   SCHRIFTVERKEHR_TEMPLATES,
-  SchriftverkehrTemplate,
   renderBrief,
   initialWerte,
   heuteDe,
@@ -23,15 +22,35 @@ export default function SchriftverkehrPanel({ mieter, wohnung, gebaeude, liegens
   const [werte, setWerte] = useState<Record<string, string>>({});
   const [text, setText] = useState("");
   const [kopiert, setKopiert] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  const [archiv, setArchiv] = useState<SchriftverkehrDokument[]>([]);
 
   const template = SCHRIFTVERKEHR_TEMPLATES.find((t) => t.id === templateId) || null;
   const basisKontext = { mieter, wohnung, gebaeude, liegenschaft, heute: heuteDe() };
+
+  const loadArchiv = async () => {
+    try {
+      const res = await fetch(`/api/schriftverkehr?mieterId=${encodeURIComponent(mieter.id)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setArchiv(data.dokumente || []);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  useEffect(() => {
+    loadArchiv();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mieter.id]);
 
   useEffect(() => {
     if (!template) return;
     const initial = initialWerte(template, basisKontext);
     setWerte(initial);
     setText(renderBrief(template, { ...basisKontext, werte: initial }));
+    setSavedMsg(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templateId]);
 
@@ -57,11 +76,43 @@ export default function SchriftverkehrPanel({ mieter, wohnung, gebaeude, liegens
     URL.revokeObjectURL(url);
   };
 
+  const speichern = async (status: "Entwurf" | "Versandbereit") => {
+    if (!template) return;
+    setSaving(true);
+    setSavedMsg(null);
+    try {
+      const betreff = template.betreff({ ...basisKontext, werte });
+      const res = await fetch("/api/schriftverkehr", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mieterId: mieter.id,
+          templateId: template.id,
+          text,
+          betreff,
+          werte,
+          status,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Speichern fehlgeschlagen");
+      setSavedMsg(
+        `Gespeichert als ${status}${data.dokument?.nummer ? ` (${data.dokument.nummer})` : ""}`
+      );
+      await loadArchiv();
+    } catch (e: any) {
+      setSavedMsg(e.message || "Fehler beim Speichern");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div>
       <p className="mb-3 text-sm text-muted-foreground">
         Vorlage wählen – Stammdaten von <strong>{mieter.name}</strong>
-        {wohnung ? ` (${wohnung.bezeichnung})` : ""} werden automatisch übernommen.
+        {wohnung ? ` (${wohnung.bezeichnung})` : ""} werden automatisch übernommen. Speichern legt
+        den Brief unter Schriftverkehr ab (auch Agent-Briefe erscheinen hier).
       </p>
 
       <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
@@ -113,9 +164,9 @@ export default function SchriftverkehrPanel({ mieter, wohnung, gebaeude, liegens
           </div>
 
           <div>
-            <div className="mb-2 flex items-center justify-between">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-medium text-muted-foreground">Vorschau (editierbar)</span>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button
                   onClick={kopieren}
                   className="rounded-md border border-border px-2.5 py-1 text-xs hover:bg-muted"
@@ -124,12 +175,29 @@ export default function SchriftverkehrPanel({ mieter, wohnung, gebaeude, liegens
                 </button>
                 <button
                   onClick={herunterladen}
-                  className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground"
+                  className="rounded-md border border-border px-2.5 py-1 text-xs hover:bg-muted"
                 >
-                  ⬇️ Als .txt herunterladen
+                  ⬇️ .txt
+                </button>
+                <button
+                  onClick={() => speichern("Entwurf")}
+                  disabled={saving}
+                  className="rounded-md border border-border px-2.5 py-1 text-xs hover:bg-muted disabled:opacity-50"
+                >
+                  💾 Entwurf
+                </button>
+                <button
+                  onClick={() => speichern("Versandbereit")}
+                  disabled={saving}
+                  className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  ✓ Speichern
                 </button>
               </div>
             </div>
+            {savedMsg && (
+              <p className="mb-2 text-xs text-emerald-600 dark:text-emerald-400">{savedMsg}</p>
+            )}
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
@@ -137,6 +205,38 @@ export default function SchriftverkehrPanel({ mieter, wohnung, gebaeude, liegens
               className="w-full rounded-lg border border-border bg-background p-3 font-mono text-xs leading-relaxed"
             />
           </div>
+        </div>
+      )}
+
+      {archiv.length > 0 && (
+        <div className="mt-8 border-t border-border pt-4">
+          <h3 className="mb-2 text-sm font-semibold">Gespeicherte Schreiben für {mieter.name}</h3>
+          <ul className="space-y-2">
+            {archiv.map((d) => (
+              <li
+                key={d.id}
+                className="rounded-lg border border-border bg-card p-3 text-xs"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-medium">
+                    {d.nummer ? `${d.nummer} · ` : ""}
+                    {d.templateLabel}
+                    <span className="ml-2 text-muted-foreground">({d.status} · {d.quelle})</span>
+                  </span>
+                  <span className="text-muted-foreground">
+                    {new Date(d.createdAt).toLocaleString("de-DE")}
+                  </span>
+                </div>
+                <div className="mt-1 truncate text-muted-foreground">{d.betreff}</div>
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-primary">Text anzeigen</summary>
+                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-[11px]">
+                    {d.text}
+                  </pre>
+                </details>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>

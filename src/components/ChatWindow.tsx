@@ -78,9 +78,9 @@ export default function ChatWindow() {
             </>
           )}
           <br />
-          Ich bin auf jeder Seite der App erreichbar und sehe den jeweiligen Kontext – frag mich
-          z.B. nach fehlenden Positionen, USt bei Gewerbeobjekten oder Formulierungen fürs
-          Anschreiben.
+          Ich bin auf jeder Seite erreichbar. Fragen beantworte ich direkt; Aufträge wie
+          „Erstelle alle Mahnungen für die Spannhagengartenstraße“ führe ich als Agent aus und
+          lege die Briefe unter Schriftverkehr ab.
         </div>
         {chatHistory.map((m) => (
           <div
