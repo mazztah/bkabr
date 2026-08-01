@@ -21,6 +21,8 @@ export default function MietvertraegePage() {
   const [ergebnis, setErgebnis] = useState<AnalyseErgebnis | null>(null);
   const [gewaehlteWohnung, setGewaehlteWohnung] = useState("");
   const [gewaehlterMieter, setGewaehlterMieter] = useState("");
+  const [mieterModus, setMieterModus] = useState<"vorhanden" | "neu">("vorhanden");
+  const [neuerMieterName, setNeuerMieterName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -52,6 +54,8 @@ export default function MietvertraegePage() {
         setErgebnis(json);
         setGewaehlteWohnung(json.vorschlag.wohnungId || "");
         setGewaehlterMieter(json.vorschlag.mieterId || "");
+        setNeuerMieterName(json.extraktion.mieterName || "");
+        setMieterModus(json.vorschlag.mieterId ? "vorhanden" : "neu");
       }
     } catch {
       setError("Analyse fehlgeschlagen");
@@ -63,12 +67,31 @@ export default function MietvertraegePage() {
   const bestaetigen = async () => {
     if (!ergebnis || !gewaehlteWohnung) return;
     const e = ergebnis.extraktion;
+
+    let mieterId = gewaehlterMieter || undefined;
+    if (mieterModus === "neu") {
+      const res = await fetch("/api/mieter", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          wohnungId: gewaehlteWohnung,
+          name: neuerMieterName || e.mieterName || "Neuer Mieter",
+          mietbeginn: e.mietbeginn,
+          mietende: e.mietende,
+          kaltmiete: e.sollMiete,
+          nebenkostenVorauszahlung: e.nebenkostenVorauszahlung,
+        }),
+      });
+      const json = await res.json();
+      mieterId = json.mieter?.id;
+    }
+
     await fetch("/api/mietvertraege", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         wohnungId: gewaehlteWohnung,
-        mieterId: gewaehlterMieter || undefined,
+        mieterId,
         dateiName: ergebnis.dateiName,
         storedFileName: ergebnis.storedFileName,
         mimeType: ergebnis.mimeType,
@@ -197,23 +220,75 @@ export default function MietvertraegePage() {
             </select>
           </label>
 
-          <label className="mb-4 block">
-            <span className="mb-1 block text-xs font-medium text-muted-foreground">
-              Mieter (optional)
-            </span>
-            <select
-              value={gewaehlterMieter}
-              onChange={(e) => setGewaehlterMieter(e.target.value)}
-              className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
-            >
-              <option value="">— kein Mieter verknüpfen —</option>
-              {mieter.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="mb-3">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">Mieter</span>
+            <div className="flex gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setMieterModus("neu")}
+                className={`rounded-md border px-2.5 py-1.5 ${
+                  mieterModus === "neu"
+                    ? "border-primary bg-secondary font-medium"
+                    : "border-border hover:bg-muted"
+                }`}
+              >
+                ✨ Neuen Mieter anlegen
+              </button>
+              <button
+                type="button"
+                onClick={() => setMieterModus("vorhanden")}
+                className={`rounded-md border px-2.5 py-1.5 ${
+                  mieterModus === "vorhanden"
+                    ? "border-primary bg-secondary font-medium"
+                    : "border-border hover:bg-muted"
+                }`}
+              >
+                Bestehenden Mieter verknüpfen
+              </button>
+            </div>
+          </div>
+
+          {mieterModus === "neu" ? (
+            <div className="mb-4">
+              <label className="mb-2 block">
+                <span className="mb-1 block text-xs font-medium text-muted-foreground">Name</span>
+                <input
+                  value={neuerMieterName}
+                  onChange={(e) => setNeuerMieterName(e.target.value)}
+                  placeholder="Name des Mieters"
+                  className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Aus dem Vertrag übernommen: Kaltmiete{" "}
+                {ergebnis.extraktion.sollMiete ? formatCurrency(ergebnis.extraktion.sollMiete) : "–"},
+                Nebenkosten{" "}
+                {ergebnis.extraktion.nebenkostenVorauszahlung
+                  ? formatCurrency(ergebnis.extraktion.nebenkostenVorauszahlung)
+                  : "–"}
+                , Mietbeginn {ergebnis.extraktion.mietbeginn || "–"}. Der Mieter wird beim
+                Bestätigen mit diesen Stammdaten für die gewählte Wohnung angelegt.
+              </p>
+            </div>
+          ) : (
+            <label className="mb-4 block">
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">
+                Bestehender Mieter
+              </span>
+              <select
+                value={gewaehlterMieter}
+                onChange={(e) => setGewaehlterMieter(e.target.value)}
+                className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+              >
+                <option value="">— kein Mieter verknüpfen —</option>
+                {mieter.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
 
           <div className="flex justify-end gap-2">
             <button
@@ -224,7 +299,7 @@ export default function MietvertraegePage() {
             </button>
             <button
               onClick={bestaetigen}
-              disabled={!gewaehlteWohnung}
+              disabled={!gewaehlteWohnung || (mieterModus === "neu" && !neuerMieterName.trim())}
               className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
             >
               Bestätigen &amp; speichern

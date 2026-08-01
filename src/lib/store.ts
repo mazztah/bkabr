@@ -8,6 +8,15 @@ interface Filters {
   suche: string;
 }
 
+interface PendingLiegenschaft {
+  abrechnungId: string;
+  grund: string;
+  strasse: string;
+  hausnummer: string;
+  plz: string;
+  ort: string;
+}
+
 interface StoreState {
   abrechnungen: Abrechnung[];
   selectedId: string | null;
@@ -21,6 +30,7 @@ interface StoreState {
   chatHistory: ChatMessage[];
   chatSending: boolean;
   mobileNavOpen: boolean;
+  pendingLiegenschaften: PendingLiegenschaft[];
 
   fetchAll: () => Promise<void>;
   select: (id: string | null) => void;
@@ -29,6 +39,8 @@ interface StoreState {
   openChat: () => void;
   toggleMobileNav: () => void;
   closeMobileNav: () => void;
+  confirmPendingLiegenschaft: () => Promise<void>;
+  dismissPendingLiegenschaft: () => void;
 
   uploadFiles: (files: File[]) => Promise<void>;
   patchAbrechnung: (id: string, patch: Partial<Abrechnung>) => Promise<void>;
@@ -54,6 +66,7 @@ export const useStore = create<StoreState>((set, get) => ({
   chatHistory: [],
   chatSending: false,
   mobileNavOpen: false,
+  pendingLiegenschaften: [],
 
   fetchAll: async () => {
     set({ loading: true, error: null });
@@ -91,8 +104,14 @@ export const useStore = create<StoreState>((set, get) => ({
         }
         const data = await res.json();
         set((s) => ({
-          abrechnungen: [data.abrechnung, ...s.abrechnungen],
+          abrechnungen: [data.abrechnung, ...s.abrechnungen.filter((a) => a.id !== data.abrechnung.id)],
           selectedId: data.abrechnung.id,
+          pendingLiegenschaften: data.liegenschaftVorschlag
+            ? [
+                ...s.pendingLiegenschaften,
+                { abrechnungId: data.abrechnung.id, ...data.liegenschaftVorschlag },
+              ]
+            : s.pendingLiegenschaften,
         }));
       }
     } catch (e: any) {
@@ -101,6 +120,40 @@ export const useStore = create<StoreState>((set, get) => ({
       set({ isAnalyzing: false });
     }
   },
+
+  confirmPendingLiegenschaft: async () => {
+    const item = get().pendingLiegenschaften[0];
+    if (!item) return;
+    try {
+      const res = await fetch("/api/liegenschaften", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: item.strasse ? `${item.strasse} ${item.hausnummer}`.trim() : item.grund,
+          strasse: item.strasse,
+          hausnummer: item.hausnummer,
+          plz: item.plz,
+          ort: item.ort,
+        }),
+      });
+      const json = await res.json();
+      if (json.liegenschaft) {
+        await fetch(`/api/abrechnungen/${item.abrechnungId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ liegenschaftId: json.liegenschaft.id }),
+        });
+        await get().fetchAll();
+      }
+    } catch (e: any) {
+      set({ error: e.message });
+    } finally {
+      set((s) => ({ pendingLiegenschaften: s.pendingLiegenschaften.slice(1) }));
+    }
+  },
+
+  dismissPendingLiegenschaft: () =>
+    set((s) => ({ pendingLiegenschaften: s.pendingLiegenschaften.slice(1) })),
 
   patchAbrechnung: async (id, patch) => {
     // optimistic update

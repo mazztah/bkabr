@@ -5,6 +5,7 @@ import { useStore } from "@/lib/store";
 import { formatCurrency } from "@/lib/utils";
 import Dropzone from "./Dropzone";
 import ThemeToggle from "./ThemeToggle";
+import Modal from "./Modal";
 
 const STATUS_STYLES: Record<string, string> = {
   Rohdaten: "bg-muted text-muted-foreground",
@@ -15,6 +16,9 @@ const STATUS_STYLES: Record<string, string> = {
 export default function Sidebar() {
   const { abrechnungen, selectedId, select, filters, setFilters, createBlank, deleteAbrechnung } =
     useStore();
+  const { pendingLiegenschaften, confirmPendingLiegenschaft, dismissPendingLiegenschaft } =
+    useStore();
+  const pending = pendingLiegenschaften[0];
 
   const jahre = useMemo(() => {
     const years = new Set<string>();
@@ -142,6 +146,38 @@ export default function Sidebar() {
           </div>
         ))}
       </div>
+
+      {pending && (
+        <Modal title="Neue Liegenschaft erkannt" onClose={dismissPendingLiegenschaft}>
+          <p className="mb-3 text-sm text-muted-foreground">
+            Die hochgeladene Rechnung nennt eine Adresse, die noch keiner Liegenschaft im System
+            zugeordnet werden konnte:
+          </p>
+          <p className="mb-4 rounded-md border border-border bg-muted p-2.5 text-sm font-medium">
+            {pending.strasse ? `${pending.strasse} ${pending.hausnummer}, ` : ""}
+            {pending.plz} {pending.ort}
+            {!pending.strasse && !pending.plz && pending.grund}
+          </p>
+          <p className="mb-4 text-sm text-muted-foreground">
+            Soll dafür jetzt eine neue Liegenschaft angelegt und mit dieser Abrechnung verknüpft
+            werden? Du kannst das auch später manuell unter „Liegenschaften“ nachholen.
+          </p>
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={dismissPendingLiegenschaft}
+              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted"
+            >
+              Später
+            </button>
+            <button
+              onClick={confirmPendingLiegenschaft}
+              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"
+            >
+              Jetzt anlegen
+            </button>
+          </div>
+        </Modal>
+      )}
     </aside>
   );
 }
