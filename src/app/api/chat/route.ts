@@ -13,7 +13,8 @@ import {
 
 export async function POST(req: NextRequest) {
   try {
-    const { message, id, path, history, forceAgent } = await req.json();
+    const body = await req.json();
+    const { message, id, path, history, forceAgent } = body || {};
     if (!message || typeof message !== "string") {
       return NextResponse.json({ error: "Nachricht fehlt" }, { status: 400 });
     }
@@ -29,7 +30,7 @@ export async function POST(req: NextRequest) {
           .slice(-10)
       : [];
 
-    // Agent-Workflow: Briefe/Mahnungen erstellen, Mahnlisten abarbeiten usw.
+    // Agent-Workflow: Briefe/Mahnungen erstellen
     if (forceAgent || isAgentIntent(message)) {
       try {
         const result = await runAgent({
@@ -44,8 +45,49 @@ export async function POST(req: NextRequest) {
           steps: result.steps.map((s) => s.tool),
         });
       } catch (agentErr: any) {
-        console.error("Agent fallback to chat:", agentErr);
-        // Fallback auf normalen Chat, wenn Agent scheitert
+        console.error("Agent error, falling back to chat:", agentErr);
+        // Fallback: normaler Chat mit Hinweis
+        try {
+          const [all, current, liegenschaften, gebaeude, wohnungen, mieter, mietvertraege] =
+            await Promise.all([
+              listAbrechnungen(),
+              id ? getAbrechnung(id) : Promise.resolve(null),
+              liegenschaftenDb.list(),
+              gebaeudeDb.list(),
+              wohnungenDb.list(),
+              mieterDb.list(),
+              mietvertraegeDb.list(),
+            ]);
+          const reply = await chatWithContext({
+            message:
+              message +
+              `\n\n[Systemhinweis: Der Schreib-Agent ist fehlgeschlagen (${agentErr?.message || "unbekannt"}). Antworte hilfreich und erkläre, dass die Briefe manuell unter Schriftverkehr erstellt werden können.]`,
+            current: current ?? null,
+            all,
+            liegenschaften,
+            gebaeude,
+            wohnungen,
+            mieter,
+            mietvertraege,
+            history: safeHistory,
+            path: typeof path === "string" ? path : "/",
+          });
+          return NextResponse.json({
+            reply,
+            agent: false,
+            agentError: agentErr?.message || String(agentErr),
+          });
+        } catch (chatErr: any) {
+          return NextResponse.json(
+            {
+              error:
+                chatErr?.message ||
+                agentErr?.message ||
+                "Chat und Agent fehlgeschlagen. Bitte GROQ_API_KEY und Server-Logs prüfen.",
+            },
+            { status: 500 }
+          );
+        }
       }
     }
 
@@ -76,6 +118,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ reply, agent: false });
   } catch (e: any) {
     console.error("Chat error:", e);
-    return NextResponse.json({ error: e.message || "Chat fehlgeschlagen" }, { status: 500 });
+    const msg = e?.message || "Chat fehlgeschlagen";
+    // Häufigster Fall: fehlender API-Key
+    const hint = /GROQ_API_KEY/i.test(msg)
+      ? " Bitte GROQ_API_KEY in .env.local bzw. als Fly-Secret setzen."
+      : "";
+    return NextResponse.json({ error: msg + hint }, { status: 500 });
   }
 }

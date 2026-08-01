@@ -46,7 +46,7 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
       name: "list_liegenschaften",
       description:
         "Listet alle Liegenschaften (Name, Adresse, ID). Nutzen, um eine Straße/Adresse einer Liegenschaft zuzuordnen.",
-      parameters: { type: "object", properties: {}, required: [] },
+      parameters: { type: "object", properties: { "_": { type: "string", description: "Optional, ignorieren" } } },
     },
   },
   {
@@ -96,7 +96,7 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
       name: "list_brief_vorlagen",
       description:
         "Listet verfügbare Schriftverkehr-Vorlagen (z.B. mahnung, kuendigung, bk_abrechnung).",
-      parameters: { type: "object", properties: {}, required: [] },
+      parameters: { type: "object", properties: { "_": { type: "string", description: "Optional, ignorieren" } } },
     },
   },
   {
@@ -117,8 +117,7 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
           werte: {
             type: "object",
             description:
-              "Optionale Feldwerte der Vorlage (z.B. offenerBetrag, frist, iban). Keys entsprechen den Template-Feldern.",
-            additionalProperties: { type: "string" },
+              "Optionale Feldwerte der Vorlage als flaches Objekt (z.B. {\"offenerBetrag\":\"120.50\",\"frist\":\"15.08.2026\",\"iban\":\"...\"}).",
           },
           status: {
             type: "string",
@@ -548,73 +547,172 @@ export async function runAgent(params: {
     },
   ];
 
-  for (let step = 0; step < MAX_AGENT_STEPS; step++) {
-    const completion = await groq.chat.completions.create({
-      model: TEXT_MODEL,
-      max_completion_tokens: 2000,
-      temperature: 0.2,
-      tools: AGENT_TOOLS,
-      tool_choice: "auto",
-      messages,
-    });
+  try {
+    for (let step = 0; step < MAX_AGENT_STEPS; step++) {
+      const completion = await groq.chat.completions.create({
+        model: TEXT_MODEL,
+        max_completion_tokens: 2000,
+        temperature: 0.2,
+        tools: AGENT_TOOLS,
+        tool_choice: "auto",
+        messages,
+      });
 
-    const choice = completion.choices[0];
-    const msg = choice?.message;
-    if (!msg) break;
+      const choice = completion.choices[0];
+      const msg = choice?.message;
+      if (!msg) break;
 
-    const toolCalls = msg.tool_calls;
-    if (!toolCalls || toolCalls.length === 0) {
-      return {
-        reply: msg.content || "Fertig.",
-        steps,
-        createdBriefIds,
-      };
-    }
-
-    messages.push({
-      role: "assistant",
-      content: msg.content || null,
-      tool_calls: toolCalls,
-    } as Groq.Chat.Completions.ChatCompletionMessageParam);
-
-    for (const call of toolCalls) {
-      let args: Record<string, unknown> = {};
-      try {
-        args = JSON.parse(call.function.arguments || "{}");
-      } catch {
-        args = {};
+      const toolCalls = msg.tool_calls;
+      if (!toolCalls || toolCalls.length === 0) {
+        return {
+          reply: msg.content || "Fertig.",
+          steps,
+          createdBriefIds,
+        };
       }
-      const result = await executeTool(call.function.name, args);
-      steps.push({ tool: call.function.name, args, result });
 
-      if (
-        (call.function.name === "create_brief" ||
-          call.function.name === "create_briefe_batch") &&
-        result &&
-        typeof result === "object"
-      ) {
-        const r = result as any;
-        if (r.id) createdBriefIds.push(r.id);
-        if (Array.isArray(r.erstellt)) {
-          for (const e of r.erstellt) {
-            if (e?.id) createdBriefIds.push(e.id);
+      // Assistant-Nachricht mit tool_calls in den Verlauf (content null wenn leer)
+      messages.push({
+        role: "assistant",
+        content: msg.content || null,
+        tool_calls: toolCalls,
+      } as Groq.Chat.Completions.ChatCompletionMessageParam);
+
+      for (const call of toolCalls) {
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(call.function.arguments || "{}");
+        } catch {
+          args = {};
+        }
+
+        let result: unknown;
+        try {
+          result = await executeTool(call.function.name, args);
+        } catch (toolErr: any) {
+          result = { error: toolErr?.message || String(toolErr) };
+        }
+        steps.push({ tool: call.function.name, args, result });
+
+        if (
+          (call.function.name === "create_brief" ||
+            call.function.name === "create_briefe_batch") &&
+          result &&
+          typeof result === "object"
+        ) {
+          const r = result as any;
+          if (r.id) createdBriefIds.push(r.id);
+          if (Array.isArray(r.erstellt)) {
+            for (const e of r.erstellt) {
+              if (e?.id) createdBriefIds.push(e.id);
+            }
           }
         }
-      }
 
-      messages.push({
-        role: "tool",
-        tool_call_id: call.id,
-        content: JSON.stringify(result),
-      } as Groq.Chat.Completions.ChatCompletionMessageParam);
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify(result),
+        } as Groq.Chat.Completions.ChatCompletionMessageParam);
+      }
     }
+
+    return {
+      reply:
+        "Der Agent hat die maximale Anzahl interner Schritte erreicht. Bitte prüfe die bisher erstellten Dokumente unter Schriftverkehr oder formuliere den Auftrag enger.",
+      steps,
+      createdBriefIds,
+    };
+  } catch (e: any) {
+    // Fallback: deterministische Mahnungs-Erstellung ohne Tool-Calling
+    const fallback = await tryDeterministicMahnung(params.message);
+    if (fallback) {
+      return {
+        reply:
+          fallback.reply +
+          (e?.message
+            ? `\n\n(Hinweis: Tool-Agent war nicht verfügbar: ${e.message})`
+            : ""),
+        steps: fallback.steps,
+        createdBriefIds: fallback.createdBriefIds,
+      };
+    }
+    throw e;
+  }
+}
+
+/** Ohne LLM-Tools: Rückstände finden und Mahnungen speichern, wenn der Text klar danach verlangt. */
+async function tryDeterministicMahnung(message: string): Promise<AgentResult | null> {
+  const m = message.toLowerCase();
+  const wantsMahnung =
+    /\b(mahnung|mahnungen|mahnliste|mahnlauf)\b/.test(m) &&
+    /\b(erstell|generier|schreib|mach|fertig|alle|nötig|noetig)\w*/.test(m);
+  if (!wantsMahnung) return null;
+
+  // Suchbegriff: nach "für" / "fuer" oder bekannte Straßenmuster
+  let query = "";
+  const fuer = message.match(/\b(?:für|fuer)\s+(.+?)(?:\s+und\s+|\s*$)/i);
+  if (fuer) query = fuer[1].replace(/[?.!]+$/, "").trim();
+  if (!query) {
+    const str = message.match(
+      /([A-ZÄÖÜ][a-zäöüß]+(?:straße|strasse|str\.?|weg|platz|allee|gasse)[^\s,]*)/i
+    );
+    if (str) query = str[1];
+  }
+
+  const { liegenschaften, gebaeude, wohnungen, mieter } = await loadHierarchy();
+  const targets = mieter
+    .map((mi) => {
+      const h = resolveHierarchy(mi, wohnungen, gebaeude, liegenschaften);
+      const rueckstand = mietRueckstand(mi);
+      return { mi, h, rueckstand };
+    })
+    .filter(({ mi, h, rueckstand }) => {
+      if (!(rueckstand > 0.005)) return false;
+      if (!query) return true;
+      return matchesQuery(query, h.liegenschaft, mi.name);
+    });
+
+  if (targets.length === 0) {
+    return {
+      reply: query
+        ? `Keine Mieter mit positivem Mietrückstand für „${query}“ gefunden. Bitte Straße/Liegenschaft prüfen oder Rückstände im Mietkonto nachtragen.`
+        : "Keine Mieter mit positivem Mietrückstand gefunden.",
+      steps: [{ tool: "deterministic_mahnung", args: { query }, result: { anzahl: 0 } }],
+      createdBriefIds: [],
+    };
+  }
+
+  const created: string[] = [];
+  const lines: string[] = [];
+  for (const { mi, h, rueckstand } of targets) {
+    const doc = await buildAndSaveBrief({
+      mieter: mi,
+      wohnung: h.wohnung,
+      gebaeude: h.gebaeude,
+      liegenschaft: h.liegenschaft,
+      templateId: "mahnung",
+      status: "Versandbereit",
+      quelle: "agent",
+    });
+    created.push(doc.id);
+    lines.push(
+      `• ${mi.name}${h.wohnung ? ` (${h.wohnung.bezeichnung})` : ""} – Rückstand ${rueckstand.toFixed(2)} € – ${doc.nummer || doc.id}`
+    );
   }
 
   return {
-    reply:
-      "Der Agent hat die maximale Anzahl interner Schritte erreicht. Bitte prüfe die bisher erstellten Dokumente unter Schriftverkehr oder formuliere den Auftrag enger.",
-    steps,
-    createdBriefIds,
+    reply: `Mahnlauf abgeschlossen (${created.length} Schreiben, Status Versandbereit):\n${lines.join(
+      "\n"
+    )}\n\nDie Briefe liegen unter Schriftverkehr → Archiv / Agent-Briefe.`,
+    steps: [
+      {
+        tool: "deterministic_mahnung",
+        args: { query },
+        result: { anzahl: created.length },
+      },
+    ],
+    createdBriefIds: created,
   };
 }
 

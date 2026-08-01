@@ -277,17 +277,32 @@ export const useStore = create<StoreState>((set, get) => ({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, id: selectedId, path, history }),
       });
-      if (!res.ok) throw new Error("Chat fehlgeschlagen");
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || `Chat fehlgeschlagen (HTTP ${res.status})`);
+      }
       const assistantMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: data.reply,
+        content: data.reply || "(Keine Antwort)",
         timestamp: new Date().toISOString(),
       };
-      set((s) => ({ chatHistory: [...s.chatHistory, assistantMsg], chatSending: false }));
+      set((s) => ({ chatHistory: [...s.chatHistory, assistantMsg], chatSending: false, error: null }));
     } catch (e: any) {
-      set({ error: e.message, chatSending: false });
+      const errText = e?.message || "Chat fehlgeschlagen";
+      set((s) => ({
+        error: errText,
+        chatSending: false,
+        chatHistory: [
+          ...s.chatHistory,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: `⚠️ ${errText}`,
+            timestamp: new Date().toISOString(),
+          },
+        ],
+      }));
     }
   },
 }));
