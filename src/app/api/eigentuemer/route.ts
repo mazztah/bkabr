@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eigentuemerDb } from "@/lib/db";
+import { logEvent, eigentuemerDb } from "@/lib/db";
 import { Eigentuemer } from "@/lib/types";
 import { uid } from "@/lib/utils";
 
@@ -36,5 +36,6 @@ export async function POST(req: NextRequest) {
     updatedAt: now,
   };
   const saved = await eigentuemerDb.create(eigentuemer);
+  await logEvent("anlage", `Eigentümer „${saved.name}" angelegt.`, { art: "Eigentümer", id: saved.id });
   return NextResponse.json({ eigentuemer: saved });
 }

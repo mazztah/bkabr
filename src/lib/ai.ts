@@ -325,6 +325,57 @@ export async function extractWohnungsuebersicht(params: {
   }
 }
 
+const SYSTEM_ZUORDNUNGSPRUEFUNG = `Du bist ein sorgfältiger Prüfer bei einer Hausverwaltung. Du bekommst den Textinhalt eines abgelegten Dokuments sowie die Stammdaten des Objekts, dem es aktuell zugeordnet ist. Beurteile NUR, ob diese Zuordnung inhaltlich plausibel ist (z.B. stimmen Adresse/Straße/Hausnummer, Namen, grobe Beträge grundsätzlich zum Zielobjekt überein) – nicht mehr und nicht weniger.
+
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt:
+{
+  "plausibel": true oder false,
+  "begruendung": "kurze Begründung, max. 1 Satz",
+  "konfidenz": <Zahl 0-1, wie sicher du dir bist>
+}
+Sei zurückhaltend mit "plausibel: false" – nur wenn ein klarer, konkreter Widerspruch erkennbar ist (z.B. andere Hausnummer/Straße im Dokument als beim Zielobjekt). Bei Unsicherheit: plausibel: true, niedrige Konfidenz.`;
+
+export interface ZuordnungsPruefErgebnis {
+  plausibel: boolean;
+  begruendung: string;
+  konfidenz: number;
+}
+
+/**
+ * Lässt das LLM beurteilen, ob ein bereits zugeordnetes Dokument inhaltlich zu
+ * seinem Zielobjekt passt (Teil der automatisierten Plausibilitätsprüfung).
+ * Wird nur für eine begrenzte Stichprobe aufgerufen (Kostenkontrolle).
+ */
+export async function pruefeDokumentZuordnung(params: {
+  dokumentText: string;
+  zielLabel: string;
+  zielTyp: string;
+}): Promise<ZuordnungsPruefErgebnis> {
+  const completion = await createChatCompletion({
+    max_completion_tokens: 300,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM_ZUORDNUNGSPRUEFUNG },
+      {
+        role: "user",
+        content: `Zielobjekt (${params.zielTyp}): ${params.zielLabel}\n\nDokumentinhalt (Auszug):\n${params.dokumentText.slice(0, 4000)}\n\nIst diese Zuordnung plausibel?`,
+      },
+    ],
+  });
+  const raw = completion.choices[0]?.message?.content || "";
+  try {
+    const parsed = extractJson(raw) as Partial<ZuordnungsPruefErgebnis>;
+    return {
+      plausibel: parsed.plausibel !== false,
+      begruendung: parsed.begruendung || "",
+      konfidenz: typeof parsed.konfidenz === "number" ? parsed.konfidenz : 0.5,
+    };
+  } catch {
+    return { plausibel: true, begruendung: "", konfidenz: 0 };
+  }
+}
+
 // -------- Klassifizierung beim Sammel-Upload (viele unterschiedliche Dokumente auf einmal) --------
 
 const SYSTEM_KLASSIFIZIERUNG = `Du bist ein Dokumenten-Klassifizierer für eine deutsche Hausverwaltungs-Software. Ordne das übergebene Dokument (Dateiname + erkannter Text, ggf. gekürzt) GENAU EINER der folgenden Kategorien zu:

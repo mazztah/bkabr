@@ -19,3 +19,12 @@ export async function storeFile(id: string, originalName: string, buffer: Buffer
 export async function readStoredFile(storedFileName: string): Promise<Buffer> {
   return fs.readFile(path.join(UPLOADS_DIR, storedFileName));
 }
+
+/** Löscht eine gespeicherte Datei. Ignoriert stillschweigend, falls sie nicht (mehr) existiert. */
+export async function deleteStoredFile(storedFileName: string): Promise<void> {
+  try {
+    await fs.unlink(path.join(UPLOADS_DIR, storedFileName));
+  } catch {
+    // Datei existierte nicht (mehr) – kein Fehler
+  }
+}

@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import {
+  AblageDokument,
   Abrechnung,
   Eigentuemer,
   Gebaeude,
@@ -9,9 +10,13 @@ import {
   Mieter,
   Mietvertrag,
   PmVertrag,
+  PruefLauf,
   SchriftverkehrDokument,
+  SystemLogEintrag,
+  SystemLogTyp,
   Wohnung,
 } from "./types";
+import { uid } from "./utils";
 
 // DATA_DIR kann per ENV überschrieben werden (z.B. für ein Fly.io Volume unter /data)
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
@@ -28,6 +33,9 @@ interface DbShape {
   pmVertraege: PmVertrag[];
   schriftverkehr: SchriftverkehrDokument[];
   kontoauszuege: Kontoauszug[];
+  ablage: AblageDokument[];
+  systemLog: SystemLogEintrag[];
+  pruefLaeufe: PruefLauf[];
   counters: Record<string, number>;
 }
 
@@ -50,6 +58,9 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     pmVertraege: db.pmVertraege || [],
     schriftverkehr: db.schriftverkehr || [],
     kontoauszuege: db.kontoauszuege || [],
+    ablage: db.ablage || [],
+    systemLog: db.systemLog || [],
+    pruefLaeufe: db.pruefLaeufe || [],
     counters: db.counters || {},
   };
 }
@@ -217,3 +228,39 @@ export const eigentuemerDb = makeCrud<Eigentuemer>("eigentuemer", "EG");
 export const pmVertraegeDb = makeCrud<PmVertrag>("pmVertraege", "PM");
 export const schriftverkehrDb = makeCrud<SchriftverkehrDokument>("schriftverkehr", "SV");
 export const kontoauszuegeDb = makeCrud<Kontoauszug>("kontoauszuege", "KA");
+export const ablageDb = makeCrud<AblageDokument>("ablage", "AB");
+export const pruefLaufDb = makeCrud<PruefLauf>("pruefLaeufe", "PL");
+
+// -------- System-Log --------
+// Bewusst einfach gehalten (kein makeCrud): Einträge werden nur angehängt und
+// gelesen, nie einzeln bearbeitet. Die letzten 1000 Einträge werden behalten.
+
+export async function logEvent(
+  typ: SystemLogTyp,
+  text: string,
+  bezug?: { art: string; id?: string }
+): Promise<SystemLogEintrag> {
+  const db = await readDb();
+  const eintrag: SystemLogEintrag = {
+    id: uid(),
+    zeitpunkt: new Date().toISOString(),
+    typ,
+    text,
+    bezug,
+  };
+  db.systemLog = [eintrag, ...db.systemLog].slice(0, 1000);
+  await writeDb(db);
+  return eintrag;
+}
+
+export async function listLog(params?: { limit?: number; suche?: string }): Promise<SystemLogEintrag[]> {
+  const db = await readDb();
+  let items = db.systemLog;
+  if (params?.suche?.trim()) {
+    const q = params.suche.trim().toLowerCase();
+    items = items.filter(
+      (e) => e.text.toLowerCase().includes(q) || e.typ.toLowerCase().includes(q)
+    );
+  }
+  return items.slice(0, params?.limit ?? 200);
+}

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { mietvertraegeDb } from "@/lib/db";
+import { logEvent, mietvertraegeDb } from "@/lib/db";
 import { Mietvertrag } from "@/lib/types";
 import { uid } from "@/lib/utils";
 
@@ -34,5 +34,6 @@ export async function POST(req: NextRequest) {
     updatedAt: now,
   };
   const saved = await mietvertraegeDb.create(mietvertrag);
+  await logEvent("anlage", `Mietvertrag „${saved.dateiName}" angelegt.`, { art: "Mietvertrag", id: saved.id });
   return NextResponse.json({ mietvertrag: saved });
 }

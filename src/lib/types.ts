@@ -470,6 +470,7 @@ export interface SmartUploadErgebnis {
   dateiName: string;
   storedFileName: string;
   mimeType: string;
+  ablageId?: string;
   typ: ErkannterDokumentTyp;
   konfidenz: number;
   begruendung?: string;
@@ -628,6 +629,155 @@ export interface HierarchieAbgleichVorschlag {
   gebaeude: HierarchieGebaeudeVorschlag[];
   wohnungen: HierarchieWohnungVorschlag[];
   mieter: HierarchieMieterVorschlag[];
+}
+
+// -------- Ablage (Dokumenten-Eingang) --------
+// Jede über den Sammel-Upload hochgeladene Datei landet hier zunächst mit
+// Status "neu". Sobald die KI sie korrekt zugeordnet hat (Nutzer hat im
+// Sammel-Upload "Übernehmen" bestätigt), wechselt sie auf "zugeordnet" und
+// verschwindet aus der aktiven Ablage-Ansicht. Dateien, die verworfen wurden
+// oder nie zugeordnet werden konnten, bleiben mit Status "verworfen"/"neu"
+// sichtbar und können manuell (mit Sicherheitsabfrage) gelöscht werden.
+
+export type AblageStatus = "neu" | "in_pruefung" | "zugeordnet" | "verworfen";
+
+export interface AblageZuordnung {
+  art: string; // z.B. "Liegenschaft", "PM-Vertrag", "Mietvertrag", "Abrechnung"
+  id: string;
+  label: string;
+}
+
+export interface AblageDokument {
+  id: string;
+  nummer?: string;
+  dateiName: string;
+  storedFileName: string;
+  mimeType: string;
+  groesse: number;
+  hochgeladenAm: string;
+  status: AblageStatus;
+  erkannterTyp?: ErkannterDokumentTyp;
+  konfidenz?: number;
+  zugeordnetAn?: AblageZuordnung;
+  extraktText?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// -------- System-Log --------
+// Protokolliert wichtige Ereignisse in Klartext (Uploads, Zuordnungen,
+// Neuanlagen, Änderungen, Löschungen, Prüfläufe), damit sowohl der Nutzer als
+// auch der Agent nachvollziehen können, was auf der Plattform passiert ist.
+
+export type SystemLogTyp =
+  | "upload"
+  | "zuordnung"
+  | "anlage"
+  | "aenderung"
+  | "loeschung"
+  | "pruefung"
+  | "fehler"
+  | "info";
+
+export const SYSTEM_LOG_TYP_ICON: Record<SystemLogTyp, string> = {
+  upload: "📤",
+  zuordnung: "🔗",
+  anlage: "🆕",
+  aenderung: "✏️",
+  loeschung: "🗑️",
+  pruefung: "🔍",
+  fehler: "⚠️",
+  info: "ℹ️",
+};
+
+export interface SystemLogEintrag {
+  id: string;
+  zeitpunkt: string;
+  typ: SystemLogTyp;
+  text: string;
+  bezug?: { art: string; id?: string };
+}
+
+// -------- Plausibilitätsprüfung (automatisierter KI-Audit) --------
+// Prüft periodisch bzw. auf Knopfdruck sämtliche Stammdaten-Module und die
+// Ablage auf Widersprüche/Fehlzuordnungen (z.B. Dokument liegt an falscher
+// Liegenschaft, Wohnung ohne Fläche, Mieter ohne gültige Wohnung). Ergebnis
+// ist eine Liste von Befunden mit Korrekturvorschlag, die der Nutzer komplett
+// oder einzeln freigeben kann; freigegebene Befunde werden automatisiert
+// angewendet (Dokument verschieben / Stammdaten korrigieren).
+
+export type PruefModul =
+  | "liegenschaften"
+  | "gebaeude"
+  | "wohnungen"
+  | "mieter"
+  | "mietvertraege"
+  | "pmVertraege"
+  | "eigentuemer"
+  | "abrechnungen"
+  | "kontoauszuege"
+  | "ablage";
+
+export const PRUEF_MODUL_LABEL: Record<PruefModul, string> = {
+  liegenschaften: "Liegenschaften",
+  gebaeude: "Gebäude",
+  wohnungen: "Wohnungen",
+  mieter: "Mieter",
+  mietvertraege: "Mietverträge",
+  pmVertraege: "PM-Verträge",
+  eigentuemer: "Eigentümer",
+  abrechnungen: "Abrechnungen",
+  kontoauszuege: "Kontoauszüge",
+  ablage: "Ablage",
+};
+
+export const PRUEF_MODUL_REIHENFOLGE: PruefModul[] = [
+  "liegenschaften",
+  "gebaeude",
+  "wohnungen",
+  "mieter",
+  "mietvertraege",
+  "pmVertraege",
+  "eigentuemer",
+  "abrechnungen",
+  "kontoauszuege",
+  "ablage",
+];
+
+export type PruefStatus = "ok" | "hinweise" | "fehler" | "ausstehend";
+
+export interface PruefKorrekturVorschlag {
+  art: "dokument_verschieben" | "stammdaten_korrigieren";
+  beschreibung: string;
+  // Für "dokument_verschieben": welches Ablage-Dokument wohin verschieben
+  ablageId?: string;
+  zielLiegenschaftId?: string;
+  zielPmVertragId?: string;
+  // Für "stammdaten_korrigieren": welches Feld welcher Entität ändern
+  entitaet?: { art: "liegenschaft" | "gebaeude" | "wohnung" | "mieter"; id: string; label: string };
+  patch?: Record<string, string | number>;
+}
+
+export interface PruefBefund {
+  id: string;
+  modul: PruefModul;
+  schweregrad: "hinweis" | "warnung" | "fehler";
+  titel: string;
+  beschreibung: string;
+  betroffene: { art: string; id: string; label: string }[];
+  vorschlag?: PruefKorrekturVorschlag;
+  status: "offen" | "uebernommen" | "abgelehnt";
+}
+
+export interface PruefLauf {
+  id: string;
+  nummer?: string;
+  gestartetAm: string;
+  abgeschlossenAm?: string;
+  modulStatus: Record<PruefModul, PruefStatus>;
+  befunde: PruefBefund[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 // -------- Schriftverkehr (gespeicherte Anschreiben / Mahnungen) --------

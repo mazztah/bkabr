@@ -10,10 +10,12 @@ import {
 } from "@/lib/ai";
 import { extractTextFromFile } from "@/lib/document-ocr";
 import {
+  ablageDb,
   eigentuemerDb,
   gebaeudeDb,
   kontoauszuegeDb,
   liegenschaftenDb,
+  logEvent,
   mieterDb,
   mietvertraegeDb,
   pmVertraegeDb,
@@ -22,8 +24,10 @@ import {
 import { ingestRechnungDokument } from "@/lib/rechnung-intake";
 import { storeFile } from "@/lib/storage";
 import { matchLiegenschaft, parseAddress } from "@/lib/matching";
+import { uid } from "@/lib/utils";
 import {
   AnhangTyp,
+  DOKUMENT_TYP_LABEL,
   EinheitTyp,
   HierarchieAbgleichVorschlag,
   HierarchieGebaeudeVorschlag,
@@ -82,11 +86,34 @@ async function verarbeiteDatei(
   }
 
   const storedFileName = await storeFile(crypto.randomUUID(), file.name, buffer);
+
+  // Schritt 1 der Ablage: Datei landet sofort in der Ablage, noch bevor die KI
+  // sie klassifiziert/zuordnet hat. Verschwindet aus der aktiven Ablage-Ansicht,
+  // sobald sie zugeordnet wurde (siehe unten bzw. Bestätigung im Frontend).
+  const ablageEintrag = await ablageDb.create({
+    id: uid(),
+    dateiName: file.name,
+    storedFileName,
+    mimeType,
+    groesse: buffer.length,
+    hochgeladenAm: new Date().toISOString(),
+    status: "neu",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
   const klassifikation = await classifyDocument({ text: ocr.text, fileName: file.name });
+  await ablageDb.update(ablageEintrag.id, {
+    status: "in_pruefung",
+    erkannterTyp: klassifikation.typ,
+    konfidenz: klassifikation.konfidenz,
+    extraktText: ocr.text.slice(0, 8000),
+  });
 
   const ergebnis: SmartUploadErgebnis = {
     ...basis,
     storedFileName,
+    ablageId: ablageEintrag.id,
     typ: klassifikation.typ,
     konfidenz: klassifikation.konfidenz,
     begruendung: klassifikation.begruendung,
@@ -103,6 +130,10 @@ async function verarbeiteDatei(
             fileName: file.name,
             ocrText: ocr.text,
           });
+        await ablageDb.update(ablageEintrag.id, {
+          status: "zugeordnet",
+          zugeordnetAn: { art: "Abrechnung", id: abrechnung.id, label: abrechnung.name },
+        });
         return {
           ...ergebnis,
           erledigt: true,
@@ -536,6 +567,11 @@ async function verarbeiteDatei(
           updatedAt: now,
         } as any);
 
+        await ablageDb.update(ablageEintrag.id, {
+          status: "zugeordnet",
+          zugeordnetAn: { art: "Kontoauszug", id: kontoauszug.id, label: file.name },
+        });
+
         return {
           ...ergebnis,
           erledigt: true,
@@ -585,6 +621,12 @@ export async function POST(req: NextRequest) {
     }
 
     const ergebnisse = await mapMitLimit(files, 3, (file, i) => verarbeiteDatei(file, i, anweisung));
+
+    const typenListe = ergebnisse.map((e) => DOKUMENT_TYP_LABEL[e.typ] || e.typ);
+    await logEvent(
+      "upload",
+      `${files.length} Datei(en) hochgeladen: ${typenListe.join(", ")}.`
+    );
 
     return NextResponse.json({ ergebnisse });
   } catch (e: any) {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { pmVertraegeDb } from "@/lib/db";
+import { logEvent, pmVertraegeDb } from "@/lib/db";
 import { PmVertrag } from "@/lib/types";
 import { uid } from "@/lib/utils";
 
@@ -38,5 +38,6 @@ export async function POST(req: NextRequest) {
     updatedAt: now,
   };
   const saved = await pmVertraegeDb.create(pmVertrag);
+  await logEvent("anlage", `PM-Vertrag „${saved.dateiName}" angelegt.`, { art: "PM-Vertrag", id: saved.id });
   return NextResponse.json({ pmVertrag: saved });
 }

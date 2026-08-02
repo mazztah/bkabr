@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { liegenschaftenDb } from "@/lib/db";
+import { liegenschaftenDb, logEvent } from "@/lib/db";
 import { Liegenschaft } from "@/lib/types";
 import { uid } from "@/lib/utils";
 
@@ -25,5 +25,6 @@ export async function POST(req: NextRequest) {
     updatedAt: now,
   };
   const saved = await liegenschaftenDb.create(liegenschaft);
+  await logEvent("anlage", `Liegenschaft „${saved.name}" angelegt.`, { art: "Liegenschaft", id: saved.id });
   return NextResponse.json({ liegenschaft: saved });
 }

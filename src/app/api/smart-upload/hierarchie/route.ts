@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { gebaeudeDb, liegenschaftenDb, mieterDb, pmVertraegeDb, wohnungenDb } from "@/lib/db";
+import { gebaeudeDb, liegenschaftenDb, logEvent, mieterDb, pmVertraegeDb, wohnungenDb } from "@/lib/db";
 import { Anhang, AnhangTyp, EinheitTyp, Gebaeude, Liegenschaft, Mieter, Wohnung } from "@/lib/types";
 import { uid } from "@/lib/utils";
 
@@ -93,6 +93,10 @@ export async function POST(req: NextRequest) {
     };
     const saved = await liegenschaftenDb.create(liegenschaft);
     liegenschaftId = saved.id;
+    await logEvent("anlage", `Liegenschaft „${saved.name}" angelegt (aus Wohnungsübersicht).`, {
+      art: "Liegenschaft",
+      id: saved.id,
+    });
   }
   if (!liegenschaftId) {
     return NextResponse.json({ error: "Liegenschaft konnte nicht ermittelt werden" }, { status: 400 });
@@ -206,6 +210,13 @@ export async function POST(req: NextRequest) {
       });
     }
   }
+
+  const zielLiegenschaft = await liegenschaftenDb.get(liegenschaftId);
+  await logEvent(
+    "anlage",
+    `Wohnungsübersicht übernommen für „${zielLiegenschaft?.name || liegenschaftId}": ${angelegtGebaeude} Gebäude, ${angelegtWohnungen} neue/${aktualisiertWohnungen} aktualisierte Wohnungen, ${angelegtMieter} neue/${aktualisiertMieter} aktualisierte Mieter.`,
+    { art: "Liegenschaft", id: liegenschaftId }
+  );
 
   return NextResponse.json({
     liegenschaftId,

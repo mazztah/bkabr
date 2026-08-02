@@ -107,6 +107,30 @@ export default function SmartUploadPage() {
 
   const setItem = (key: string, patch: Partial<Item>) => {
     setItems((prev) => prev.map((it) => (it.key === key ? { ...it, ...patch } : it)));
+
+    // Zentrale Synchronisation mit der Ablage: sobald ein Sammel-Upload-Eintrag
+    // bestätigt ("gespeichert") oder verworfen wird, wird das dazugehörige
+    // Ablage-Dokument entsprechend markiert (verschwindet dann aus der aktiven
+    // Ablage-Ansicht bzw. wird als verworfen kennzeichnet).
+    if (patch.status === "gespeichert" || patch.status === "verworfen") {
+      const current = items.find((it) => it.key === key);
+      const ablageId = current?.ablageId;
+      if (ablageId) {
+        const body: Record<string, unknown> = { status: patch.status === "gespeichert" ? "zugeordnet" : "verworfen" };
+        if (patch.status === "gespeichert") {
+          body.zugeordnetAn = {
+            art: current ? DOKUMENT_TYP_LABEL[current.typ] : "Dokument",
+            id: current?.key || "",
+            label: patch.meldung || current?.hinweisText || current?.dateiName || "",
+          };
+        }
+        fetch(`/api/ablage/${ablageId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }).catch(() => {});
+      }
+    }
   };
 
   const offen = items.filter((i) => i.status === "offen");
