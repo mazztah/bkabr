@@ -2,8 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import { formatDate } from "@/lib/utils";
-import { Liegenschaft, PmVertrag, PmVertragExtraktion } from "@/lib/types";
+import { AnhangTyp, Liegenschaft, PmVertrag, PmVertragExtraktion } from "@/lib/types";
 import Modal from "@/components/Modal";
+import { Anhaenge, hochladenUndAnhaengen } from "@/components/Anhaenge";
+
+const PM_ANHANG_TYPEN: AnhangTyp[] = ["Liegenschaftskarte", "Objektbeschreibung", "Mieterliste", "Sonstiges"];
 
 const NEU = "__neu__";
 
@@ -192,6 +195,21 @@ export default function PmVertragPage() {
                   <span>Status: {pm.status}</span>
                   <span>Hochgeladen: {formatDate(pm.hochgeladenAm)}</span>
                 </div>
+
+                <Anhaenge
+                  anhaenge={pm.anhaenge}
+                  typen={PM_ANHANG_TYPEN}
+                  onUpload={async (typ, file) => {
+                    const anhang = await hochladenUndAnhaengen(file, typ);
+                    if (!anhang) return;
+                    await fetch(`/api/pm-vertrag/${pm.id}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ anhaenge: [...(pm.anhaenge || []), anhang] }),
+                    });
+                    refresh();
+                  }}
+                />
               </div>
             );
           })}

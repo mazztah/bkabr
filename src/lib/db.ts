@@ -4,6 +4,7 @@ import {
   Abrechnung,
   Eigentuemer,
   Gebaeude,
+  Kontoauszug,
   Liegenschaft,
   Mieter,
   Mietvertrag,
@@ -26,6 +27,7 @@ interface DbShape {
   eigentuemer: Eigentuemer[];
   pmVertraege: PmVertrag[];
   schriftverkehr: SchriftverkehrDokument[];
+  kontoauszuege: Kontoauszug[];
   counters: Record<string, number>;
 }
 
@@ -47,6 +49,7 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     eigentuemer: db.eigentuemer || [],
     pmVertraege: db.pmVertraege || [],
     schriftverkehr: db.schriftverkehr || [],
+    kontoauszuege: db.kontoauszuege || [],
     counters: db.counters || {},
   };
 }
@@ -213,3 +216,4 @@ export const mietvertraegeDb = makeCrud<Mietvertrag>("mietvertraege", "MV");
 export const eigentuemerDb = makeCrud<Eigentuemer>("eigentuemer", "EG");
 export const pmVertraegeDb = makeCrud<PmVertrag>("pmVertraege", "PM");
 export const schriftverkehrDb = makeCrud<SchriftverkehrDokument>("schriftverkehr", "SV");
+export const kontoauszuegeDb = makeCrud<Kontoauszug>("kontoauszuege", "KA");

@@ -225,6 +225,8 @@ export default function MietvertraegePage() {
                   <span>Status: {mv.status}</span>
                   <span>Hochgeladen: {formatDate(mv.hochgeladenAm)}</span>
                 </div>
+
+                <NachtragUploader mietvertrag={mv} onDone={refresh} />
               </div>
             );
           })}
@@ -431,6 +433,213 @@ export default function MietvertraegePage() {
               className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
             >
               Bestätigen &amp; speichern
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Nachtrag / Übergabeprotokoll zu einem bestehenden Mietvertrag hochladen
+// ---------------------------------------------------------------------
+function NachtragUploader({ mietvertrag, onDone }: { mietvertrag: Mietvertrag; onDone: () => void }) {
+  const [offen, setOffen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [ergebnis, setErgebnis] = useState<{
+    extraktion: MietvertragExtraktion & { art?: string; hinweis?: string };
+    dateiName: string;
+    storedFileName: string;
+    mimeType: string;
+    extraktText?: string;
+  } | null>(null);
+  const [modus, setModus] = useState<"manuell" | "automatisch">("manuell");
+  const [sollMiete, setSollMiete] = useState("");
+  const [nk, setNk] = useState("");
+  const [kaution, setKaution] = useState("");
+  const [mietbeginn, setMietbeginn] = useState("");
+  const [mietende, setMietende] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleFile = async (file: File | null) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`/api/mietvertraege/${mietvertrag.id}/nachtrag`, {
+        method: "POST",
+        body: fd,
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        alert(json.error || "Analyse fehlgeschlagen");
+        return;
+      }
+      setErgebnis(json);
+      setSollMiete(json.extraktion.sollMiete ? String(json.extraktion.sollMiete) : "");
+      setNk(json.extraktion.nebenkostenVorauszahlung ? String(json.extraktion.nebenkostenVorauszahlung) : "");
+      setKaution(json.extraktion.kaution ? String(json.extraktion.kaution) : "");
+      setMietbeginn(json.extraktion.mietbeginn || "");
+      setMietende(json.extraktion.mietende || "");
+      setOffen(true);
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const uebernehmen = async () => {
+    if (!ergebnis) return;
+    setBusy(true);
+    try {
+      const anhang = {
+        id: crypto.randomUUID(),
+        typ: ergebnis.extraktion.art === "Uebergabeprotokoll" ? "Uebergabeprotokoll" : "Nachtrag",
+        dateiName: ergebnis.dateiName,
+        storedFileName: ergebnis.storedFileName,
+        mimeType: ergebnis.mimeType,
+        hochgeladenAm: new Date().toISOString(),
+        extraktText: ergebnis.extraktText,
+        notizen: ergebnis.extraktion.hinweis,
+      };
+      const patch: any = { anhaenge: [...(mietvertrag.anhaenge || []), anhang] };
+      if (modus === "automatisch") {
+        if (mietbeginn) patch.mietbeginn = mietbeginn;
+        if (mietende) patch.mietende = mietende;
+        if (sollMiete) patch.sollMiete = Number(sollMiete);
+        if (nk) patch.nebenkostenVorauszahlung = Number(nk);
+        if (kaution) patch.kaution = Number(kaution);
+      }
+      await fetch(`/api/mietvertraege/${mietvertrag.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      setOffen(false);
+      setErgebnis(null);
+      onDone();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 border-t border-border pt-2">
+      {mietvertrag.anhaenge && mietvertrag.anhaenge.length > 0 && (
+        <ul className="mb-2 space-y-1">
+          {mietvertrag.anhaenge.map((a) => (
+            <li key={a.id} className="flex items-center gap-2 text-xs">
+              <span className="rounded bg-muted px-1.5 py-0.5">{a.typ}</span>
+              <a
+                href={`/api/files/${a.storedFileName}?mime=${encodeURIComponent(
+                  a.mimeType
+                )}&name=${encodeURIComponent(a.dateiName)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="truncate text-primary hover:underline"
+              >
+                {a.dateiName}
+              </a>
+              {a.notizen && <span className="text-muted-foreground">– {a.notizen}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+        className="hidden"
+        onChange={(e) => handleFile(e.target.files?.[0] || null)}
+      />
+      <button
+        onClick={() => inputRef.current?.click()}
+        disabled={busy}
+        className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+      >
+        {busy && !offen ? "Analysiere…" : "+ Nachtrag / Übergabeprotokoll hochladen"}
+      </button>
+
+      {offen && ergebnis && (
+        <Modal title="Nachtrag / Übergabeprotokoll prüfen" onClose={() => setOffen(false)}>
+          {ergebnis.extraktion.hinweis && (
+            <p className="mb-3 rounded-md bg-muted/60 p-2 text-xs text-muted-foreground">
+              ℹ️ {ergebnis.extraktion.hinweis}
+            </p>
+          )}
+          <label className="mb-3 flex flex-col gap-1 text-xs">
+            <span className="text-muted-foreground">Wie sollen die Stammdaten aktualisiert werden?</span>
+            <select
+              value={modus}
+              onChange={(e) => setModus(e.target.value as any)}
+              className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+            >
+              <option value="manuell">Nur ablegen – Stammdaten manuell im Mietvertrag prüfen</option>
+              <option value="automatisch">Erkannte Änderungen automatisch übernehmen</option>
+            </select>
+          </label>
+          {modus === "automatisch" && (
+            <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <label className="flex flex-col gap-1 text-xs">
+                <span className="text-muted-foreground">Kaltmiete (€)</span>
+                <input
+                  type="number"
+                  value={sollMiete}
+                  onChange={(e) => setSollMiete(e.target.value)}
+                  className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs">
+                <span className="text-muted-foreground">NK-Vorauszahlung (€)</span>
+                <input
+                  type="number"
+                  value={nk}
+                  onChange={(e) => setNk(e.target.value)}
+                  className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs">
+                <span className="text-muted-foreground">Kaution (€)</span>
+                <input
+                  type="number"
+                  value={kaution}
+                  onChange={(e) => setKaution(e.target.value)}
+                  className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs">
+                <span className="text-muted-foreground">Mietbeginn</span>
+                <input
+                  value={mietbeginn}
+                  onChange={(e) => setMietbeginn(e.target.value)}
+                  className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs">
+                <span className="text-muted-foreground">Mietende</span>
+                <input
+                  value={mietende}
+                  onChange={(e) => setMietende(e.target.value)}
+                  className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+              </label>
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setOffen(false)}
+              className="rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
+            >
+              Abbrechen
+            </button>
+            <button
+              onClick={uebernehmen}
+              disabled={busy}
+              className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+            >
+              {busy ? "Speichere…" : "✓ Übernehmen & ablegen"}
             </button>
           </div>
         </Modal>

@@ -1,7 +1,7 @@
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from "pdf-lib";
 import fs from "fs/promises";
 import path from "path";
-import { Abrechnung } from "./types";
+import { Abrechnung, SchriftverkehrDokument } from "./types";
 import { formatCurrency, formatDate } from "./utils";
 
 const PAGE_SIZE: [number, number] = [595.28, 841.89]; // A4
@@ -399,4 +399,103 @@ function drawWrapped(
     }
   }
   return cursorY - gapAfter;
+}
+
+// ---------------------------------------------------------------------
+// Finale Schriftverkehr-PDF ("Fertigstellen"-Knopf)
+// ---------------------------------------------------------------------
+// Erzeugt aus einem im Klartext gespeicherten Brief (inkl. Absender-/Empfänger-
+// block, Betreff und Unterschrift, siehe lib/schriftverkehr.ts) eine finale,
+// versandfertige PDF-Version mit grafischem Briefkopf (Logo + Corporate Design),
+// analog zur mitgelieferten Vorlage "Mieterbegrüßung nach Eigentümerwechsel".
+export async function buildSchriftverkehrPdf(doc: SchriftverkehrDokument): Promise<Uint8Array> {
+  const pdfDoc = await PDFDocument.create();
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const logoBytes = await loadLogoBytes();
+  const logoImage = logoBytes ? await pdfDoc.embedPng(logoBytes).catch(() => null) : null;
+  const logoDims = logoImage ? logoImage.scale(1) : null;
+
+  const state: { page: PDFPage; y: number } = {
+    page: pdfDoc.addPage(PAGE_SIZE),
+    y: 0,
+  };
+  state.y = state.page.getHeight() - MARGIN;
+
+  const ensureSpace = (needed: number) => {
+    if (state.y - needed < MARGIN + 40) {
+      state.page = pdfDoc.addPage(PAGE_SIZE);
+      state.y = state.page.getHeight() - MARGIN;
+    }
+  };
+
+  // Briefkopf: Logo (Icon + Schriftzug + Claim) oben links, darunter eine
+  // Trennlinie – exakt wie im Corporate-Design der Vorlage.
+  if (logoImage && logoDims) {
+    const w = 130;
+    const h = w * (logoDims.height / logoDims.width);
+    state.page.drawImage(logoImage, { x: MARGIN, y: state.y - h, width: w, height: h });
+    state.y -= h + 8;
+  } else {
+    state.y -= 10;
+  }
+  state.page.drawLine({
+    start: { x: MARGIN, y: state.y },
+    end: { x: state.page.getWidth() - MARGIN, y: state.y },
+    thickness: 1.1,
+    color: DARK,
+  });
+  state.y -= 24;
+
+  const contentWidth = state.page.getWidth() - MARGIN * 2;
+  const paragraphs = (doc.text || "").split("\n");
+
+  for (const para of paragraphs) {
+    if (para.trim() === "") {
+      ensureSpace(14);
+      state.y -= 14;
+      continue;
+    }
+    const istBetreff = para.trim().startsWith("Betreff:");
+    const size = istBetreff ? 10.5 : 10;
+    const f = istBetreff ? bold : font;
+    const words = para.split(" ");
+    let line = "";
+    for (const word of words) {
+      const testLine = line ? `${line} ${word}` : word;
+      const width = f.widthOfTextAtSize(testLine, size);
+      if (width > contentWidth && line) {
+        ensureSpace(size + 4);
+        state.page.drawText(line, { x: MARGIN, y: state.y, size, font: f, color: DARK });
+        state.y -= size + 4;
+        line = word;
+      } else {
+        line = testLine;
+      }
+    }
+    if (line) {
+      ensureSpace(size + 4);
+      state.page.drawText(line, { x: MARGIN, y: state.y, size, font: f, color: DARK });
+      state.y -= size + 4;
+    }
+  }
+
+  ensureSpace(34);
+  state.y -= 12;
+  state.page.drawLine({
+    start: { x: MARGIN, y: state.y },
+    end: { x: MARGIN + 210, y: state.y },
+    thickness: 0.6,
+    color: LINE,
+  });
+  state.y -= 12;
+  state.page.drawText("BetriebsKostenBot AI \u2013 DIE KI F\u00dcR PERFEKTE BETRIEBSKOSTENABRECHNUNGEN.", {
+    x: MARGIN,
+    y: state.y,
+    size: 7.5,
+    font,
+    color: LIGHT_GRAY,
+  });
+
+  return pdfDoc.save();
 }

@@ -25,6 +25,7 @@ export default function SchriftverkehrPanel({ mieter, wohnung, gebaeude, liegens
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [archiv, setArchiv] = useState<SchriftverkehrDokument[]>([]);
+  const [fertigstellenBusyId, setFertigstellenBusyId] = useState<string | null>(null);
 
   const template = SCHRIFTVERKEHR_TEMPLATES.find((t) => t.id === templateId) || null;
   const basisKontext = { mieter, wohnung, gebaeude, liegenschaft, heute: heuteDe() };
@@ -104,6 +105,21 @@ export default function SchriftverkehrPanel({ mieter, wohnung, gebaeude, liegens
       setSavedMsg(e.message || "Fehler beim Speichern");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const fertigstellen = async (dokumentId: string) => {
+    setFertigstellenBusyId(dokumentId);
+    try {
+      const res = await fetch(`/api/schriftverkehr/${dokumentId}/fertigstellen`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || "Fertigstellen fehlgeschlagen");
+        return;
+      }
+      await loadArchiv();
+    } finally {
+      setFertigstellenBusyId(null);
     }
   };
 
@@ -223,9 +239,31 @@ export default function SchriftverkehrPanel({ mieter, wohnung, gebaeude, liegens
                     {d.templateLabel}
                     <span className="ml-2 text-muted-foreground">({d.status} · {d.quelle})</span>
                   </span>
-                  <span className="text-muted-foreground">
-                    {new Date(d.createdAt).toLocaleString("de-DE")}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground">
+                      {new Date(d.createdAt).toLocaleString("de-DE")}
+                    </span>
+                    {d.finalStoredFileName ? (
+                      <a
+                        href={`/api/files/${d.finalStoredFileName}?mime=application/pdf&name=${encodeURIComponent(
+                          d.finalDateiName || "Anschreiben.pdf"
+                        )}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-md border border-[var(--success)]/40 bg-[var(--success-bg)] px-2 py-1 font-medium text-[var(--success)]"
+                      >
+                        📄 Finale PDF ansehen
+                      </a>
+                    ) : (
+                      <button
+                        onClick={() => fertigstellen(d.id)}
+                        disabled={fertigstellenBusyId === d.id}
+                        className="rounded-md bg-primary px-2 py-1 font-medium text-primary-foreground disabled:opacity-50"
+                      >
+                        {fertigstellenBusyId === d.id ? "Erzeuge PDF…" : "✓ Fertigstellen"}
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div className="mt-1 truncate text-muted-foreground">{d.betreff}</div>
                 <details className="mt-2">

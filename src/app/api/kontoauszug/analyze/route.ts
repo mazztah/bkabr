@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { extractKontoauszug } from "@/lib/ai";
 import { extractTextFromFile } from "@/lib/document-ocr";
-import { mieterDb, wohnungenDb, gebaeudeDb, liegenschaftenDb } from "@/lib/db";
+import { mieterDb, wohnungenDb, gebaeudeDb, liegenschaftenDb, kontoauszuegeDb } from "@/lib/db";
+import { storeFile } from "@/lib/storage";
+import { uid } from "@/lib/utils";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -53,9 +55,28 @@ export async function POST(req: NextRequest) {
       };
     });
 
-    return NextResponse.json({ vorschlaege, mieter });
+    // Quelldatei dauerhaft archivieren, damit der Kontoauszug – unabhängig vom
+    // Buchungsstatus einzelner Positionen – im System abgelegt und auffindbar bleibt.
+    const kaId = uid();
+    const storedFileName = await storeFile(kaId, file.name, buffer);
+    const now = new Date().toISOString();
+    const kontoauszug = await kontoauszuegeDb.create({
+      id: kaId,
+      dateiName: file.name,
+      storedFileName,
+      mimeType,
+      hochgeladenAm: now,
+      anzahlTransaktionen: transaktionen.length,
+      gebuchteTransaktionen: 0,
+      extraktText: ocr.text.slice(0, 4000),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return NextResponse.json({ vorschlaege, mieter, kontoauszugId: kontoauszug.id });
   } catch (e: any) {
     console.error("Kontoauszug-Analyse-Fehler:", e);
     return NextResponse.json({ error: e.message || "Analyse fehlgeschlagen" }, { status: 500 });
   }
 }
+

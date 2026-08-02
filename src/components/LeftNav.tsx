@@ -21,6 +21,7 @@ const GROUPS: NavGroup[] = [
   {
     title: "Struktur",
     items: [
+      { href: "/smart-upload", label: "Intelligenter Upload", icon: "🧠" },
       { href: "/eigentuemer", label: "Eigentümer", icon: "👤" },
       { href: "/investoren", label: "Investoren", icon: "💼" },
       { href: "/finanzierung", label: "Finanzierung", icon: "🏦" },

@@ -2,10 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 import { formatDate } from "@/lib/utils";
-import { Eigentuemer, EigentuemerExtraktion, Liegenschaft } from "@/lib/types";
+import { Anhang, AnhangTyp, Eigentuemer, EigentuemerExtraktion, Liegenschaft } from "@/lib/types";
 import Modal from "@/components/Modal";
+import { Anhaenge, hochladenUndAnhaengen } from "@/components/Anhaenge";
 
 const NEU = "__neu__";
+const EIGENTUEMER_ANHANG_TYPEN: AnhangTyp[] = [
+  "Grundbuchauszug",
+  "Kaufvertrag",
+  "Vollmacht",
+  "Eigentuemerbeschluss",
+  "Sonstiges",
+];
 
 interface AnalyseErgebnis {
   extraktion: EigentuemerExtraktion;
@@ -194,6 +202,21 @@ export default function EigentuemerPage() {
                   ) : null}
                   <span>Angelegt: {formatDate(eg.createdAt)}</span>
                 </div>
+
+                <Anhaenge
+                  anhaenge={eg.anhaenge}
+                  typen={EIGENTUEMER_ANHANG_TYPEN}
+                  onUpload={async (typ, file) => {
+                    const anhang = await hochladenUndAnhaengen(file, typ);
+                    if (!anhang) return;
+                    await fetch(`/api/eigentuemer/${eg.id}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ anhaenge: [...(eg.anhaenge || []), anhang] }),
+                    });
+                    refresh();
+                  }}
+                />
               </div>
             );
           })}

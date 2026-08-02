@@ -8,8 +8,9 @@ import {
   Mieter,
   Mietvertrag,
   KontoauszugTransaktion,
-  DokumentArt,
-  StammdatenVorschlag,
+  ERKANNTE_DOKUMENT_TYPEN,
+  ErkannterDokumentTyp,
+  MietvertragExtraktion,
 } from "./types";
 import { mietRueckstand } from "./mietkonto";
 import { createChatCompletion, VISION_MODEL } from "./groq-client";
@@ -254,6 +255,102 @@ export async function extractPmVertrag(params: {
     ],
   });
 
+  const result = completion.choices[0]?.message?.content || "";
+  return extractJson(result);
+}
+
+// -------- Klassifizierung beim Sammel-Upload (viele unterschiedliche Dokumente auf einmal) --------
+
+const SYSTEM_KLASSIFIZIERUNG = `Du bist ein Dokumenten-Klassifizierer für eine deutsche Hausverwaltungs-Software. Ordne das übergebene Dokument (Dateiname + erkannter Text, ggf. gekürzt) GENAU EINER der folgenden Kategorien zu:
+
+- "rechnung": Eingangsrechnung/Beleg einer Firma (Handwerker, Versorger, Dienstleister) für eine Liegenschaft.
+- "mietvertrag": vollständiger, neuer Mietvertrag zwischen Vermieter und Mieter (Erstvertrag).
+- "mietvertrag_nachtrag": Nachtrag/Änderung/Ergänzung zu einem BESTEHENDEN Mietvertrag (z.B. Mieterwechsel, Mieterhöhung, Zusatzvereinbarung, Untermieterlaubnis) – kein vollständiger Erstvertrag.
+- "uebergabeprotokoll": Wohnungsübergabeprotokoll (Ein- oder Auszug), Zählerstände, Schlüsselübergabe.
+- "pm_vertrag": Property-Management-/Hausverwaltervertrag zwischen Eigentümer und Verwaltung.
+- "eigentuemer_dokument": eigentümerbezogenes Dokument wie Vollmacht, Eigentümerbeschluss, WEG-Beschluss, Kontaktschreiben (NICHT Grundbuchauszug oder Kaufvertrag).
+- "grundbuchauszug": Grundbuchauszug / Grundbuchblatt.
+- "kaufvertrag": Notarieller Kaufvertrag / Immobilienkaufvertrag.
+- "liegenschaftskarte": Lageplan, Liegenschafts-/Flurstückskarte, Katasterauszug, Objekt-/Gebäudebeschreibung, Gebäude- oder Mieterlisten-Übersicht (Anlage zu PM-Vertrag/Liegenschaft, keine Einzelrechnung/kein Vertrag).
+- "kontoauszug": Bankauszug / Kontoauszug mit Buchungen/Transaktionen.
+- "unbekannt": passt zu keiner der obigen Kategorien oder ist nicht eindeutig zuordenbar.
+
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt:
+{ "typ": "<eine der Kategorien exakt>", "konfidenz": <Zahl 0..1>, "begruendung": "ein kurzer Satz" }`;
+
+export async function classifyDocument(params: {
+  text: string;
+  fileName: string;
+}): Promise<{ typ: ErkannterDokumentTyp; konfidenz: number; begruendung?: string }> {
+  const { text, fileName } = params;
+  const completion = await createChatCompletion({
+    max_completion_tokens: 300,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM_KLASSIFIZIERUNG },
+      {
+        role: "user",
+        content: `Dateiname: ${fileName}\n\nErkannter Text (ggf. gekürzt):\n${text.slice(0, 3500)}\n\nKlassifiziere dieses Dokument.`,
+      },
+    ],
+  });
+  const result = completion.choices[0]?.message?.content || "";
+  try {
+    const parsed = extractJson(result) as { typ?: string; konfidenz?: number; begruendung?: string };
+    const gueltig = new Set<string>(ERKANNTE_DOKUMENT_TYPEN as readonly string[]);
+    const typ = parsed.typ && gueltig.has(parsed.typ) ? parsed.typ : "unbekannt";
+    return {
+      typ: typ as ErkannterDokumentTyp,
+      konfidenz: typeof parsed.konfidenz === "number" ? parsed.konfidenz : 0.5,
+      begruendung: parsed.begruendung,
+    };
+  } catch {
+    return { typ: "unbekannt", konfidenz: 0 };
+  }
+}
+
+const SYSTEM_NACHTRAG = `Du bist ein Experte für deutsche Mietverträge. Analysiere den übergebenen Text eines NACHTRAGS oder ÜBERGABEPROTOKOLLS zu einem bestehenden Mietvertrag (z.B. Mieterwechsel innerhalb einer WG, Ein-/Auszug eines von mehreren Mietern, Mieterhöhung, Zusatzvereinbarung) und extrahiere die relevanten Änderungen.
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt in exakt diesem Format:
+{
+  "art": "Nachtrag" | "Uebergabeprotokoll",
+  "ereignis": "Auszug" | "Einzug" | "Mieterwechsel" | "Sonstige_Aenderung",
+  "mieterName": "Name des bisherigen/betroffenen Mieters, falls erkennbar",
+  "vermieterName": "Name des Vermieters, falls erkennbar",
+  "mietbeginn": "Datum, falls sich der Mietbeginn ändert oder ein neuer Mieter einzieht, sonst leerer String",
+  "mietende": "Datum, falls ein Mieter auszieht/das Verhältnis endet, sonst leerer String",
+  "sollMiete": <neue Kaltmiete in Euro, falls geändert, sonst 0>,
+  "nebenkostenVorauszahlung": <neue monatliche NK-Vorauszahlung, falls geändert, sonst 0>,
+  "kaution": <neue Kaution, falls geändert, sonst 0>,
+  "objektAdresse": "Adresse des Mietobjekts, falls erkennbar",
+  "wohnungsbezeichnung": "Lage/Bezeichnung der Wohnung, falls erkennbar",
+  "hinweis": "kurzer, sachlicher Hinweis, was sich laut Dokument konkret ändert (max. 2 Sätze)"
+}
+Erfinde keine Fakten, die nicht im Dokument stehen. Falls ein Wert nicht erkennbar ist: leerer String bzw. 0.`;
+
+export async function extractMietvertragNachtrag(params: {
+  text: string;
+  fileName: string;
+}): Promise<
+  MietvertragExtraktion & {
+    art: "Nachtrag" | "Uebergabeprotokoll";
+    ereignis?: "Auszug" | "Einzug" | "Mieterwechsel" | "Sonstige_Aenderung";
+    hinweis?: string;
+  }
+> {
+  const { text, fileName } = params;
+  const completion = await createChatCompletion({
+    max_completion_tokens: 1200,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM_NACHTRAG },
+      {
+        role: "user",
+        content: `Datei: ${fileName}.\n\nInhalt:\n${text}\n\nExtrahiere die JSON-Daten.`,
+      },
+    ],
+  });
   const result = completion.choices[0]?.message?.content || "";
   return extractJson(result);
 }
@@ -572,136 +669,3 @@ abr:${JSON.stringify(currentKurz ? { id: currentKurz.id, name: currentKurz.name,
   }
 }
 
-
-// -------- Multi-Dokument-Klassifikation (Batch bis 20+ PDFs) --------
-
-const SYSTEM_CLASSIFY = `Du bist BetriebsKostenBot, Experte für deutsche Hausverwaltungs-Dokumente.
-Klassifiziere das Dokument und extrahiere die wichtigsten Stammdaten.
-
-Antworte AUSSCHLIESSLICH mit JSON in diesem Format:
-{
-  "dokumentArt": "rechnung|betriebskostenabrechnung|heizkostenabrechnung|mietvertrag|mietvertrag_nachtrag|uebergabeprotokoll|kontoauszug|pm_vertrag|eigentuemer_vollmacht|grundbuchauszug|kaufvertrag|liegenschaftskarte|flurstueckskarte|objektbeschreibung|gebaeude_mieterliste|anschreiben|sonstiges",
-  "confidence": 0.0 bis 1.0,
-  "objektAdresse": "Straße Hausnummer, PLZ Ort falls erkennbar",
-  "liegenschaftName": "Name/Bezeichnung falls genannt",
-  "wohnungsbezeichnung": "z.B. Haus A · EG links",
-  "mieterName": "falls Mietvertrag/Kontoauszug",
-  "vermieterName": "falls erkennbar",
-  "kaltmiete": 0,
-  "nebenkostenVorauszahlung": 0,
-  "heizkostenVorauszahlung": 0,
-  "kaution": 0,
-  "mietbeginn": "",
-  "mietende": "",
-  "rechnungsnummer": "",
-  "rechnungsdatum": "",
-  "betrag": 0,
-  "leistungsart": "",
-  "auftragnehmer": "",
-  "auftraggeber": "",
-  "verwalterName": "",
-  "auftraggeberName": "",
-  "honorarSatz": 0,
-  "honorarModell": "",
-  "eigentuemerName": "",
-  "flurstueck": "",
-  "grundstuecksflaeche": 0,
-  "rawSummary": "1-2 Sätze wortgetreue Kernaussage",
-  "ablageZiel": "rechnung|mietvertrag|mietvertrag_nachtrag|kontoauszug|pm_vertrag|pm_vertrag_anhang|eigentuemer|eigentuemer_anhang|liegenschaft_anhang|schriftverkehr|sonstiges"
-}
-
-Regeln:
-- Dateiname und Inhalt gemeinsam nutzen (z.B. SHG4_Mietvertrag_01 → mietvertrag).
-- Grundbuchauszug / Kaufvertrag → eigentuemer_anhang bzw. eigentuemer.
-- Liegenschaftskarte / Flurstückskarte / Objektbeschreibung / Gebäude-Mieterliste → pm_vertrag_anhang oder liegenschaft_anhang.
-- Nachtrag / Zusatzvereinbarung zum Mietvertrag → mietvertrag_nachtrag.
-- Übergabeprotokoll → uebergabeprotokoll.
-- Rate niemals Zahlen oder Namen, die nicht im Text stehen.
-- confidence < 0.5 nur bei echten Zweifeln.`;
-
-export async function classifyDocument(params: {
-  text: string;
-  fileName: string;
-}): Promise<{
-  dokumentArt: DokumentArt;
-  confidence: number;
-  ablageZiel: StammdatenVorschlag["ablageZiel"];
-  data: Record<string, unknown>;
-  rawSummary?: string;
-}> {
-  const { text, fileName } = params;
-  // Heuristik aus Dateiname (schnell, stabil bei Dummy-Paketen)
-  const fn = fileName.toLowerCase();
-  let hint: DokumentArt | null = null;
-  if (/mietvertrag|mv[-_]/i.test(fn) && /nachtrag/i.test(fn)) hint = "mietvertrag_nachtrag";
-  else if (/mietvertrag|mv[-_]/i.test(fn)) hint = "mietvertrag";
-  else if (/kontoauszug|konto[-_]?auszug/i.test(fn)) hint = "kontoauszug";
-  else if (/pm[-_]?vertrag|hausverwalter|verwaltervertrag/i.test(fn)) hint = "pm_vertrag";
-  else if (/grundbuch/i.test(fn)) hint = "grundbuchauszug";
-  else if (/kaufvertrag/i.test(fn)) hint = "kaufvertrag";
-  else if (/liegenschaftskarte|flurstueckskarte|flurstück/i.test(fn)) hint = /flur/i.test(fn) ? "flurstueckskarte" : "liegenschaftskarte";
-  else if (/objektbeschreibung|objekt[-_]?beschreib/i.test(fn)) hint = "objektbeschreibung";
-  else if (/mieterliste|gebäude.*mieter|gebaeude.*mieter/i.test(fn)) hint = "gebaeude_mieterliste";
-  else if (/rechnung|invoice/i.test(fn)) hint = "rechnung";
-  else if (/anschreiben|begr[uü]ssung|mahnung/i.test(fn)) hint = "anschreiben";
-  else if (/uebergabe|übergabe|protokoll/i.test(fn)) hint = "uebergabeprotokoll";
-
-  const completion = await createChatCompletion({
-    max_completion_tokens: 1500,
-    temperature: 0,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: SYSTEM_CLASSIFY },
-      {
-        role: "user",
-        content: `Datei: ${fileName}${hint ? `\nDateiname-Hinweis: wahrscheinlich "${hint}"` : ""}.\n\nInhalt (Auszug):\n${text.slice(0, 10000)}\n\nKlassifiziere und extrahiere.`,
-      },
-    ],
-  });
-
-  const result = completion.choices[0]?.message?.content || "{}";
-  const parsed = extractJson(result) as Record<string, unknown>;
-
-  const art = (parsed.dokumentArt as DokumentArt) || hint || "sonstiges";
-  const confidence = typeof parsed.confidence === "number" ? parsed.confidence : hint ? 0.85 : 0.5;
-  const ablageZiel = (parsed.ablageZiel as StammdatenVorschlag["ablageZiel"]) || defaultAblage(art);
-
-  return {
-    dokumentArt: art,
-    confidence,
-    ablageZiel,
-    data: parsed,
-    rawSummary: typeof parsed.rawSummary === "string" ? parsed.rawSummary : undefined,
-  };
-}
-
-function defaultAblage(art: DokumentArt): StammdatenVorschlag["ablageZiel"] {
-  switch (art) {
-    case "rechnung":
-    case "betriebskostenabrechnung":
-    case "heizkostenabrechnung":
-      return "rechnung";
-    case "mietvertrag":
-      return "mietvertrag";
-    case "mietvertrag_nachtrag":
-    case "uebergabeprotokoll":
-      return "mietvertrag_nachtrag";
-    case "kontoauszug":
-      return "kontoauszug";
-    case "pm_vertrag":
-      return "pm_vertrag";
-    case "liegenschaftskarte":
-    case "flurstueckskarte":
-    case "objektbeschreibung":
-    case "gebaeude_mieterliste":
-      return "pm_vertrag_anhang";
-    case "grundbuchauszug":
-    case "kaufvertrag":
-    case "eigentuemer_vollmacht":
-      return "eigentuemer_anhang";
-    case "anschreiben":
-      return "schriftverkehr";
-    default:
-      return "sonstiges";
-  }
-}
