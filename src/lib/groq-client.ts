@@ -13,22 +13,34 @@ import type {
  *   GROQ_TEXT_MODELS=model-a,model-b,model-c   (Komma-getrennt, ersetzt die Default-Kette)
  */
 const DEFAULT_TEXT_MODELS = [
-  // gpt-oss-120b zuerst: höheres TPM-Limit, Llama oft am Tageslimit (TPD)
+  // Nur GPT-OSS: eigenes TPD-Kontingent, kein Llama-Versatile-Fallback
   process.env.GROQ_TEXT_MODEL || "openai/gpt-oss-120b",
   "openai/gpt-oss-20b",
-  "llama-3.3-70b-versatile",
 ];
 
+const BLOCKED_TEXT_MODELS = new Set([
+  "llama-3.3-70b-versatile",
+  "llama3-70b-8192",
+  "llama-3.1-70b-versatile",
+]);
+
 export function getTextModels(): string[] {
+  let models: string[];
   if (process.env.GROQ_TEXT_MODELS) {
-    return process.env.GROQ_TEXT_MODELS.split(",")
+    models = process.env.GROQ_TEXT_MODELS.split(",")
       .map((s) => s.trim())
       .filter(Boolean);
+  } else {
+    const primary = process.env.GROQ_TEXT_MODEL || DEFAULT_TEXT_MODELS[0];
+    const rest = DEFAULT_TEXT_MODELS.filter((m) => m !== primary);
+    models = [primary, ...rest];
   }
-  // Primärmodell zuerst, dann Fallbacks ohne Duplikate
-  const primary = process.env.GROQ_TEXT_MODEL || DEFAULT_TEXT_MODELS[0];
-  const rest = DEFAULT_TEXT_MODELS.filter((m) => m !== primary);
-  return [primary, ...rest];
+  // Llama-Versatile und ähnliche nie verwenden (TPD oft leer, unerwünscht)
+  models = models.filter((m) => !BLOCKED_TEXT_MODELS.has(m));
+  if (models.length === 0) {
+    models = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"];
+  }
+  return models;
 }
 
 export const VISION_MODEL =
