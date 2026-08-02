@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
           const reply = await chatWithContext({
             message:
               message +
-              `\n\n[Systemhinweis: Der Schreib-Agent ist fehlgeschlagen (${agentErr?.message || "unbekannt"}). Antworte hilfreich und erkläre, dass die Briefe manuell unter Schriftverkehr erstellt werden können.]`,
+              `\n\n[Systemhinweis: Der Agent ist fehlgeschlagen (${agentErr?.message || "unbekannt"}). Wenn der Nutzer Hinweise/Fehler bereinigen, Gebäude anlegen oder unpassende Dokumente sehen will, erkläre den Fehler ehrlich und dass ein erneuter Versuch oder Server-Log-Prüfung nötig ist – NICHT auf manuelle Mahnungen/Schriftverkehr verweisen, wenn der Auftrag Stammdaten-Bereinigung war.]`,
             current: current ?? null,
             all,
             liegenschaften,
