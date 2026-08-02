@@ -31,21 +31,35 @@ function normalize(s: string): string {
   return s.toLowerCase().replace(/straße|strasse/g, "str").replace(/[^a-z0-9]/g, "");
 }
 
-/** Prüft, ob eine extrahierte Adresse zu einer bekannten Liegenschaft passt. */
+/**
+ * Prüft, ob eine extrahierte Adresse zu einer bekannten Liegenschaft passt.
+ * Primär wird über Straße + Hausnummer gematcht (eindeutig). Der Fallback über
+ * PLZ + Ort wird NUR verwendet, wenn er eindeutig genau eine Liegenschaft trifft –
+ * sonst könnten zwei Häuser in derselben Straße/Stadt (z.B. Hausnr. 4 und 6 mit
+ * identischer PLZ) fälschlich zusammengelegt werden, obwohl es unterschiedliche
+ * Objekte mit unterschiedlichen Mietern/Rechnungen sind.
+ */
 export function matchLiegenschaft(
   adresse: string,
   liegenschaften: Liegenschaft[]
 ): Liegenschaft | undefined {
   if (!adresse) return undefined;
   const normAdresse = normalize(adresse);
-  return liegenschaften.find((l) => {
+
+  const strasseTreffer = liegenschaften.find((l) => {
     const strasseHnr = normalize(`${l.strasse}${l.hausnummer}`);
-    const ort = normalize(l.ort);
-    return (
-      (strasseHnr.length > 3 && normAdresse.includes(strasseHnr)) ||
-      (l.plz && adresse.includes(l.plz) && ort.length > 2 && normAdresse.includes(ort))
-    );
+    return strasseHnr.length > 3 && normAdresse.includes(strasseHnr);
   });
+  if (strasseTreffer) return strasseTreffer;
+
+  const plzOrtTreffer = liegenschaften.filter((l) => {
+    const ort = normalize(l.ort);
+    return l.plz && adresse.includes(l.plz) && ort.length > 2 && normAdresse.includes(ort);
+  });
+  // Nur übernehmen, wenn es GENAU EINE Liegenschaft mit dieser PLZ/Ort-Kombination
+  // gibt – bei mehreren (z.B. mehrere Häuser derselben Straße/Stadt) ist die
+  // Zuordnung sonst ein Ratespiel und bleibt lieber offen (manuelle Bestätigung).
+  return plzOrtTreffer.length === 1 ? plzOrtTreffer[0] : undefined;
 }
 
 /** Parst ein deutsches (TT.MM.JJJJ) oder ISO-Datum (JJJJ-MM-TT) und liefert das Jahr. */

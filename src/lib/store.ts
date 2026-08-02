@@ -93,29 +93,37 @@ export const useStore = create<StoreState>((set, get) => ({
 
   uploadFiles: async (files: File[]) => {
     set({ isAnalyzing: true, error: null });
+    const fehler: string[] = [];
     try {
       for (const file of files) {
-        const fd = new FormData();
-        fd.append("file", file);
-        const res = await fetch("/api/analyze", { method: "POST", body: fd });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || "Analyse fehlgeschlagen");
+        try {
+          const fd = new FormData();
+          fd.append("file", file);
+          const res = await fetch("/api/analyze", { method: "POST", body: fd });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || "Analyse fehlgeschlagen");
+          }
+          const data = await res.json();
+          set((s) => ({
+            abrechnungen: [data.abrechnung, ...s.abrechnungen.filter((a) => a.id !== data.abrechnung.id)],
+            selectedId: data.abrechnung.id,
+            pendingLiegenschaften: data.liegenschaftVorschlag
+              ? [
+                  ...s.pendingLiegenschaften,
+                  { abrechnungId: data.abrechnung.id, ...data.liegenschaftVorschlag },
+                ]
+              : s.pendingLiegenschaften,
+          }));
+        } catch (e: any) {
+          // Fehler bei einer einzelnen Datei (z.B. falscher Dokumenttyp) darf die
+          // übrigen Dateien des Batches nicht blockieren.
+          fehler.push(`${file.name}: ${e.message || "Analyse fehlgeschlagen"}`);
         }
-        const data = await res.json();
-        set((s) => ({
-          abrechnungen: [data.abrechnung, ...s.abrechnungen.filter((a) => a.id !== data.abrechnung.id)],
-          selectedId: data.abrechnung.id,
-          pendingLiegenschaften: data.liegenschaftVorschlag
-            ? [
-                ...s.pendingLiegenschaften,
-                { abrechnungId: data.abrechnung.id, ...data.liegenschaftVorschlag },
-              ]
-            : s.pendingLiegenschaften,
-        }));
       }
-    } catch (e: any) {
-      set({ error: e.message });
+      if (fehler.length > 0) {
+        set({ error: fehler.join(" · ") });
+      }
     } finally {
       set({ isAnalyzing: false });
     }

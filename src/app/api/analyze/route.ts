@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { classifyDocument } from "@/lib/ai";
 import { extractTextFromFile } from "@/lib/document-ocr";
 import { ingestRechnungDokument } from "@/lib/rechnung-intake";
+import { DOKUMENT_TYP_LABEL } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -47,13 +49,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: ocr.error }, { status: 415 });
     }
 
+    // Schritt 2: Dokumenttyp erkennen. Dieses Upload-Feld ist explizit für
+    // Rechnungen/Betriebskosten-Belege gedacht – Mietverträge, PM-Verträge,
+    // Grundbuchauszüge o.ä. dürfen NICHT als Betriebskostenabrechnung angelegt
+    // werden (führt sonst zu falsch zugeordneten/vermischten Positionen).
+    // Für diese Dokumenttypen bitte den "🧠 Intelligenter Upload" verwenden,
+    // der jeden Typ korrekt erkennt und einordnet.
+    const klassifikation = await classifyDocument({ text: ocr.text, fileName: file.name });
+    if (klassifikation.typ !== "rechnung" && klassifikation.konfidenz >= 0.6) {
+      return NextResponse.json(
+        {
+          error: `Dieses Dokument wurde als „${DOKUMENT_TYP_LABEL[klassifikation.typ]}“ erkannt, nicht als Rechnung/Betriebskosten-Beleg. Bitte über den „🧠 Intelligenter Upload“ hochladen – dort wird der Dokumenttyp korrekt erkannt und eingeordnet.`,
+          erkannterTyp: klassifikation.typ,
+        },
+        { status: 422 }
+      );
+    }
+
     // Zuordnung zur Liegenschaftshierarchie: entweder explizit übergeben (Upload
     // aus einer Registerkarte heraus) oder per Adressabgleich automatisch erkannt.
     const liegenschaftId = (formData.get("liegenschaftId") as string) || undefined;
     const gebaeudeId = (formData.get("gebaeudeId") as string) || undefined;
     const wohnungId = (formData.get("wohnungId") as string) || undefined;
 
-    // Schritt 2+3: separates LLM extrahiert die Rechnungsdaten, Merkmalsprüfung,
+    // Schritt 3+4: separates LLM extrahiert die Rechnungsdaten, Merkmalsprüfung,
     // automatische Zuordnung bzw. Anlage der Abrechnung – gemeinsame Logik mit
     // dem Sammel-Upload (/api/smart-upload).
     const { abrechnung, pruefung, liegenschaftVorschlag, ergaenzt } = await ingestRechnungDokument({

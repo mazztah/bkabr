@@ -259,7 +259,7 @@ async function buildAndSaveBrief(params: {
     liegenschaftId: params.liegenschaft?.id,
     liegenschaftName: params.liegenschaft
       ? `${params.liegenschaft.strasse} ${params.liegenschaft.hausnummer}, ${params.liegenschaft.plz} ${params.liegenschaft.ort}`
-      : params.liegenschaft?.name,
+      : undefined,
     betreff,
     text,
     werte,

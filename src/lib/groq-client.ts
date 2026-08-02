@@ -1,4 +1,8 @@
 import Groq from "groq-sdk";
+import type {
+  ChatCompletion,
+  ChatCompletionCreateParamsNonStreaming,
+} from "groq-sdk/resources/chat/completions";
 
 /**
  * Primärmodell + Fallbacks. Rate-Limits (TPD) sind modellbezogen –
@@ -62,17 +66,12 @@ function isRetryableModelError(err: any): boolean {
   return false;
 }
 
-type ChatParams = Omit<
-  Groq.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
-  "model"
-> & { model?: string };
+type ChatParams = Omit<ChatCompletionCreateParamsNonStreaming, "model"> & { model?: string };
 
 /**
  * chat.completions.create mit automatischem Modell-Fallback bei Rate-Limit / Modellfehlern.
  */
-export async function createChatCompletion(
-  params: ChatParams
-): Promise<Groq.Chat.Completions.ChatCompletion> {
+export async function createChatCompletion(params: ChatParams): Promise<ChatCompletion> {
   const groq = getGroqClient();
   const models = params.model
     ? [params.model, ...getTextModels().filter((m) => m !== params.model)]
