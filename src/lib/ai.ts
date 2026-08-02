@@ -259,6 +259,72 @@ export async function extractPmVertrag(params: {
   return extractJson(result);
 }
 
+const SYSTEM_WOHNUNGSUEBERSICHT = `Du bist ein Experte für deutsche Hausverwaltungs-Objektunterlagen. Analysiere den übergebenen Text (Anlage zum PM-Vertrag, Objektbeschreibung, Mieterliste oder eine hochgeladene Excel-/CSV-Stammdatenliste) und extrahiere daraus eine Übersicht der Gebäude, Wohnungen/Einheiten und – falls vorhanden – der zugehörigen Mieter.
+
+WICHTIGSTE REGEL: Trage NUR Zeilen/Werte ein, die eindeutig als eigene Wohnung/Einheit im Text erkennbar sind (typischerweise eine Tabelle mit Wohnungsbezeichnung/Lage, Fläche/Größe in m², ggf. Zimmerzahl, ggf. Mietername/Miete). Erfinde niemals Wohnungen, Größen oder Namen. Ist gar keine solche Tabelle/Liste im Text enthalten (z.B. reiner Fließtext ohne Einheitenliste), liefere ein leeres "einheiten"-Array.
+
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt in exakt diesem Format:
+{
+  "liegenschaftName": "Name/Bezeichnung der Liegenschaft, falls im Dokument genannt, sonst leerer String",
+  "objektAdresse": "vollständige Adresse der Liegenschaft (Straße Hausnummer, PLZ Ort), falls erkennbar, sonst leerer String",
+  "einheiten": [
+    {
+      "gebaeudeName": "Name/Bezeichnung des Gebäudes, z.B. 'Haus A' oder die Adresse des Gebäudeteils, falls im Text unterschieden, sonst leerer String",
+      "wohnungsbezeichnung": "Bezeichnung/Lage der Wohnung, z.B. '1. OG links' oder 'Whg. 3'",
+      "typ": "Wohnung" | "Gewerbe" | "Stellplatz" | "Sonstige",
+      "flaeche": <Wohnfläche in m² als Zahl, sonst 0>,
+      "zimmer": <Anzahl Zimmer als Zahl, sonst 0>,
+      "miteigentumsanteil": <Miteigentumsanteil als Zahl (z.B. 125 für 125/1000), sonst 0>,
+      "mieterName": "Name des aktuellen Mieters, NUR falls im Text bei dieser Wohnung genannt, sonst leerer String",
+      "kaltmiete": <Kaltmiete in Euro, NUR falls genannt, sonst 0>,
+      "nebenkostenVorauszahlung": <monatliche NK-Vorauszahlung in Euro, NUR falls genannt, sonst 0>,
+      "mietbeginn": "Datum, NUR falls genannt, sonst leerer String"
+    }
+  ]
+}
+Falls ein Wert nicht sicher erkennbar ist: leerer String bzw. 0. Rate niemals.`;
+
+/**
+ * Extrahiert eine Wohnungs-/Mieterübersicht aus einer Anlage zum PM-Vertrag
+ * (Objektbeschreibung, Mieterliste) oder einer hochgeladenen Excel-/CSV-Stammdatenliste.
+ * Liefert ein leeres `einheiten`-Array, wenn im Text keine entsprechende Tabelle
+ * gefunden wurde (z.B. bei einer reinen Liegenschaftskarte/Lageplan).
+ */
+export async function extractWohnungsuebersicht(params: {
+  text: string;
+  fileName: string;
+  anweisung?: string;
+}): Promise<import("./types").WohnungsuebersichtExtraktion> {
+  const { text, fileName, anweisung } = params;
+  const completion = await createChatCompletion({
+    max_completion_tokens: 4000,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM_WOHNUNGSUEBERSICHT },
+      {
+        role: "user",
+        content: `Datei: ${fileName}.${
+          anweisung ? `\n\nHinweis des Nutzers zu diesem Upload: ${anweisung}` : ""
+        }\n\nInhalt:\n${text.slice(0, 16000)}\n\nExtrahiere die JSON-Daten.`,
+      },
+    ],
+  });
+
+  const result = completion.choices[0]?.message?.content || "";
+  try {
+    const parsed = extractJson(result) as { liegenschaftName?: string; objektAdresse?: string; einheiten?: unknown };
+    const einheiten = Array.isArray(parsed.einheiten) ? parsed.einheiten : [];
+    return {
+      liegenschaftName: parsed.liegenschaftName || "",
+      objektAdresse: parsed.objektAdresse || "",
+      einheiten: einheiten as import("./types").WohnungsuebersichtEintrag[],
+    };
+  } catch {
+    return { liegenschaftName: "", objektAdresse: "", einheiten: [] };
+  }
+}
+
 // -------- Klassifizierung beim Sammel-Upload (viele unterschiedliche Dokumente auf einmal) --------
 
 const SYSTEM_KLASSIFIZIERUNG = `Du bist ein Dokumenten-Klassifizierer für eine deutsche Hausverwaltungs-Software. Ordne das übergebene Dokument (Dateiname + erkannter Text, ggf. gekürzt) GENAU EINER der folgenden Kategorien zu:

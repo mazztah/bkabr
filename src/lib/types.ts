@@ -526,7 +526,12 @@ export interface SmartUploadErgebnis {
       liegenschaftId?: string;
       liegenschaftName?: string;
       pmVertragId?: string;
+      neuanlage?: LiegenschaftStammdatenVorschlag;
     };
+    // Nur gesetzt, wenn im Dokument eine Wohnungs-/Mieterübersicht (Tabelle mit
+    // Wohnungsbezeichnung + Größe, ggf. Mieter) erkannt wurde, z.B. Anlage zum
+    // PM-Vertrag oder eine hochgeladene Mieterlisten-Excel/-CSV.
+    hierarchie?: HierarchieAbgleichVorschlag;
   };
   kontoauszug?: {
     transaktionen: KontoauszugTransaktion[];
@@ -550,6 +555,79 @@ export interface LiegenschaftStammdatenVorschlag {
   hausnummer?: string;
   plz?: string;
   ort?: string;
+}
+
+// -------- Extraktion einer Wohnungs-/Mieterübersicht (Anlage zum PM-Vertrag, Mieterliste, Excel) --------
+
+export interface WohnungsuebersichtEintrag {
+  gebaeudeName?: string;
+  wohnungsbezeichnung: string;
+  typ?: EinheitTyp;
+  flaeche?: number;
+  zimmer?: number;
+  miteigentumsanteil?: number;
+  mieterName?: string;
+  kaltmiete?: number;
+  nebenkostenVorauszahlung?: number;
+  mietbeginn?: string;
+}
+
+export interface WohnungsuebersichtExtraktion {
+  liegenschaftName?: string;
+  objektAdresse?: string;
+  einheiten: WohnungsuebersichtEintrag[];
+}
+
+// -------- Abgleich Gebäude/Wohnungen/Mieter aus einer Objekt-/Wohnungsübersicht --------
+// Wird erzeugt, wenn im Sammel-Upload eine Anlage zum PM-Vertrag (Objektbeschreibung,
+// Mieterliste) oder eine hochgeladene Excel-/CSV-Stammdatenliste eine Tabelle mit
+// Wohnungen (Bezeichnung, Größe, ggf. Mieter) enthält. Jeder Eintrag wird gegen die
+// bestehenden Stammdaten der (ggf. neu anzulegenden) Liegenschaft abgeglichen.
+
+export interface HierarchieGebaeudeVorschlag {
+  key: string; // stabiler Bezugsschlüssel innerhalb dieses Uploads (von Wohnungen referenziert)
+  aktion: "neu" | "vorhanden";
+  gebaeudeId?: string; // gesetzt bei aktion "vorhanden"
+  name: string;
+}
+
+export interface HierarchieWohnungVorschlag {
+  key: string; // stabiler Bezugsschlüssel innerhalb dieses Uploads (von Mietern referenziert)
+  gebaeudeKey: string; // referenziert HierarchieGebaeudeVorschlag.key
+  aktion: "neu" | "aktualisieren" | "unveraendert";
+  wohnungId?: string; // gesetzt bei aktion "aktualisieren"/"unveraendert"
+  bezeichnung: string;
+  typ: EinheitTyp;
+  flaeche?: number;
+  zimmer?: number;
+  miteigentumsanteil?: number;
+  // Bei aktion "aktualisieren": nur die Felder, die sich gegenüber dem bestehenden
+  // Datensatz laut Dokument unterscheiden (zur Anzeige "was würde sich ändern").
+  aenderungen?: Partial<Pick<Wohnung, "bezeichnung" | "flaeche" | "zimmer" | "miteigentumsanteil">>;
+}
+
+export interface HierarchieMieterVorschlag {
+  key: string;
+  wohnungKey: string; // referenziert HierarchieWohnungVorschlag.key
+  aktion: "neu" | "aktualisieren";
+  mieterId?: string; // gesetzt bei aktion "aktualisieren"
+  name: string;
+  kaltmiete?: number;
+  nebenkostenVorauszahlung?: number;
+  mietbeginn?: string;
+  mietende?: string;
+  aenderungen?: Partial<
+    Pick<Mieter, "kaltmiete" | "nebenkostenVorauszahlung" | "mietbeginn" | "mietende">
+  >;
+}
+
+export interface HierarchieAbgleichVorschlag {
+  liegenschaftId?: string;
+  liegenschaftName?: string;
+  neuanlage?: LiegenschaftStammdatenVorschlag; // gesetzt, wenn keine passende Liegenschaft gefunden wurde
+  gebaeude: HierarchieGebaeudeVorschlag[];
+  wohnungen: HierarchieWohnungVorschlag[];
+  mieter: HierarchieMieterVorschlag[];
 }
 
 // -------- Schriftverkehr (gespeicherte Anschreiben / Mahnungen) --------

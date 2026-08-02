@@ -1,5 +1,6 @@
 import "./dommatrix-polyfill";
 import { PDFParse } from "pdf-parse";
+import * as XLSX from "xlsx";
 import { visionTranscribe } from "./ai";
 import { tesseractOcr } from "./ocr";
 
@@ -8,13 +9,34 @@ export interface OcrResult {
   error?: string;
 }
 
-/**
- * Extrahiert Text aus einer hochgeladenen Datei (PDF, JPG/PNG oder TXT).
- * - PDF: Text wird lokal extrahiert (Groq kann PDFs nicht direkt lesen).
- * - Bild: Tesseract.js (lokal) + Groq Vision-LLM werden kombiniert (zwei
- *   unabhängige OCR-Quellen, robuster als eine einzelne Methode).
- * - TXT: Inhalt wird direkt übernommen.
- */
+const EXCEL_EXTENSIONS = /\.(xlsx|xls|xlsm)$/i;
+const EXCEL_MIME_TYPES = new Set([
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-excel.sheet.macroEnabled.12",
+]);
+
+function excelToText(buffer: Buffer): string {
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const bloecke: string[] = [];
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    const rows: unknown[][] = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      defval: "",
+      raw: false,
+    });
+    const zeilenText = rows
+      .filter((row) => row.some((cell) => String(cell ?? "").trim() !== ""))
+      .map((row) => row.map((cell) => String(cell ?? "").trim()).join(" | "))
+      .join("\n");
+    if (zeilenText) {
+      bloecke.push(`--- Tabellenblatt: ${sheetName} ---\n${zeilenText}`);
+    }
+  }
+  return bloecke.join("\n\n");
+}
+
 export async function extractTextFromFile(
   buffer: Buffer,
   mimeType: string,
@@ -22,6 +44,23 @@ export async function extractTextFromFile(
 ): Promise<OcrResult> {
   const isPdf = mimeType === "application/pdf";
   const isImage = mimeType.startsWith("image/");
+  const isExcel = EXCEL_MIME_TYPES.has(mimeType) || EXCEL_EXTENSIONS.test(fileName);
+
+  if (isExcel) {
+    try {
+      const text = excelToText(buffer);
+      if (!text.trim()) {
+        return { text: "", error: "In der Excel-Datei wurden keine befüllten Zeilen gefunden." };
+      }
+      return { text };
+    } catch (e) {
+      console.error("Excel-Textextraktion fehlgeschlagen:", e);
+      return {
+        text: "",
+        error: "Die Excel-Datei konnte nicht gelesen werden (beschädigt oder ungültiges Format?).",
+      };
+    }
+  }
 
   if (isPdf) {
     try {

@@ -3,9 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import {
   DOKUMENT_TYP_LABEL,
+  EinheitTyp,
   Eigentuemer,
   ErkannterDokumentTyp,
   Gebaeude,
+  HierarchieGebaeudeVorschlag,
+  HierarchieMieterVorschlag,
+  HierarchieWohnungVorschlag,
   Liegenschaft,
   Mietvertrag,
   Mieter,
@@ -71,6 +75,8 @@ export default function SmartUploadPage() {
     ladeStammdaten();
   }, []);
 
+  const [anweisung, setAnweisung] = useState("");
+
   const handleFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setUploading(true);
@@ -78,6 +84,7 @@ export default function SmartUploadPage() {
     try {
       const fd = new FormData();
       Array.from(files).forEach((f) => fd.append("files", f));
+      if (anweisung.trim()) fd.append("anweisung", anweisung.trim());
       const res = await fetch("/api/smart-upload", { method: "POST", body: fd });
       const json = await res.json();
       if (!res.ok) {
@@ -118,6 +125,20 @@ export default function SmartUploadPage() {
         </p>
       </div>
 
+      <label className="mb-3 flex flex-col gap-1 text-xs">
+        <span className="text-muted-foreground">
+          Anweisung an die KI (optional) – z.B. „bitte aktualisiere die Stammdaten“ oder „erstelle
+          die neue Liegenschaft“
+        </span>
+        <textarea
+          value={anweisung}
+          onChange={(e) => setAnweisung(e.target.value)}
+          rows={2}
+          placeholder="z.B. Bitte aktualisiere die Stammdaten für die bestehenden Wohnungen/Mieter."
+          className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+        />
+      </label>
+
       <div
         onDragOver={(e) => {
           e.preventDefault();
@@ -138,7 +159,7 @@ export default function SmartUploadPage() {
           ref={fileInputRef}
           type="file"
           multiple
-          accept=".pdf,.jpg,.jpeg,.png,.txt,application/pdf,image/jpeg,image/png,text/plain"
+          accept=".pdf,.jpg,.jpeg,.png,.txt,.xlsx,.xls,.csv,application/pdf,image/jpeg,image/png,text/plain,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
           className="hidden"
           onChange={(e) => handleFiles(e.target.files)}
         />
@@ -151,7 +172,8 @@ export default function SmartUploadPage() {
             <div className="mb-2 text-3xl">📥✨</div>
             <p className="text-lg font-medium">Dateien per Drag & Drop oder Klick hochladen</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Auch 20+ Dateien auf einmal – jede wird einzeln erkannt und zugeordnet
+              Auch 20+ Dateien auf einmal (inkl. Excel-/CSV-Stammdatenlisten) – jede wird einzeln
+              erkannt und zugeordnet
             </p>
           </>
         )}
@@ -324,6 +346,13 @@ function QueueCard(props: {
     return (
       <EigentuemerDokCard {...props} onBusy={setBusy} busy={busy} verwerfen={verwerfen} onReload={onReload} />
     );
+  }
+  if (
+    item.typ === "liegenschaftskarte" &&
+    item.liegenschaftskarte?.hierarchie &&
+    item.liegenschaftskarte.hierarchie.wohnungen.length > 0
+  ) {
+    return <HierarchieCard {...props} onBusy={setBusy} busy={busy} verwerfen={verwerfen} onReload={onReload} />;
   }
   if (item.typ === "liegenschaftskarte" && item.liegenschaftskarte) {
     return (
@@ -856,6 +885,272 @@ function EigentuemerDokCard(
         className="mt-3 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
       >
         {busy ? "Speichere…" : "✓ Übernehmen & ablegen"}
+      </button>
+    </CardShell>
+  );
+}
+
+const EINHEIT_TYPEN: EinheitTyp[] = ["Wohnung", "Gewerbe", "Stellplatz", "Sonstige"];
+
+type GebaeudeRow = HierarchieGebaeudeVorschlag;
+type WohnungRow = HierarchieWohnungVorschlag & { uebernehmen: boolean };
+type MieterRow = HierarchieMieterVorschlag & { uebernehmen: boolean };
+
+function HierarchieCard(
+  props: {
+    item: Item;
+    liegenschaften: Liegenschaft[];
+    pmVertraege: PmVertrag[];
+    busy: boolean;
+    onBusy: (b: boolean) => void;
+    verwerfen: () => void;
+    onErledigt: (patch: Partial<Item>) => void;
+    onReload: () => void;
+  } & Record<string, any>
+) {
+  const { item, liegenschaften, pmVertraege, busy, onBusy, verwerfen, onErledigt, onReload } = props;
+  const h = item.liegenschaftskarte!.hierarchie!;
+  const v = item.liegenschaftskarte!.vorschlag;
+
+  const [modus, setModus] = useState<"vorhanden" | "neu">(h.liegenschaftId ? "vorhanden" : "neu");
+  const [liegenschaftId, setLiegenschaftId] = useState(h.liegenschaftId || "");
+  const [neu, setNeu] = useState({
+    name: h.neuanlage?.name || "",
+    strasse: h.neuanlage?.strasse || "",
+    hausnummer: h.neuanlage?.hausnummer || "",
+    plz: h.neuanlage?.plz || "",
+    ort: h.neuanlage?.ort || "",
+  });
+  const [pmVertragId, setPmVertragId] = useState(v.pmVertragId || "");
+
+  const [gebaeude, setGebaeudeRows] = useState<GebaeudeRow[]>(h.gebaeude);
+  const [wohnungen, setWohnungenRows] = useState<WohnungRow[]>(
+    h.wohnungen.map((w) => ({ ...w, uebernehmen: w.aktion !== "unveraendert" }))
+  );
+  const [mieter, setMieterRows] = useState<MieterRow[]>(h.mieter.map((m) => ({ ...m, uebernehmen: true })));
+
+  const patchWohnung = (key: string, patch: Partial<WohnungRow>) =>
+    setWohnungenRows((prev) => prev.map((w) => (w.key === key ? { ...w, ...patch } : w)));
+  const patchMieter = (key: string, patch: Partial<MieterRow>) =>
+    setMieterRows((prev) => prev.map((m) => (m.key === key ? { ...m, ...patch } : m)));
+  const patchGebaeude = (key: string, patch: Partial<GebaeudeRow>) =>
+    setGebaeudeRows((prev) => prev.map((g) => (g.key === key ? { ...g, ...patch } : g)));
+
+  const pmLabel = (pm: PmVertrag) => {
+    const l = liegenschaften.find((x: Liegenschaft) => x.id === pm.liegenschaftId);
+    return `${l?.name || "Ohne Liegenschaft"} (${pm.nummer || pm.id.slice(0, 6)})`;
+  };
+
+  const aktionLabel: Record<string, string> = {
+    neu: "🆕 Neu anlegen",
+    aktualisieren: "✏️ Aktualisieren",
+    unveraendert: "✓ Unverändert",
+    vorhanden: "✓ Vorhanden",
+  };
+
+  const bestaetigen = async () => {
+    onBusy(true);
+    try {
+      const payload = {
+        liegenschaft:
+          modus === "neu"
+            ? { modus: "neu", neu }
+            : { modus: "vorhanden", liegenschaftId },
+        gebaeude: gebaeude.map((g) => ({ ...g, uebernehmen: true })),
+        wohnungen,
+        mieter,
+        dokument: {
+          anhangTyp: item.liegenschaftskarte!.anhangTyp,
+          dateiName: item.dateiName,
+          storedFileName: item.storedFileName,
+          mimeType: item.mimeType,
+          extraktText: item.extraktText,
+          pmVertragId: pmVertragId || undefined,
+        },
+      };
+      const res = await fetch("/api/smart-upload/hierarchie", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        onErledigt({ status: "offen", meldung: json.error || "Übernahme fehlgeschlagen" });
+        return;
+      }
+      onErledigt({
+        status: "gespeichert",
+        meldung: `Übernommen: ${json.angelegtGebaeude} Gebäude, ${json.angelegtWohnungen} neue / ${json.aktualisiertWohnungen} aktualisierte Wohnungen, ${json.angelegtMieter} neue / ${json.aktualisiertMieter} aktualisierte Mieter.`,
+      });
+      onReload();
+    } finally {
+      onBusy(false);
+    }
+  };
+
+  const kannUebernehmen = modus === "vorhanden" ? !!liegenschaftId : !!neu.name.trim();
+
+  return (
+    <CardShell item={item} onVerwerfen={verwerfen}>
+      <p className="mb-3 rounded-md bg-muted/60 p-2 text-xs text-muted-foreground">
+        📋 In diesem Dokument wurde eine Wohnungs-/Mieterübersicht erkannt:{" "}
+        <span className="font-medium">
+          {gebaeude.length} Gebäude, {wohnungen.length} Wohnungen
+          {mieter.length > 0 ? `, ${mieter.length} Mieter` : ""}
+        </span>
+        . Bitte prüfen und übernehmen.
+      </p>
+
+      <LiegenschaftAuswahl
+        modus={modus}
+        setModus={setModus}
+        liegenschaftId={liegenschaftId}
+        setLiegenschaftId={setLiegenschaftId}
+        liegenschaften={liegenschaften}
+        neu={neu}
+        setNeu={setNeu}
+      />
+
+      {gebaeude.length > 1 && (
+        <div className="mt-3">
+          <p className="mb-1 text-xs font-semibold text-muted-foreground">Gebäude</p>
+          <div className="space-y-1">
+            {gebaeude.map((g) => (
+              <div key={g.key} className="flex items-center gap-2 text-xs">
+                <span className="w-24 shrink-0 text-muted-foreground">{aktionLabel[g.aktion]}</span>
+                <input
+                  value={g.name}
+                  onChange={(e) => patchGebaeude(g.key, { name: e.target.value })}
+                  className="flex-1 rounded border border-border bg-background px-2 py-1"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3">
+        <p className="mb-1 text-xs font-semibold text-muted-foreground">
+          Wohnungen ({wohnungen.filter((w) => w.uebernehmen).length} von {wohnungen.length} werden übernommen)
+        </p>
+        <div className="max-h-64 space-y-1 overflow-y-auto">
+          {wohnungen.map((w) => (
+            <div key={w.key} className="flex items-center gap-2 rounded border border-border/60 p-1.5 text-xs">
+              <input
+                type="checkbox"
+                checked={w.uebernehmen}
+                onChange={(e) => patchWohnung(w.key, { uebernehmen: e.target.checked })}
+              />
+              <span className="w-24 shrink-0 text-muted-foreground">{aktionLabel[w.aktion]}</span>
+              <input
+                value={w.bezeichnung}
+                onChange={(e) => patchWohnung(w.key, { bezeichnung: e.target.value })}
+                className="w-32 rounded border border-border bg-background px-2 py-1"
+                placeholder="Bezeichnung"
+              />
+              <select
+                value={w.typ}
+                onChange={(e) => patchWohnung(w.key, { typ: e.target.value as EinheitTyp })}
+                className="rounded border border-border bg-background px-2 py-1"
+              >
+                {EINHEIT_TYPEN.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="number"
+                value={w.flaeche ?? ""}
+                onChange={(e) => patchWohnung(w.key, { flaeche: e.target.value ? Number(e.target.value) : undefined })}
+                className="w-20 rounded border border-border bg-background px-2 py-1"
+                placeholder="m²"
+              />
+              <input
+                type="number"
+                value={w.zimmer ?? ""}
+                onChange={(e) => patchWohnung(w.key, { zimmer: e.target.value ? Number(e.target.value) : undefined })}
+                className="w-16 rounded border border-border bg-background px-2 py-1"
+                placeholder="Zi."
+              />
+              {w.aenderungen && (
+                <span className="truncate text-[11px] text-[var(--warning,#b45309)]">
+                  Änderung: {Object.entries(w.aenderungen).map(([k, val]) => `${k}: ${val}`).join(", ")}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {mieter.length > 0 && (
+        <div className="mt-3">
+          <p className="mb-1 text-xs font-semibold text-muted-foreground">
+            Mieter ({mieter.filter((m) => m.uebernehmen).length} von {mieter.length} werden übernommen)
+          </p>
+          <div className="max-h-64 space-y-1 overflow-y-auto">
+            {mieter.map((m) => (
+              <div key={m.key} className="flex items-center gap-2 rounded border border-border/60 p-1.5 text-xs">
+                <input
+                  type="checkbox"
+                  checked={m.uebernehmen}
+                  onChange={(e) => patchMieter(m.key, { uebernehmen: e.target.checked })}
+                />
+                <span className="w-24 shrink-0 text-muted-foreground">{aktionLabel[m.aktion]}</span>
+                <input
+                  value={m.name}
+                  onChange={(e) => patchMieter(m.key, { name: e.target.value })}
+                  className="w-32 rounded border border-border bg-background px-2 py-1"
+                  placeholder="Name"
+                />
+                <input
+                  type="number"
+                  value={m.kaltmiete ?? ""}
+                  onChange={(e) =>
+                    patchMieter(m.key, { kaltmiete: e.target.value ? Number(e.target.value) : undefined })
+                  }
+                  className="w-20 rounded border border-border bg-background px-2 py-1"
+                  placeholder="Kaltmiete"
+                />
+                <input
+                  value={m.mietbeginn || ""}
+                  onChange={(e) => patchMieter(m.key, { mietbeginn: e.target.value })}
+                  className="w-24 rounded border border-border bg-background px-2 py-1"
+                  placeholder="Mietbeginn"
+                />
+                {m.aenderungen && (
+                  <span className="truncate text-[11px] text-[var(--warning,#b45309)]">
+                    Änderung: {Object.entries(m.aenderungen).map(([k, val]) => `${k}: ${val}`).join(", ")}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <label className="mt-3 flex flex-col gap-1 text-xs">
+        <span className="text-muted-foreground">Dokument zusätzlich als Anhang bei PM-Vertrag ablegen (optional)</span>
+        <select
+          value={pmVertragId}
+          onChange={(e) => setPmVertragId(e.target.value)}
+          className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+        >
+          <option value="">— nicht ablegen —</option>
+          {pmVertraege.map((pm: PmVertrag) => (
+            <option key={pm.id} value={pm.id}>
+              {pmLabel(pm)}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <button
+        onClick={bestaetigen}
+        disabled={busy || !kannUebernehmen}
+        className="mt-3 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+      >
+        {busy ? "Übernehme…" : "✓ Übernehmen"}
       </button>
     </CardShell>
   );
