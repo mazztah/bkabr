@@ -4,16 +4,27 @@ import {
   Gebaeude,
   Liegenschaft,
   Mieter,
+  PruefBefund,
   SchriftverkehrDokument,
   Wohnung,
 } from "./types";
 import {
+  ablageDb,
+  deleteAbrechnung,
   gebaeudeDb,
   liegenschaftenDb,
+  listAbrechnungen,
+  logEvent,
   mieterDb,
+  mietvertraegeDb,
+  pmVertraegeDb,
+  pruefLaufDb,
   schriftverkehrDb,
+  updateAbrechnung,
   wohnungenDb,
+  eigentuemerDb,
 } from "./db";
+import { runPlausibilitaetspruefung, wendeBefundAn } from "./pruefung";
 import { mietRueckstand } from "./mietkonto";
 import {
   BriefKontext,
@@ -24,7 +35,7 @@ import {
 } from "./schriftverkehr";
 import { createChatCompletion } from "./groq-client";
 
-const MAX_AGENT_STEPS = 12;
+const MAX_AGENT_STEPS = 20;
 
 // -------- Tool-Definitionen (OpenAI-/Groq-kompatibel) --------
 
@@ -157,6 +168,282 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
           mieter_id: { type: "string" },
           liegenschaft_query: { type: "string" },
           template_id: { type: "string" },
+        },
+        required: [],
+      },
+    },
+  },
+
+  // ---- Plausibilitätsprüfung & Stammdaten-Bereinigung (alle Module) ----
+  {
+    type: "function",
+    function: {
+      name: "get_pruef_befunde",
+      description:
+        "Liest den letzten Plausibilitäts-Prüflauf und listet offene Befunde aller Module (Liegenschaften, Gebäude, Wohnungen, Mieter, Mietverträge, PM-Verträge, Eigentümer, Abrechnungen, Kontoauszüge, Ablage). Nutzen als erstes bei Bereinigungsaufträgen.",
+      parameters: {
+        type: "object",
+        properties: {
+          nur_offen: {
+            type: "boolean",
+            description: "Wenn true (Standard), nur offene Befunde",
+          },
+          modul: {
+            type: "string",
+            description:
+              "Optionaler Filter: liegenschaften|gebaeude|wohnungen|mieter|mietvertraege|pmVertraege|eigentuemer|abrechnungen|kontoauszuege|ablage",
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_pruefung",
+      description:
+        "Startet einen neuen vollständigen Plausibilitäts-Prüflauf über alle Module und gibt die Befunde zurück.",
+      parameters: { type: "object", properties: { "_": { type: "string" } } },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_gebaeude",
+      description:
+        "Legt ein Gebäude unter einer Liegenschaft an (z.B. 'Hauptgebäude'). Schließt den Hinweis 'Liegenschaft ohne Gebäude'.",
+      parameters: {
+        type: "object",
+        properties: {
+          liegenschaft_id: { type: "string", description: "ID der Liegenschaft" },
+          name: {
+            type: "string",
+            description: "Gebäude-Name, Standard 'Hauptgebäude'",
+          },
+          anzahl_einheiten: { type: "number" },
+          baujahr: { type: "number" },
+          heizungsart: { type: "string" },
+          user_confirmed: {
+            type: "boolean",
+            description:
+              "Muss true sein, wenn der Nutzer die Anlage bestätigt hat. Sonst nur Vorschlag zurückgeben.",
+          },
+        },
+        required: ["liegenschaft_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_liegenschaft",
+      description:
+        "Korrigiert Stammdaten einer Liegenschaft (Name, Straße, Hausnummer, PLZ, Ort, Flurstück, Notizen).",
+      parameters: {
+        type: "object",
+        properties: {
+          liegenschaft_id: { type: "string" },
+          name: { type: "string" },
+          strasse: { type: "string" },
+          hausnummer: { type: "string" },
+          plz: { type: "string" },
+          ort: { type: "string" },
+          flurstueck: { type: "string" },
+          notizen: { type: "string" },
+        },
+        required: ["liegenschaft_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_liegenschaft",
+      description:
+        "Löscht eine Liegenschaft. Nur wenn sie keine Gebäude/Wohnungen/Mieter hat ODER user_confirmed=true und force=true. Bei abhängigen Daten zuerst merge oder force+confirm.",
+      parameters: {
+        type: "object",
+        properties: {
+          liegenschaft_id: { type: "string" },
+          user_confirmed: { type: "boolean" },
+          force: {
+            type: "boolean",
+            description: "Auch löschen wenn noch abhängige Objekte existieren (Vorsicht)",
+          },
+        },
+        required: ["liegenschaft_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "merge_liegenschaften",
+      description:
+        "Verschiebt Gebäude, PM-Verträge und Eigentümer von Quell-Liegenschaft zur Ziel-Liegenschaft und löscht optional die leere Quelle. Für Duplikate wie mehrfache 'Spannhagengartenstraße'.",
+      parameters: {
+        type: "object",
+        properties: {
+          quelle_id: { type: "string", description: "ID der zu entleerenden Liegenschaft" },
+          ziel_id: { type: "string", description: "ID der kanonischen Liegenschaft" },
+          quelle_loeschen: {
+            type: "boolean",
+            description: "Nach Merge leere Quelle löschen (nur mit user_confirmed)",
+          },
+          user_confirmed: { type: "boolean" },
+        },
+        required: ["quelle_id", "ziel_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_wohnung",
+      description:
+        "Aktualisiert Wohnungs-Stammdaten, z.B. fehlende Wohnfläche (flaeche in m²), Bezeichnung, Typ, Zimmer.",
+      parameters: {
+        type: "object",
+        properties: {
+          wohnung_id: { type: "string" },
+          flaeche: { type: "number", description: "Wohnfläche in m²" },
+          bezeichnung: { type: "string" },
+          typ: { type: "string", enum: ["Wohnung", "Gewerbe", "Stellplatz", "Sonstige"] },
+          zimmer: { type: "number" },
+          notizen: { type: "string" },
+        },
+        required: ["wohnung_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_abrechnung",
+      description:
+        "Korrigiert eine Abrechnung – z.B. Status von 'Fertig' zurück auf 'Rohdaten' wenn Summe 0 €.",
+      parameters: {
+        type: "object",
+        properties: {
+          abrechnung_id: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["Rohdaten", "Validierung", "Fertig"],
+          },
+          name: { type: "string" },
+          adresse: { type: "string" },
+          gesamtSumme: { type: "number" },
+        },
+        required: ["abrechnung_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_abrechnung",
+      description:
+        "Löscht eine leere/fehlerhafte Abrechnung. Erfordert user_confirmed=true.",
+      parameters: {
+        type: "object",
+        properties: {
+          abrechnung_id: { type: "string" },
+          user_confirmed: { type: "boolean" },
+        },
+        required: ["abrechnung_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_ablage_zuordnung",
+      description:
+        "Korrigiert die Zuordnung eines Ablage-Dokuments (z.B. Rechnung lag bei falschem Lieferanten/Objekt).",
+      parameters: {
+        type: "object",
+        properties: {
+          ablage_id: { type: "string" },
+          ziel_art: {
+            type: "string",
+            description: "z.B. Liegenschaft, Rechnung, PM-Vertrag, Eigentümer, Kontoauszug",
+          },
+          ziel_id: { type: "string" },
+          ziel_label: { type: "string" },
+        },
+        required: ["ablage_id", "ziel_art", "ziel_id", "ziel_label"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "apply_pruef_befund",
+      description:
+        "Wendet den automatischen Korrekturvorschlag eines Befunds an (Dokument verschieben / Stammdaten-Patch), falls vorhanden.",
+      parameters: {
+        type: "object",
+        properties: {
+          lauf_id: { type: "string" },
+          befund_id: { type: "string" },
+        },
+        required: ["lauf_id", "befund_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "mark_befund_status",
+      description:
+        "Setzt Befund-Status auf 'uebernommen' (als erledigt markieren ohne Änderung) oder 'abgelehnt'.",
+      parameters: {
+        type: "object",
+        properties: {
+          lauf_id: { type: "string" },
+          befund_id: { type: "string" },
+          status: { type: "string", enum: ["uebernommen", "abgelehnt", "offen"] },
+        },
+        required: ["lauf_id", "befund_id", "status"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "analyze_and_plan_cleanup",
+      description:
+        "Analysiert alle offenen Prüfbefunde und liefert einen strukturierten Plan: auto_fix (zweifelsfrei, sofort ausführbar), fragen (Nutzer bestätigen: anlegen/löschen/mergen), manuell (z.B. fehlende Fläche ohne Quelle). Keine Änderungen – nur Plan.",
+      parameters: { type: "object", properties: { "_": { type: "string" } } },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "execute_safe_cleanup",
+      description:
+        "Führt nur zweifelsfreie Korrekturen aus: (1) Abrechnungen mit Status Fertig und Summe 0 → Rohdaten, (2) Befunde mit vorhandenem vorschlag anwenden, (3) leere Duplikat-Liegenschaften ohne Abhängigkeiten zur kanonischen Adresse mergen wenn eindeutig. Gebäude-Neuanlage und Löschungen nur wenn allow_create_gebaeude bzw. allow_delete true (Nutzer hat bestätigt).",
+      parameters: {
+        type: "object",
+        properties: {
+          allow_create_gebaeude: {
+            type: "boolean",
+            description: "true = fehlende Gebäude als 'Hauptgebäude' anlegen (Nutzer bestätigt)",
+          },
+          allow_delete_empty_liegenschaften: {
+            type: "boolean",
+            description: "true = leere Duplikat-Liegenschaften nach Merge löschen",
+          },
+          allow_delete_empty_abrechnungen: {
+            type: "boolean",
+            description: "true = leere Fertig-Abrechnungen mit Summe 0 löschen statt nur Status zurücksetzen",
+          },
+          liegenschaft_ids_fuer_gebaeude: {
+            type: "array",
+            items: { type: "string" },
+            description: "Optional nur für diese Liegenschaft-IDs Gebäude anlegen",
+          },
         },
         required: [],
       },
@@ -480,6 +767,595 @@ async function executeTool(
       };
     }
 
+    case "get_pruef_befunde": {
+      const laeufe = await pruefLaufDb.list();
+      if (!laeufe.length) return { hinweis: "Noch kein Prüflauf vorhanden. Nutze run_pruefung." };
+      const lauf = [...laeufe].sort(
+        (a, b) => new Date(b.gestartetAm).getTime() - new Date(a.gestartetAm).getTime()
+      )[0];
+      const nurOffen = args.nur_offen !== false;
+      let befunde = lauf.befunde || [];
+      if (nurOffen) befunde = befunde.filter((b) => b.status === "offen");
+      if (args.modul) befunde = befunde.filter((b) => b.modul === String(args.modul));
+      return {
+        laufId: lauf.id,
+        gestartetAm: lauf.gestartetAm,
+        modulStatus: lauf.modulStatus,
+        anzahl: befunde.length,
+        befunde: befunde.map((b) => ({
+          id: b.id,
+          modul: b.modul,
+          schweregrad: b.schweregrad,
+          titel: b.titel,
+          beschreibung: b.beschreibung,
+          betroffene: b.betroffene,
+          hatVorschlag: Boolean(b.vorschlag),
+          vorschlag: b.vorschlag,
+          status: b.status,
+        })),
+      };
+    }
+
+    case "run_pruefung": {
+      const lauf = await runPlausibilitaetspruefung();
+      return {
+        laufId: lauf.id,
+        gestartetAm: lauf.gestartetAm,
+        modulStatus: lauf.modulStatus,
+        anzahlBefunde: lauf.befunde.length,
+        offene: lauf.befunde.filter((b) => b.status === "offen").length,
+        befunde: lauf.befunde
+          .filter((b) => b.status === "offen")
+          .map((b) => ({
+            id: b.id,
+            modul: b.modul,
+            schweregrad: b.schweregrad,
+            titel: b.titel,
+            beschreibung: b.beschreibung,
+            betroffene: b.betroffene,
+            hatVorschlag: Boolean(b.vorschlag),
+          })),
+      };
+    }
+
+    case "create_gebaeude": {
+      const lgId = String(args.liegenschaft_id || "");
+      const lg = await liegenschaftenDb.get(lgId);
+      if (!lg) return { error: `Liegenschaft ${lgId} nicht gefunden` };
+      if (!args.user_confirmed) {
+        return {
+          needsConfirmation: true,
+          frage: `Soll für Liegenschaft „${lg.name}" (${lg.strasse} ${lg.hausnummer}, ${lg.plz} ${lg.ort}) ein Gebäude „${args.name || "Hauptgebäude"}" angelegt werden?`,
+          liegenschaft_id: lgId,
+          vorschlag_name: args.name || "Hauptgebäude",
+        };
+      }
+      const now = new Date().toISOString();
+      const geb = await gebaeudeDb.create({
+        id: uuidv4(),
+        liegenschaftId: lgId,
+        name: String(args.name || "Hauptgebäude"),
+        anzahlEinheiten:
+          typeof args.anzahl_einheiten === "number" ? args.anzahl_einheiten : undefined,
+        baujahr: typeof args.baujahr === "number" ? args.baujahr : undefined,
+        heizungsart: args.heizungsart ? String(args.heizungsart) : undefined,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await logEvent(
+        "anlage",
+        `Gebäude „${geb.name}" für Liegenschaft „${lg.name}" vom Agent angelegt.`,
+        { art: "Gebäude", id: geb.id }
+      );
+      return { ok: true, gebaeude: { id: geb.id, name: geb.name, liegenschaftId: lgId } };
+    }
+
+    case "update_liegenschaft": {
+      const id = String(args.liegenschaft_id || "");
+      const patch: Record<string, string> = {};
+      for (const k of ["name", "strasse", "hausnummer", "plz", "ort", "flurstueck", "notizen"] as const) {
+        if (args[k] !== undefined && args[k] !== null) patch[k] = String(args[k]);
+      }
+      const updated = await liegenschaftenDb.update(id, patch as any);
+      if (!updated) return { error: "Liegenschaft nicht gefunden" };
+      await logEvent("aenderung", `Liegenschaft „${updated.name}" vom Agent aktualisiert.`, {
+        art: "Liegenschaft",
+        id,
+      });
+      return {
+        ok: true,
+        liegenschaft: {
+          id: updated.id,
+          name: updated.name,
+          adresse: `${updated.strasse} ${updated.hausnummer}, ${updated.plz} ${updated.ort}`,
+        },
+      };
+    }
+
+    case "delete_liegenschaft": {
+      const id = String(args.liegenschaft_id || "");
+      const lg = await liegenschaftenDb.get(id);
+      if (!lg) return { error: "Liegenschaft nicht gefunden" };
+      const [gebaeude, pm, eigentuemer] = await Promise.all([
+        gebaeudeDb.list(),
+        pmVertraegeDb.list(),
+        eigentuemerDb.list(),
+      ]);
+      const deps = {
+        gebaeude: gebaeude.filter((g) => g.liegenschaftId === id).length,
+        pmVertraege: pm.filter((p) => p.liegenschaftId === id).length,
+        eigentuemer: eigentuemer.filter((e) => e.liegenschaftId === id).length,
+      };
+      const hasDeps = deps.gebaeude + deps.pmVertraege + deps.eigentuemer > 0;
+      if (!args.user_confirmed) {
+        return {
+          needsConfirmation: true,
+          frage: hasDeps
+            ? `Liegenschaft „${lg.name}" hat noch Abhängigkeiten (Gebäude: ${deps.gebaeude}, PM: ${deps.pmVertraege}, Eigentümer: ${deps.eigentuemer}). Wirklich löschen (force)? Besser merge_liegenschaften nutzen.`
+            : `Leere Liegenschaft „${lg.name}" löschen?`,
+          liegenschaft_id: id,
+          abhaengigkeiten: deps,
+        };
+      }
+      if (hasDeps && !args.force) {
+        return {
+          error: "Abhängigkeiten vorhanden – force=true und user_confirmed=true nötig oder zuerst mergen.",
+          abhaengigkeiten: deps,
+        };
+      }
+      await liegenschaftenDb.remove(id);
+      await logEvent("loeschung", `Liegenschaft „${lg.name}" vom Agent gelöscht.`, {
+        art: "Liegenschaft",
+        id,
+      });
+      return { ok: true, geloescht: lg.name };
+    }
+
+    case "merge_liegenschaften": {
+      const quelleId = String(args.quelle_id || "");
+      const zielId = String(args.ziel_id || "");
+      if (quelleId === zielId) return { error: "Quelle und Ziel sind identisch" };
+      const [quelle, ziel] = await Promise.all([
+        liegenschaftenDb.get(quelleId),
+        liegenschaftenDb.get(zielId),
+      ]);
+      if (!quelle || !ziel) return { error: "Quelle oder Ziel nicht gefunden" };
+      if (!args.user_confirmed && args.quelle_loeschen) {
+        return {
+          needsConfirmation: true,
+          frage: `Gebäude/PM/Eigentümer von „${quelle.name}" nach „${ziel.name}" verschieben und Quelle löschen?`,
+          quelle_id: quelleId,
+          ziel_id: zielId,
+        };
+      }
+      const [gebaeude, pm, eigentuemer] = await Promise.all([
+        gebaeudeDb.list(),
+        pmVertraegeDb.list(),
+        eigentuemerDb.list(),
+      ]);
+      let movedG = 0,
+        movedP = 0,
+        movedE = 0;
+      for (const g of gebaeude.filter((x) => x.liegenschaftId === quelleId)) {
+        await gebaeudeDb.update(g.id, { liegenschaftId: zielId });
+        movedG++;
+      }
+      for (const p of pm.filter((x) => x.liegenschaftId === quelleId)) {
+        await pmVertraegeDb.update(p.id, { liegenschaftId: zielId });
+        movedP++;
+      }
+      for (const e of eigentuemer.filter((x) => x.liegenschaftId === quelleId)) {
+        await eigentuemerDb.update(e.id, { liegenschaftId: zielId });
+        movedE++;
+      }
+      let geloescht = false;
+      if (args.quelle_loeschen && args.user_confirmed) {
+        await liegenschaftenDb.remove(quelleId);
+        geloescht = true;
+      }
+      await logEvent(
+        "aenderung",
+        `Merge: „${quelle.name}" → „${ziel.name}" (Gebäude ${movedG}, PM ${movedP}, Eigentümer ${movedE})${geloescht ? ", Quelle gelöscht" : ""}.`,
+        { art: "Liegenschaft", id: zielId }
+      );
+      return {
+        ok: true,
+        verschoben: { gebaeude: movedG, pmVertraege: movedP, eigentuemer: movedE },
+        quelleGeloescht: geloescht,
+        ziel: { id: ziel.id, name: ziel.name },
+      };
+    }
+
+    case "update_wohnung": {
+      const id = String(args.wohnung_id || "");
+      const patch: Record<string, unknown> = {};
+      if (typeof args.flaeche === "number") patch.flaeche = args.flaeche;
+      if (args.bezeichnung !== undefined) patch.bezeichnung = String(args.bezeichnung);
+      if (args.typ !== undefined) patch.typ = String(args.typ);
+      if (typeof args.zimmer === "number") patch.zimmer = args.zimmer;
+      if (args.notizen !== undefined) patch.notizen = String(args.notizen);
+      const updated = await wohnungenDb.update(id, patch as any);
+      if (!updated) return { error: "Wohnung nicht gefunden" };
+      await logEvent(
+        "aenderung",
+        `Wohnung „${updated.bezeichnung}" vom Agent aktualisiert (${Object.keys(patch).join(", ")}).`,
+        { art: "Wohnung", id }
+      );
+      return {
+        ok: true,
+        wohnung: {
+          id: updated.id,
+          bezeichnung: updated.bezeichnung,
+          flaeche: updated.flaeche,
+        },
+      };
+    }
+
+    case "update_abrechnung": {
+      const id = String(args.abrechnung_id || "");
+      const patch: Record<string, unknown> = {};
+      if (args.status) patch.status = String(args.status);
+      if (args.name !== undefined) patch.name = String(args.name);
+      if (args.adresse !== undefined) patch.adresse = String(args.adresse);
+      if (typeof args.gesamtSumme === "number") patch.gesamtSumme = args.gesamtSumme;
+      const updated = await updateAbrechnung(id, patch as any);
+      if (!updated) return { error: "Abrechnung nicht gefunden" };
+      await logEvent(
+        "aenderung",
+        `Abrechnung „${updated.name}" vom Agent aktualisiert (Status ${updated.status}).`,
+        { art: "Abrechnung", id }
+      );
+      return {
+        ok: true,
+        abrechnung: {
+          id: updated.id,
+          name: updated.name,
+          status: updated.status,
+          gesamtSumme: updated.gesamtSumme,
+        },
+      };
+    }
+
+    case "delete_abrechnung": {
+      const id = String(args.abrechnung_id || "");
+      if (!args.user_confirmed) {
+        const a = await listAbrechnungen().then((list) => list.find((x) => x.id === id));
+        return {
+          needsConfirmation: true,
+          frage: `Abrechnung „${a?.name || id}" (Summe ${a?.gesamtSumme ?? "?"} €, Status ${a?.status}) wirklich löschen?`,
+          abrechnung_id: id,
+        };
+      }
+      const ok = await deleteAbrechnung(id);
+      if (!ok) return { error: "Abrechnung nicht gefunden" };
+      await logEvent("loeschung", `Abrechnung ${id} vom Agent gelöscht.`, {
+        art: "Abrechnung",
+        id,
+      });
+      return { ok: true };
+    }
+
+    case "update_ablage_zuordnung": {
+      const id = String(args.ablage_id || "");
+      const doc = await ablageDb.get(id);
+      if (!doc) return { error: "Ablage-Dokument nicht gefunden" };
+      const alt = doc.zugeordnetAn?.label;
+      const updated = await ablageDb.update(id, {
+        zugeordnetAn: {
+          art: String(args.ziel_art) as any,
+          id: String(args.ziel_id),
+          label: String(args.ziel_label),
+        },
+        status: "zugeordnet",
+      });
+      await logEvent(
+        "zuordnung",
+        `Ablage „${doc.dateiName}" vom Agent umgehängt: „${alt || "—"}" → „${args.ziel_label}".`,
+        { art: "Ablage", id }
+      );
+      return {
+        ok: true,
+        dateiName: doc.dateiName,
+        neu: updated?.zugeordnetAn,
+      };
+    }
+
+    case "apply_pruef_befund": {
+      const laufId = String(args.lauf_id || "");
+      const befundId = String(args.befund_id || "");
+      const lauf = await pruefLaufDb.get(laufId);
+      if (!lauf) return { error: "Prüflauf nicht gefunden" };
+      const befund = lauf.befunde.find((b) => b.id === befundId);
+      if (!befund) return { error: "Befund nicht gefunden" };
+      const result = await wendeBefundAn(befund);
+      if (result.ok) {
+        befund.status = "uebernommen";
+        await pruefLaufDb.update(laufId, { befunde: lauf.befunde });
+      }
+      return result;
+    }
+
+    case "mark_befund_status": {
+      const laufId = String(args.lauf_id || "");
+      const befundId = String(args.befund_id || "");
+      const status = String(args.status || "uebernommen") as PruefBefund["status"];
+      const lauf = await pruefLaufDb.get(laufId);
+      if (!lauf) return { error: "Prüflauf nicht gefunden" };
+      const befund = lauf.befunde.find((b) => b.id === befundId);
+      if (!befund) return { error: "Befund nicht gefunden" };
+      befund.status = status;
+      await pruefLaufDb.update(laufId, { befunde: lauf.befunde });
+      return { ok: true, befundId, status };
+    }
+
+    case "analyze_and_plan_cleanup": {
+      const laeufe = await pruefLaufDb.list();
+      if (!laeufe.length) {
+        return { hinweis: "Kein Prüflauf – zuerst run_pruefung ausführen." };
+      }
+      const lauf = [...laeufe].sort(
+        (a, b) => new Date(b.gestartetAm).getTime() - new Date(a.gestartetAm).getTime()
+      )[0];
+      const offen = (lauf.befunde || []).filter((b) => b.status === "offen");
+      const [liegenschaften, gebaeude, abrechnungen] = await Promise.all([
+        liegenschaftenDb.list(),
+        gebaeudeDb.list(),
+        listAbrechnungen(),
+      ]);
+
+      const auto_fix: { befundId?: string; aktion: string; detail: string }[] = [];
+      const fragen: {
+        befundId?: string;
+        frage: string;
+        vorschlag: string;
+        liegenschaft_id?: string;
+        abrechnung_id?: string;
+        quelle_id?: string;
+        ziel_id?: string;
+      }[] = [];
+      const manuell: { befundId: string; titel: string; grund: string }[] = [];
+
+      // Duplikat-Liegenschaften erkennen (gleicher Straßenname, eine mit Hausnr.)
+      const byStreet = new Map<string, typeof liegenschaften>();
+      for (const l of liegenschaften) {
+        const key = `${(l.strasse || l.name || "").toLowerCase().replace(/\s+/g, " ").trim()}|${l.plz}|${l.ort}`;
+        const arr = byStreet.get(key) || [];
+        arr.push(l);
+        byStreet.set(key, arr);
+      }
+
+      for (const b of offen) {
+        if (b.vorschlag) {
+          auto_fix.push({
+            befundId: b.id,
+            aktion: "apply_pruef_befund",
+            detail: b.vorschlag.beschreibung || b.titel,
+          });
+          continue;
+        }
+        if (b.titel === "Abrechnung ohne Summe") {
+          const abrId = b.betroffene.find((t) => t.art === "Abrechnung")?.id;
+          auto_fix.push({
+            befundId: b.id,
+            aktion: "update_abrechnung_status_rohdaten",
+            detail: `Abrechnung ${abrId}: Status Fertig + Summe 0 → Rohdaten`,
+          });
+          fragen.push({
+            befundId: b.id,
+            abrechnung_id: abrId,
+            frage: `Leere Abrechnung „${b.betroffene[0]?.label}" (0 €, Status Fertig) – Status auf Rohdaten setzen oder löschen?`,
+            vorschlag: "Status auf Rohdaten setzen (sicher); Löschen nur auf Wunsch",
+          });
+          continue;
+        }
+        if (b.titel === "Liegenschaft ohne Gebäude") {
+          const lgId = b.betroffene.find((t) => t.art === "Liegenschaft")?.id;
+          const lg = liegenschaften.find((l) => l.id === lgId);
+          fragen.push({
+            befundId: b.id,
+            liegenschaft_id: lgId,
+            frage: `Für „${lg?.name || lgId}" fehlt ein Gebäude. Soll „Hauptgebäude" mit Stammdaten angelegt werden?`,
+            vorschlag: "create_gebaeude name=Hauptgebäude",
+          });
+          continue;
+        }
+        if (b.titel === "Liegenschaft ohne PM-Vertrag") {
+          manuell.push({
+            befundId: b.id,
+            titel: b.titel,
+            grund: "PM-Vertrag erfordert Vertragsdokument – nicht blind anlegen. Hinweis bleibt oder Upload.",
+          });
+          continue;
+        }
+        if (b.titel === "Wohnung ohne Flächenangabe") {
+          manuell.push({
+            befundId: b.id,
+            titel: b.titel,
+            grund: "Wohnfläche unbekannt – bitte m² nennen oder in der Wohnungsmaske nachtragen.",
+          });
+          continue;
+        }
+        if (b.titel === "Zuordnung wirkt unplausibel") {
+          if (b.vorschlag) {
+            auto_fix.push({
+              befundId: b.id,
+              aktion: "apply_pruef_befund",
+              detail: b.beschreibung,
+            });
+          } else {
+            manuell.push({
+              befundId: b.id,
+              titel: b.titel,
+              grund: b.beschreibung + " – bitte Ziel-Zuordnung nennen.",
+            });
+          }
+          continue;
+        }
+        manuell.push({
+          befundId: b.id,
+          titel: b.titel,
+          grund: b.beschreibung,
+        });
+      }
+
+      // Eindeutige leere Duplikate (kein Gebäude, Name ohne Hausnummer, gleiche Straße wie kanonische)
+      for (const [, group] of byStreet) {
+        if (group.length < 2) continue;
+        const withHn = group.filter((l) => (l.hausnummer || "").trim());
+        const without = group.filter((l) => !(l.hausnummer || "").trim());
+        if (withHn.length === 1 && without.length >= 1) {
+          const ziel = withHn[0];
+          for (const q of without) {
+            const hatGeb = gebaeude.some((g) => g.liegenschaftId === q.id);
+            fragen.push({
+              quelle_id: q.id,
+              ziel_id: ziel.id,
+              frage: `Duplikat „${q.name}" (ohne Hausnr.) neben „${ziel.name}" ${ziel.strasse} ${ziel.hausnummer}. Merge nach Ziel und leere Quelle löschen?`,
+              vorschlag: hatGeb
+                ? "merge_liegenschaften + quelle_loeschen"
+                : "merge (leer) + löschen",
+            });
+          }
+        }
+      }
+
+      // Test-/Müll-Liegenschaft "uzdu"
+      const junk = liegenschaften.filter(
+        (l) =>
+          !l.strasse?.trim() &&
+          !l.hausnummer?.trim() &&
+          !l.plz?.trim() &&
+          (l.name || "").length <= 6
+      );
+      for (const j of junk) {
+        const hatGeb = gebaeude.some((g) => g.liegenschaftId === j.id);
+        fragen.push({
+          liegenschaft_id: j.id,
+          frage: `Vermutlich Test-Liegenschaft „${j.name}" ohne Adresse${hatGeb ? " (hat Gebäude)" : ""}. Löschen?`,
+          vorschlag: "delete_liegenschaft",
+        });
+      }
+
+      return {
+        laufId: lauf.id,
+        zusammenfassung: {
+          offen: offen.length,
+          auto_fix: auto_fix.length,
+          fragen: fragen.length,
+          manuell: manuell.length,
+        },
+        auto_fix,
+        fragen,
+        manuell,
+        hinweis:
+          "Bei Bereinigung: zuerst execute_safe_cleanup für auto_fix; Fragen dem Nutzer stellen; nach Bestätigung create_gebaeude / merge / delete mit user_confirmed=true.",
+      };
+    }
+
+    case "execute_safe_cleanup": {
+      const laeufe = await pruefLaufDb.list();
+      const lauf = laeufe.length
+        ? [...laeufe].sort(
+            (a, b) => new Date(b.gestartetAm).getTime() - new Date(a.gestartetAm).getTime()
+          )[0]
+        : null;
+      const done: string[] = [];
+      const skipped: string[] = [];
+
+      // 1) Abrechnungen Fertig + Summe 0 → Rohdaten
+      const abrechnungen = await listAbrechnungen();
+      for (const a of abrechnungen) {
+        if (a.status !== "Rohdaten" && (!a.gesamtSumme || a.gesamtSumme === 0)) {
+          if (args.allow_delete_empty_abrechnungen) {
+            await deleteAbrechnung(a.id);
+            done.push(`Abrechnung „${a.name}" gelöscht`);
+          } else {
+            await updateAbrechnung(a.id, { status: "Rohdaten" } as any);
+            done.push(`Abrechnung „${a.name}" → Status Rohdaten`);
+          }
+          if (lauf) {
+            for (const b of lauf.befunde) {
+              if (
+                b.status === "offen" &&
+                b.titel === "Abrechnung ohne Summe" &&
+                b.betroffene.some((t) => t.id === a.id)
+              ) {
+                b.status = "uebernommen";
+              }
+            }
+          }
+        }
+      }
+
+      // 2) Befunde mit Vorschlag anwenden
+      if (lauf) {
+        for (const b of lauf.befunde) {
+          if (b.status !== "offen" || !b.vorschlag) continue;
+          const r = await wendeBefundAn(b);
+          if (r.ok) {
+            b.status = "uebernommen";
+            done.push(`Befund „${b.titel}": ${r.meldung}`);
+          } else {
+            skipped.push(`Befund „${b.titel}": ${r.meldung}`);
+          }
+        }
+        await pruefLaufDb.update(lauf.id, { befunde: lauf.befunde });
+      }
+
+      // 3) Gebäude anlegen wenn erlaubt
+      if (args.allow_create_gebaeude) {
+        const liegenschaften = await liegenschaftenDb.list();
+        const gebaeude = await gebaeudeDb.list();
+        const filterIds = Array.isArray(args.liegenschaft_ids_fuer_gebaeude)
+          ? (args.liegenschaft_ids_fuer_gebaeude as string[])
+          : null;
+        for (const l of liegenschaften) {
+          if (filterIds && !filterIds.includes(l.id)) continue;
+          const hat = gebaeude.some((g) => g.liegenschaftId === l.id);
+          if (hat) continue;
+          const now = new Date().toISOString();
+          const geb = await gebaeudeDb.create({
+            id: uuidv4(),
+            liegenschaftId: l.id,
+            name: "Hauptgebäude",
+            createdAt: now,
+            updatedAt: now,
+          });
+          done.push(`Gebäude „Hauptgebäude" für „${l.name}" angelegt (${geb.id})`);
+          if (lauf) {
+            for (const b of lauf.befunde) {
+              if (
+                b.status === "offen" &&
+                b.titel === "Liegenschaft ohne Gebäude" &&
+                b.betroffene.some((t) => t.id === l.id)
+              ) {
+                b.status = "uebernommen";
+              }
+            }
+          }
+        }
+        if (lauf) await pruefLaufDb.update(lauf.id, { befunde: lauf.befunde });
+      } else {
+        skipped.push(
+          "Gebäude-Neuanlage übersprungen (allow_create_gebaeude nicht gesetzt) – Nutzer fragen."
+        );
+      }
+
+      await logEvent(
+        "aenderung",
+        `Agent-Bereinigung: ${done.length} Aktion(en), ${skipped.length} übersprungen.`,
+        { art: "PruefLauf", id: lauf?.id }
+      );
+
+      return {
+        ok: true,
+        ausgefuehrt: done,
+        uebersprungen: skipped,
+        naechster_schritt:
+          "Optional run_pruefung erneut, um Restbefunde zu prüfen. Offene Fragen (Gebäude anlegen, Duplikate löschen) dem Nutzer stellen.",
+      };
+    }
+
     default:
       return { error: `Unbekanntes Tool: ${name}` };
   }
@@ -488,28 +1364,36 @@ async function executeTool(
 // -------- Agent-Loop --------
 
 const AGENT_SYSTEM = `Du bist "BetriebsKostenBot Agent" – ein Handlungs-Assistent in einer deutschen Hausverwaltungs-App.
-Du kannst Tools aufrufen, um Daten zu lesen und Schriftverkehr (Mahnungen, Anschreiben, Kündigungen, Mieterbegrüßung bei Eigentümerwechsel usw.) zu erstellen und im System abzulegen.
+Du kannst Tools aufrufen für: Schriftverkehr (Mahnungen, Anschreiben) UND vollständige Stammdaten-Bereinigung nach der Plausibilitätsprüfung.
 
-Dokumenten-Workflow (wichtig):
-- Beim Upload mehrerer PDFs (Rechnungen, Mietverträge, Kontoauszüge, PM-Verträge, Grundbuch, Liegenschaftskarte, Kaufvertrag …) klassifiziert das System jedes Dokument einzeln (Batch-Analyse).
-- Der User wird gefragt, ob Stammdaten übernommen und Dokumente abgelegt werden sollen. Erst nach Bestätigung werden Liegenschaften, Gebäude, Wohnungen, Mieter, Mietverträge, PM-Verträge und Anhänge gespeichert.
-- PM-Verträge können Anhänge haben (Liegenschaftskarte, Objektbeschreibung). Eigentümer können Anhänge haben (Grundbuchauszug, Kaufvertrag). Mietverträge können Nachträge/Übergabeprotokolle haben – diese aktualisieren ggf. Stammdaten (Auszug/Einzug).
-- Anschreiben können als Entwurf erzeugt und mit "Fertigstellen" final mit Corporate-Design (Logo, Briefkopf) abgelegt werden.
+## Module der Plausibilitätsprüfung (nichts auslassen)
+liegenschaften · gebaeude · wohnungen · mieter · mietvertraege · pmVertraege · eigentuemer · abrechnungen · kontoauszuege · ablage
 
-Arbeitsweise:
-1. Verstehe die Nutzeranfrage (z.B. "Mahnliste für Spannhagengartenstraße und alle nötigen Mahnungen erstellen").
-2. Finde zuerst die passenden Mieter/Rückstände über die Tools (find_mieter, get_mietrueckstaende, list_liegenschaften).
-3. Erstelle nur dann Briefe, wenn der Nutzer das ausdrücklich will oder klar aus dem Auftrag hervorgeht (z.B. "erstelle alle Mahnungen").
-4. Für Mahnungen: nur Mieter mit positivem Rückstand (> 0). Nutze template_id "mahnung".
-5. Bei Eigentümerwechsel: template_id "mieterbegruessung".
-6. Bei Batch-Aufträgen: create_briefe_batch mit den gefundenen mieter_ids.
-7. Am Ende: kurze Zusammenfassung auf Deutsch – wie viele Briefe, für wen, wo sie liegen (Schriftverkehr). Beträge in Euro.
+## Bereinigungs-Workflow (wenn Nutzer Fehler/Hinweise korrigieren will)
+1. get_pruef_befunde oder run_pruefung – alle offenen Befunde laden.
+2. analyze_and_plan_cleanup – Plan: auto_fix / fragen / manuell.
+3. Zweifelsfreie Lücken sofort schließen mit execute_safe_cleanup (ohne allow_* Flags):
+   - Abrechnung Status „Fertig" + Summe 0 € → Status „Rohdaten"
+   - Befunde mit vorhandenem Korrekturvorschlag (vorschlag) → apply
+4. Danach dem Nutzer klar auf Deutsch die FRAGEN stellen, z.B.:
+   - „Für Liegenschaft X fehlt ein Gebäude. Soll ich ‚Hauptgebäude' anlegen?"
+   - „Duplikat-Liegenschaft Y ohne Hausnummer – mit Z mergen und löschen?"
+   - „Test-Eintrag ‚uzdu' ohne Adresse – löschen?"
+5. Erst nach ausdrücklicher Nutzer-Bestätigung: create_gebaeude (user_confirmed=true), merge/delete mit user_confirmed, oder execute_safe_cleanup mit allow_create_gebaeude / allow_delete_*.
+6. Fehlende Wohnflächen und fehlende PM-Verträge NICHT erfinden – nachfragen oder als manuell offen lassen.
+7. Am Ende optional run_pruefung erneut und kurz berichten, was erledigt ist und was offen bleibt.
 
-Regeln:
-- Erfinde keine Mieter-IDs oder Beträge – nur Tool-Ergebnisse nutzen.
-- Wenn nichts gefunden wird, sage das klar.
-- Keine Rechtsberatung jenseits der Vorlagen; formuliere knapp und professionell.
-- Antworte nach Abschluss der Tools in klarem Deutsch ohne JSON.`;
+## Schriftverkehr-Workflow
+1. Mieter/Rückstände finden (find_mieter, get_mietrueckstaende).
+2. Briefe nur auf klaren Auftrag (create_brief / create_briefe_batch).
+3. Mahnungen nur bei positivem Rückstand, template_id „mahnung".
+
+## Regeln
+- Keine IDs/Beträge erfinden – nur Tool-Ergebnisse.
+- Löschen und Neu-Anlegen von Objekten nur mit Nutzer-Bestätigung (außer execute_safe_cleanup ohne create/delete-Flags).
+- Lücken schließen, wenn die Info zweifelsfrei ist (z.B. Status-Korrektur, vorhandener vorschlag).
+- Antworte nach Tools in klarem Deutsch, strukturiert, ohne JSON-Dump.
+- Keine Rechtsberatung jenseits der Vorlagen.`;
 
 export interface AgentResult {
   reply: string;
@@ -717,7 +1601,10 @@ export function isAgentIntent(message: string): boolean {
   const pureQuestion =
     /^(was|wer|wie\s+hoch|wieviel|wie\s+viele|welche|wo|warum|erkläre|erklaere|zeig|liste)\b/.test(
       m
-    ) && !/\b(erstell|generier|schreib|leg\s+an|anlegen|fertig|mach)\w*/.test(m);
+    ) &&
+    !/\b(erstell|generier|schreib|leg\s+an|anlegen|fertig|mach|korrigier|berein|beheb|fix|lösch|loesch)\w*/.test(
+      m
+    );
   if (pureQuestion) return false;
 
   const wantsCreate =
@@ -728,8 +1615,27 @@ export function isAgentIntent(message: string): boolean {
     /\b(mahnung|mahnungen|mahnliste|mahnlauf|anschreiben|kündigung|kuendigung|abmahnung|mieterhöhung|mieterhoehung|brief|briefe|schreiben)\b/.test(
       m
     );
-  // z.B. "erstelle alle Mahnungen für die Spannhagengartenstraße"
-  return (wantsCreate && documentHint) || (documentHint && /\b(alle|nötig|noetig|offen)\b/.test(m));
+
+  const cleanupHint =
+    /\b(korrigier|berein|beheb|schließ|schliess|aufräum|aufraeum|reparier|bereinigung|plausibil|befund|hinweis|fehler)\w*/.test(
+      m
+    ) &&
+    /\b(fehler|hinweis|befund|lücke|luecke|gebäude|gebaeude|liegenschaft|wohnung|abrechnung|zuordnung|stammdaten|prüfung|pruefung|alles|alle)\b/.test(
+      m
+    );
+
+  const wantsCleanupAction =
+    /\b(korrigieren|bereinigen|beheben|fixen|löschen|loeschen|anlegen|übernehmen|uebernehmen|ausführen|ausfuehren)\b/.test(
+      m
+    );
+
+  // z.B. "erstelle alle Mahnungen …" oder "bitte Fehler korrigieren / bereinigen"
+  return (
+    (wantsCreate && documentHint) ||
+    (documentHint && /\b(alle|nötig|noetig|offen)\b/.test(m)) ||
+    cleanupHint ||
+    wantsCleanupAction
+  );
 }
 
 /** Manuelles Speichern aus dem UI (SchriftverkehrPanel) */
