@@ -449,6 +449,25 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
       },
     },
   },
+
+  {
+    type: "function",
+    function: {
+      name: "list_unpassende_dokumente",
+      description:
+        "Listet Ablage-Dokumente die (a) keiner Liegenschaft zugeordnet sind, (b) Status neu/in_pruefung haben, oder (c) im letzten Prüflauf als unplausible Zuordnung markiert wurden. Ideal für 'zeig mir Dokumente die zu keiner Liegenschaft passen'.",
+      parameters: {
+        type: "object",
+        properties: {
+          nur_ohne_liegenschaft: {
+            type: "boolean",
+            description: "Wenn true, nur Dokumente ohne Liegenschafts-Zuordnung",
+          },
+        },
+        required: [],
+      },
+    },
+  },
 ];
 
 // -------- Kontext-Helfer --------
@@ -1356,6 +1375,83 @@ async function executeTool(
       };
     }
 
+
+    case "list_unpassende_dokumente": {
+      const [ablage, laeufe, liegenschaften] = await Promise.all([
+        ablageDb.list(),
+        pruefLaufDb.list(),
+        liegenschaftenDb.list(),
+      ]);
+      const lauf = laeufe.length
+        ? [...laeufe].sort(
+            (a, b) => new Date(b.gestartetAm).getTime() - new Date(a.gestartetAm).getTime()
+          )[0]
+        : null;
+      const unplausibleIds = new Set(
+        (lauf?.befunde || [])
+          .filter((b) => b.status === "offen" && b.titel === "Zuordnung wirkt unplausibel")
+          .flatMap((b) => b.betroffene.filter((t) => t.art === "Ablage").map((t) => t.id))
+      );
+
+      const ohneLiegenschaft = ablage.filter((d) => {
+        const art = (d.zugeordnetAn?.art || "").toLowerCase();
+        const isLg = art.includes("liegenschaft");
+        const noAssign = !d.zugeordnetAn || d.status === "neu" || d.status === "in_pruefung";
+        return noAssign || !isLg;
+      });
+
+      const unplausibel = ablage.filter((d) => unplausibleIds.has(d.id));
+
+      const mapDoc = (d: (typeof ablage)[0], grund: string) => ({
+        id: d.id,
+        dateiName: d.dateiName,
+        status: d.status,
+        erkannterTyp: d.erkannterTyp,
+        zugeordnetAn: d.zugeordnetAn
+          ? `${d.zugeordnetAn.art}: ${d.zugeordnetAn.label}`
+          : "(keine Zuordnung)",
+        grund,
+      });
+
+      const result: ReturnType<typeof mapDoc>[] = [];
+      const seen = new Set<string>();
+      for (const d of unplausibel) {
+        seen.add(d.id);
+        const befund = lauf?.befunde.find(
+          (b) => b.betroffene.some((t) => t.id === d.id) && b.titel === "Zuordnung wirkt unplausibel"
+        );
+        result.push(mapDoc(d, befund?.beschreibung || "Zuordnung unplausibel laut Prüfung"));
+      }
+      if (!args.nur_ohne_liegenschaft) {
+        for (const d of ohneLiegenschaft) {
+          if (seen.has(d.id)) continue;
+          seen.add(d.id);
+          result.push(
+            mapDoc(
+              d,
+              d.zugeordnetAn
+                ? `Zugeordnet an ${d.zugeordnetAn.art} „${d.zugeordnetAn.label}" – keine Liegenschaft`
+                : "Keine Zuordnung"
+            )
+          );
+        }
+      } else {
+        for (const d of ablage.filter((x) => !x.zugeordnetAn || x.status === "neu" || x.status === "in_pruefung")) {
+          if (seen.has(d.id)) continue;
+          seen.add(d.id);
+          result.push(mapDoc(d, "Ohne Zuordnung / in Prüfung"));
+        }
+      }
+
+      return {
+        anzahl: result.length,
+        liegenschaftenBekannt: liegenschaften.map(
+          (l) => `${l.name}: ${l.strasse} ${l.hausnummer}, ${l.plz} ${l.ort}`
+        ),
+        dokumente: result,
+      };
+    }
+
     default:
       return { error: `Unbekanntes Tool: ${name}` };
   }
@@ -1370,18 +1466,16 @@ Du kannst Tools aufrufen für: Schriftverkehr (Mahnungen, Anschreiben) UND volls
 liegenschaften · gebaeude · wohnungen · mieter · mietvertraege · pmVertraege · eigentuemer · abrechnungen · kontoauszuege · ablage
 
 ## Bereinigungs-Workflow (wenn Nutzer Fehler/Hinweise korrigieren will)
-1. get_pruef_befunde oder run_pruefung – alle offenen Befunde laden.
-2. analyze_and_plan_cleanup – Plan: auto_fix / fragen / manuell.
-3. Zweifelsfreie Lücken sofort schließen mit execute_safe_cleanup (ohne allow_* Flags):
-   - Abrechnung Status „Fertig" + Summe 0 € → Status „Rohdaten"
-   - Befunde mit vorhandenem Korrekturvorschlag (vorschlag) → apply
-4. Danach dem Nutzer klar auf Deutsch die FRAGEN stellen, z.B.:
-   - „Für Liegenschaft X fehlt ein Gebäude. Soll ich ‚Hauptgebäude' anlegen?"
-   - „Duplikat-Liegenschaft Y ohne Hausnummer – mit Z mergen und löschen?"
-   - „Test-Eintrag ‚uzdu' ohne Adresse – löschen?"
-5. Erst nach ausdrücklicher Nutzer-Bestätigung: create_gebaeude (user_confirmed=true), merge/delete mit user_confirmed, oder execute_safe_cleanup mit allow_create_gebaeude / allow_delete_*.
-6. Fehlende Wohnflächen und fehlende PM-Verträge NICHT erfinden – nachfragen oder als manuell offen lassen.
-7. Am Ende optional run_pruefung erneut und kurz berichten, was erledigt ist und was offen bleibt.
+1. get_pruef_befunde laden (oder run_pruefung wenn keiner existiert).
+2. analyze_and_plan_cleanup – Überblick.
+3. Wenn der Nutzer EXPLIZIT sagt „lege die fehlenden Gebäude an" / „Gebäude anlegen" / „beseitige die Probleme":
+   → execute_safe_cleanup mit allow_create_gebaeude=true SOFORT (keine erneute Rückfrage).
+4. Sonst zweifelsfreie Fixes mit execute_safe_cleanup (ohne allow_*): Abrechnung Fertig+0€ → Rohdaten; Befunde mit vorschlag anwenden.
+5. Wenn Nutzer „zeig mir Dokumente die zu keiner Liegenschaft passen" / „unpassende Dokumente" sagt:
+   → list_unpassende_dokumente und die Liste klar auf Deutsch ausgeben (Dateiname, aktuelle Zuordnung, Grund).
+6. Nur nachfragen, wenn der Nutzer NICHT explizit freigegeben hat (Löschen von Liegenschaften, PM-Verträge erfinden, Wohnflächen raten).
+7. Fehlende Wohnflächen und fehlende PM-Verträge NICHT erfinden – als offen melden.
+8. Am Ende kurz: was erledigt, was offen, welche Dokumente unpassend sind.
 
 ## Schriftverkehr-Workflow
 1. Mieter/Rückstände finden (find_mieter, get_mietrueckstaende).
@@ -1408,6 +1502,10 @@ export async function runAgent(params: {
 }): Promise<AgentResult> {
   const steps: AgentResult["steps"] = [];
   const createdBriefIds: string[] = [];
+
+  // Bei klarem Bereinigungsauftrag: deterministisch ausführen (zuverlässig, kein Timeout)
+  const det = await tryDeterministicCleanup(params.message);
+  if (det) return det;
 
   const messages: Groq.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: AGENT_SYSTEM },
@@ -1502,6 +1600,16 @@ export async function runAgent(params: {
       createdBriefIds,
     };
   } catch (e: any) {
+    const cleanupFallback = await tryDeterministicCleanup(params.message);
+    if (cleanupFallback) {
+      return {
+        reply:
+          cleanupFallback.reply +
+          (e?.message ? `\n\n(Hinweis: LLM-Agent-Loop abgebrochen: ${e.message})` : ""),
+        steps: cleanupFallback.steps,
+        createdBriefIds: [],
+      };
+    }
     // Fallback: deterministische Mahnungs-Erstellung ohne Tool-Calling
     const fallback = await tryDeterministicMahnung(params.message);
     if (fallback) {
@@ -1594,15 +1702,121 @@ async function tryDeterministicMahnung(message: string): Promise<AgentResult | n
   };
 }
 
+
+/** Deterministische Bereinigung ohne LLM-Tool-Loop (Fallback + bei klarem Auftrag). */
+async function tryDeterministicCleanup(message: string): Promise<AgentResult | null> {
+  const m = message.toLowerCase();
+  const wantsCleanup =
+    /\\b(beseitig|beheb|berein|korrigier|fix)\\w*/.test(m) ||
+    /\\b(fehlende[n]?\\s+)?(gebäude|gebaeude)\\s*(anlegen|an)\\b/.test(m) ||
+    (/\\b(hinweise?|fehler|probleme?|befunde?)\\b/.test(m) &&
+      /\\b(beheb|beseitig|berein|korrigier)\\w*/.test(m));
+  if (!wantsCleanup && !/\\b(unpassend|keine[r]?\\s+liegenschaft)\\b/.test(m)) {
+    return null;
+  }
+
+  const steps: AgentResult["steps"] = [];
+  const lines: string[] = [];
+
+  const allowGebaeude =
+    /\\b(gebäude|gebaeude)\\b/.test(m) &&
+    /\\b(anlegen|leg[e]?\\s+.*an|fehlend)\\b/.test(m);
+
+  // 1) Safe cleanup (+ Gebäude wenn explizit)
+  const cleanupResult = (await executeTool("execute_safe_cleanup", {
+    allow_create_gebaeude: allowGebaeude,
+  })) as any;
+  steps.push({
+    tool: "execute_safe_cleanup",
+    args: { allow_create_gebaeude: allowGebaeude },
+    result: cleanupResult,
+  });
+  if (Array.isArray(cleanupResult?.ausgefuehrt) && cleanupResult.ausgefuehrt.length) {
+    lines.push("**Erledigt:**");
+    for (const a of cleanupResult.ausgefuehrt) lines.push(`• ${a}`);
+  }
+  if (Array.isArray(cleanupResult?.uebersprungen) && cleanupResult.uebersprungen.length) {
+    lines.push("**Übersprungen:**");
+    for (const a of cleanupResult.uebersprungen) lines.push(`• ${a}`);
+  }
+
+  // 2) Unpassende Dokumente
+  if (
+    /\\b(dokument|rechnung|ablage|unpassend|liegenschaft)\\b/.test(m) ||
+    wantsCleanup
+  ) {
+    const docs = (await executeTool("list_unpassende_dokumente", {})) as any;
+    steps.push({ tool: "list_unpassende_dokumente", args: {}, result: docs });
+    if (docs?.dokumente?.length) {
+      lines.push("");
+      lines.push(`**Dokumente ohne passende Liegenschaft / unplausible Zuordnung (${docs.anzahl}):**`);
+      for (const d of docs.dokumente.slice(0, 30)) {
+        lines.push(`• ${d.dateiName} — ${d.zugeordnetAn} — ${d.grund}`);
+      }
+      if (docs.dokumente.length > 30) {
+        lines.push(`… und ${docs.dokumente.length - 30} weitere.`);
+      }
+    } else {
+      lines.push("");
+      lines.push("Keine unpassenden oder unzugeordneten Ablage-Dokumente gefunden.");
+    }
+  }
+
+  // 3) Offene Restbefunde kurz
+  const befunde = (await executeTool("get_pruef_befunde", { nur_offen: true })) as any;
+  steps.push({ tool: "get_pruef_befunde", args: { nur_offen: true }, result: befunde });
+  if (befunde?.anzahl > 0) {
+    lines.push("");
+    lines.push(`**Noch offen (${befunde.anzahl} Befunde):**`);
+    const byTitel = new Map<string, number>();
+    for (const b of befunde.befunde || []) {
+      byTitel.set(b.titel, (byTitel.get(b.titel) || 0) + 1);
+    }
+    for (const [t, n] of byTitel) lines.push(`• ${t}: ${n}`);
+    lines.push(
+      "Wohnflächen und PM-Verträge lege ich nicht ohne Daten an. Duplikat-Liegenschaften lösche ich nur auf ausdrücklichen Wunsch."
+    );
+  } else if (befunde && !befunde.hinweis) {
+    lines.push("");
+    lines.push("Keine offenen Prüfbefunde mehr.");
+  }
+
+  if (!lines.length) return null;
+
+  return {
+    reply: lines.join("\\n"),
+    steps,
+    createdBriefIds: [],
+  };
+}
+
 /** Erkennung, ob eine Chat-Nachricht einen Agenten-Workflow auslösen soll */
 export function isAgentIntent(message: string): boolean {
   const m = message.toLowerCase();
+
+  // Explizite Agent-Anrede oder Bereinigungsauftrag
+  if (
+    /\b(lieber\s+agent|server[- ]?agent|als\s+agent)\b/.test(m) ||
+    /\b(beseitige|behebe|beheben|bereinige|bereinigen|korrigiere|korrigieren)\b/.test(m) ||
+    /\b(lege\s+.*\s*(gebäude|gebaeude)\s*an|fehlende[n]?\s+(gebäude|gebaeude)\s*anlegen)\b/.test(m) ||
+    /\b(probleme?|hinweise?|fehler|befunde?)\b/.test(m) &&
+      /\b(beseitig|beheb|berein|korrigier|fix|schließ|schliess)\w*/.test(m)
+  ) {
+    return true;
+  }
+
+  // Dokumente ohne Liegenschaft anzeigen = Agent (braucht Stammdaten-Tools)
+  if (
+    /\b(dokumente?|rechnungen?|ablage)\b/.test(m) &&
+    /\b(keine[r]?\s+liegenschaft|unpassend|nicht\s+zuordnen|ohne\s+zuordnung)\b/.test(m)
+  ) {
+    return true;
+  }
+
   // Reine Wissensfragen ohne Handlungsaufforderung → kein Agent
   const pureQuestion =
-    /^(was|wer|wie\s+hoch|wieviel|wie\s+viele|welche|wo|warum|erkläre|erklaere|zeig|liste)\b/.test(
-      m
-    ) &&
-    !/\b(erstell|generier|schreib|leg\s+an|anlegen|fertig|mach|korrigier|berein|beheb|fix|lösch|loesch)\w*/.test(
+    /^(was|wer|wie\s+hoch|wieviel|wie\s+viele|welche|wo|warum|erkläre|erklaere)\b/.test(m) &&
+    !/\b(erstell|generier|schreib|leg\s+an|anlegen|fertig|mach|korrigier|berein|beheb|fix|lösch|loesch|beseitig)\w*/.test(
       m
     );
   if (pureQuestion) return false;
@@ -1616,25 +1830,9 @@ export function isAgentIntent(message: string): boolean {
       m
     );
 
-  const cleanupHint =
-    /\b(korrigier|berein|beheb|schließ|schliess|aufräum|aufraeum|reparier|bereinigung|plausibil|befund|hinweis|fehler)\w*/.test(
-      m
-    ) &&
-    /\b(fehler|hinweis|befund|lücke|luecke|gebäude|gebaeude|liegenschaft|wohnung|abrechnung|zuordnung|stammdaten|prüfung|pruefung|alles|alle)\b/.test(
-      m
-    );
-
-  const wantsCleanupAction =
-    /\b(korrigieren|bereinigen|beheben|fixen|löschen|loeschen|anlegen|übernehmen|uebernehmen|ausführen|ausfuehren)\b/.test(
-      m
-    );
-
-  // z.B. "erstelle alle Mahnungen …" oder "bitte Fehler korrigieren / bereinigen"
   return (
     (wantsCreate && documentHint) ||
-    (documentHint && /\b(alle|nötig|noetig|offen)\b/.test(m)) ||
-    cleanupHint ||
-    wantsCleanupAction
+    (documentHint && /\b(alle|nötig|noetig|offen)\b/.test(m))
   );
 }
 
