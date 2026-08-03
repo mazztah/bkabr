@@ -454,18 +454,49 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "sync_mieter_from_mietvertraege",
       description:
-        "Übernimmt aus vorhandenen Mietverträgen Mietbeginn, Mietende, Kaltmiete (sollMiete) und NK-Vorauszahlung in die Mieter-Stammdaten. Optional gefiltert nach Liegenschaft/Straße. Nur Felder setzen, die im Mietvertrag befüllt sind.",
+        "Übernimmt aus vorhandenen Mietverträgen Mietbeginn, Mietende, Kaltmiete (sollMiete) und NK-Vorauszahlung in die Mieter-Stammdaten. Filter nach Liegenschaft/Straße ODER nach Mieternamen (z.B. „Yvonne Paul“). Zahlen werden auch aus Strings gelesen. Verknüpft Verträge ohne mieterId automatisch, wenn auf der Wohnung genau ein Mieter sitzt.",
       parameters: {
         type: "object",
         properties: {
           liegenschaft_query: {
             type: "string",
-            description: "Optional: Straße/Name z.B. Spannhagengartenstraße 10",
+            description: "Optional: Straße/Name z.B. Spannhagengartenstraße 10 ODER Mietername „Yvonne Paul“",
+          },
+          mieter_name: {
+            type: "string",
+            description: "Optional: konkreter Mietername (Teilstring, z.B. Paul oder Yvonne Paul)",
           },
           nur_leere_felder: {
             type: "boolean",
             description: "Wenn true (Standard), nur leere Mieter-Felder überschreiben; wenn false, Vertragsdaten immer übernehmen",
           },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_mieter",
+      description:
+        "Setzt Stammdaten eines Mieters direkt (kaltmiete, nebenkostenVorauszahlung, mietbeginn, mietende, name, email, telefon, wohnungId). Nutzen wenn der Nutzer konkrete Werte vorgibt oder sync aus dem Vertrag nicht greift.",
+      parameters: {
+        type: "object",
+        properties: {
+          mieter_id: { type: "string", description: "Mieter-ID (aus find_mieter)" },
+          mieter_name: {
+            type: "string",
+            description: "Alternativ Name suchen, wenn ID unbekannt (erster Treffer)",
+          },
+          kaltmiete: { type: "number" },
+          nebenkostenVorauszahlung: { type: "number" },
+          mietbeginn: { type: "string", description: "ISO-Datum YYYY-MM-DD bevorzugt" },
+          mietende: { type: "string" },
+          name: { type: "string" },
+          email: { type: "string" },
+          telefon: { type: "string" },
+          wohnung_id: { type: "string" },
         },
         required: [],
       },
@@ -1480,6 +1511,7 @@ async function executeTool(
     
     case "sync_mieter_from_mietvertraege": {
       const q = args.liegenschaft_query ? String(args.liegenschaft_query) : "";
+      const nameFilter = args.mieter_name ? String(args.mieter_name).trim().toLowerCase() : "";
       const nurLeere = args.nur_leere_felder !== false;
       const [vertraege, mieter, wohnungen, gebaeude, liegenschaften] = await Promise.all([
         mietvertraegeDb.list(),
@@ -1493,12 +1525,62 @@ async function executeTool(
       const gebById = new Map(gebaeude.map((g) => [g.id, g]));
       const lgById = new Map(liegenschaften.map((l) => [l.id, l]));
 
-      function mieterInQuery(mi: typeof mieter[0]): boolean {
+      const asPos = (v: unknown): number | undefined => {
+        if (v == null || v === "") return undefined;
+        const n = typeof v === "number" ? v : Number(String(v).replace(/\s/g, "").replace(",", "."));
+        return Number.isFinite(n) && n > 0 ? n : undefined;
+      };
+      const asNonNeg = (v: unknown): number | undefined => {
+        if (v == null || v === "") return undefined;
+        const n = typeof v === "number" ? v : Number(String(v).replace(/\s/g, "").replace(",", "."));
+        return Number.isFinite(n) && n >= 0 ? n : undefined;
+      };
+      const hasTxt = (v: unknown) =>
+        typeof v === "string" ? v.trim().length > 0 : v != null && String(v).trim().length > 0;
+
+      function mieterInQuery(mi: (typeof mieter)[0]): boolean {
+        if (nameFilter) {
+          const n = (mi.name || "").toLowerCase();
+          if (!n.includes(nameFilter) && !nameFilter.split(/\s+/).every((t) => n.includes(t))) {
+            return false;
+          }
+        }
         if (!q) return true;
         const w = wohnungById.get(mi.wohnungId);
         const g = w ? gebById.get(w.gebaeudeId) : undefined;
         const lg = g ? lgById.get(g.liegenschaftId) : undefined;
         return matchesQuery(q, lg, mi.name);
+      }
+
+      function findTargetForVertrag(mv: (typeof vertraege)[0]) {
+        if (mv.mieterId) {
+          const byId = mieter.find((x) => x.id === mv.mieterId);
+          if (byId) return byId;
+        }
+        if (mv.wohnungId) {
+          const candidates = mieter.filter((x) => x.wohnungId === mv.wohnungId);
+          if (candidates.length === 1) return candidates[0];
+          if (nameFilter) {
+            const byName = candidates.find((c) => c.name.toLowerCase().includes(nameFilter));
+            if (byName) return byName;
+          }
+          return (
+            candidates.find((c) => !asPos(c.kaltmiete) && !hasTxt(c.mietbeginn)) || candidates[0]
+          );
+        }
+        return undefined;
+      }
+
+      function nkFromMv(mv: (typeof vertraege)[0]): number | undefined {
+        const d = asNonNeg(mv.nebenkostenVorauszahlung);
+        if (d != null) return d;
+        const bk = asNonNeg(mv.bkVorauszahlung) ?? 0;
+        const hk = asNonNeg(mv.hkVorauszahlung) ?? 0;
+        if (bk + hk > 0) return bk + hk;
+        const warm = asPos(mv.warmmiete);
+        const kalt = asPos(mv.sollMiete);
+        if (warm != null && kalt != null && warm > kalt) return Math.round((warm - kalt) * 100) / 100;
+        return undefined;
       }
 
       const updates: {
@@ -1508,38 +1590,48 @@ async function executeTool(
         patch: Record<string, string | number>;
       }[] = [];
       const skipped: string[] = [];
+      const diagnostik: string[] = [];
 
       for (const mv of vertraege) {
         if (mv.status === "Beendet") continue;
-        let target = mv.mieterId ? mieter.find((x) => x.id === mv.mieterId) : undefined;
-        if (!target && mv.wohnungId) {
-          // Prefer mieter on same Wohnung without data, or any on Wohnung
-          const candidates = mieter.filter((x) => x.wohnungId === mv.wohnungId);
-          target =
-            candidates.find((c) => !c.kaltmiete && !c.mietbeginn) ||
-            candidates[0];
-        }
+        const target = findTargetForVertrag(mv);
         if (!target) {
-          skipped.push(`${mv.dateiName}: kein Mieter verknüpft`);
+          skipped.push(`${mv.dateiName || mv.id}: kein Mieter verknüpft (wohnungId=${mv.wohnungId || "–"})`);
           continue;
         }
         if (!mieterInQuery(target)) continue;
 
+        // Fehlende mieterId nachziehen, wenn eindeutig
+        if (!mv.mieterId && target.id) {
+          await mietvertraegeDb.update(mv.id, { mieterId: target.id } as any);
+        }
+
         const patch: Record<string, string | number> = {};
-        if (mv.mietbeginn && (!nurLeere || !target.mietbeginn)) patch.mietbeginn = mv.mietbeginn;
-        if (mv.mietende && (!nurLeere || !target.mietende)) patch.mietende = mv.mietende;
-        if (typeof mv.sollMiete === "number" && mv.sollMiete > 0 && (!nurLeere || !target.kaltmiete)) {
-          patch.kaltmiete = mv.sollMiete;
+        const soll = asPos(mv.sollMiete);
+        const nk = nkFromMv(mv);
+        if (hasTxt(mv.mietbeginn) && (!nurLeere || !hasTxt(target.mietbeginn))) {
+          patch.mietbeginn = String(mv.mietbeginn).trim();
+        }
+        if (hasTxt(mv.mietende) && (!nurLeere || !hasTxt(target.mietende))) {
+          patch.mietende = String(mv.mietende).trim();
+        }
+        if (soll != null && (!nurLeere || asPos(target.kaltmiete) == null)) {
+          patch.kaltmiete = soll;
         }
         if (
-          typeof mv.nebenkostenVorauszahlung === "number" &&
-          mv.nebenkostenVorauszahlung >= 0 &&
-          (!nurLeere || target.nebenkostenVorauszahlung === undefined || target.nebenkostenVorauszahlung === null)
+          nk != null &&
+          (!nurLeere || asNonNeg(target.nebenkostenVorauszahlung) == null)
         ) {
-          patch.nebenkostenVorauszahlung = mv.nebenkostenVorauszahlung;
+          patch.nebenkostenVorauszahlung = nk;
         }
+
         if (Object.keys(patch).length === 0) {
-          skipped.push(`${target.name}: nichts zu übernehmen aus ${mv.dateiName}`);
+          diagnostik.push(
+            `${target.name} ← ${mv.dateiName || mv.id}: nichts zu übernehmen ` +
+              `(Vertrag: sollMiete=${mv.sollMiete ?? "–"} mietbeginn=${mv.mietbeginn || "–"} NK=${mv.nebenkostenVorauszahlung ?? "–"}; ` +
+              `Mieter: kaltmiete=${target.kaltmiete ?? "–"} mietbeginn=${target.mietbeginn || "–"} NK=${target.nebenkostenVorauszahlung ?? "–"})`
+          );
+          skipped.push(`${target.name}: nichts zu übernehmen aus ${mv.dateiName || mv.id}`);
           continue;
         }
         await mieterDb.update(target.id, patch as any);
@@ -1549,6 +1641,23 @@ async function executeTool(
           fromVertrag: mv.dateiName || mv.nummer || mv.id,
           patch,
         });
+      }
+
+      // Falls per Name gefiltert und kein Vertrag gefunden: klare Meldung
+      if (nameFilter && updates.length === 0) {
+        const treffer = mieter.filter((m) => m.name.toLowerCase().includes(nameFilter));
+        for (const t of treffer) {
+          const mvs = vertraege.filter(
+            (mv) => mv.mieterId === t.id || mv.wohnungId === t.wohnungId
+          );
+          diagnostik.push(
+            `Mieter „${t.name}" (id=${t.id}): ${mvs.length} Vertrag(e) auf Wohnung/ID; ` +
+              `Stammdaten kaltmiete=${t.kaltmiete ?? "–"} mietbeginn=${t.mietbeginn || "–"} NK=${t.nebenkostenVorauszahlung ?? "–"}`
+          );
+        }
+        if (!treffer.length) {
+          diagnostik.push(`Kein Mieter mit Namen enthaltend „${nameFilter}" gefunden.`);
+        }
       }
 
       await logEvent(
@@ -1562,14 +1671,94 @@ async function executeTool(
         anzahl: updates.length,
         aktualisiert: updates.map((u) => ({
           mieter: u.mieterName,
+          mieterId: u.mieterId,
           vertrag: u.fromVertrag,
           felder: u.patch,
         })),
-        uebersprungen: skipped.slice(0, 20),
+        uebersprungen: skipped.slice(0, 30),
+        diagnostik: diagnostik.slice(0, 30),
+        hinweis:
+          updates.length === 0
+            ? "Keine Werte übernommen. Siehe diagnostik. Ggf. update_mieter mit konkreten Werten nutzen oder Mietvertrag unter /mietvertraege zuordnen."
+            : undefined,
       };
     }
 
-case "list_unpassende_dokumente": {
+    case "update_mieter": {
+      const nameQ = args.mieter_name ? String(args.mieter_name).trim().toLowerCase() : "";
+      let id = args.mieter_id ? String(args.mieter_id) : "";
+      if (!id && nameQ) {
+        const alle = await mieterDb.list();
+        const treffer = alle.filter((m) => m.name.toLowerCase().includes(nameQ));
+        if (treffer.length === 0) return { error: `Kein Mieter mit Namen „${args.mieter_name}" gefunden` };
+        if (treffer.length > 1) {
+          return {
+            error: `Mehrere Mieter gefunden – bitte mieter_id angeben`,
+            treffer: treffer.map((m) => ({ id: m.id, name: m.name, wohnungId: m.wohnungId })),
+          };
+        }
+        id = treffer[0].id;
+      }
+      if (!id) return { error: "mieter_id oder mieter_name erforderlich" };
+      const existing = await mieterDb.get(id);
+      if (!existing) return { error: `Mieter ${id} nicht gefunden` };
+
+      const asPos = (v: unknown): number | undefined => {
+        if (v == null || v === "") return undefined;
+        const n = typeof v === "number" ? v : Number(String(v).replace(/\s/g, "").replace(",", "."));
+        return Number.isFinite(n) && n > 0 ? n : undefined;
+      };
+      const asNonNeg = (v: unknown): number | undefined => {
+        if (v == null || v === "") return undefined;
+        const n = typeof v === "number" ? v : Number(String(v).replace(/\s/g, "").replace(",", "."));
+        return Number.isFinite(n) && n >= 0 ? n : undefined;
+      };
+
+      const patch: Record<string, string | number> = {};
+      if (args.kaltmiete != null) {
+        const n = asPos(args.kaltmiete);
+        if (n != null) patch.kaltmiete = n;
+      }
+      if (args.nebenkostenVorauszahlung != null) {
+        const n = asNonNeg(args.nebenkostenVorauszahlung);
+        if (n != null) patch.nebenkostenVorauszahlung = n;
+      }
+      if (args.mietbeginn != null && String(args.mietbeginn).trim()) {
+        patch.mietbeginn = String(args.mietbeginn).trim();
+      }
+      if (args.mietende != null && String(args.mietende).trim()) {
+        patch.mietende = String(args.mietende).trim();
+      }
+      if (args.name != null && String(args.name).trim()) patch.name = String(args.name).trim();
+      if (args.email != null) patch.email = String(args.email);
+      if (args.telefon != null) patch.telefon = String(args.telefon);
+      if (args.wohnung_id != null && String(args.wohnung_id).trim()) {
+        patch.wohnungId = String(args.wohnung_id).trim();
+      }
+
+      if (Object.keys(patch).length === 0) {
+        return {
+          error: "Keine gültigen Felder zum Setzen",
+          aktuell: {
+            name: existing.name,
+            kaltmiete: existing.kaltmiete,
+            nebenkostenVorauszahlung: existing.nebenkostenVorauszahlung,
+            mietbeginn: existing.mietbeginn,
+            mietende: existing.mietende,
+          },
+        };
+      }
+
+      const updated = await mieterDb.update(id, patch as any);
+      await logEvent(
+        "aenderung",
+        `Agent: Mieter „${existing.name}" aktualisiert (${Object.keys(patch).join(", ")}).`,
+        { art: "Mieter", id }
+      );
+      return { ok: true, mieter: updated, patch };
+    }
+
+    case "list_unpassende_dokumente": {
       const [ablage, laeufe, liegenschaften] = await Promise.all([
         ablageDb.list(),
         pruefLaufDb.list(),
@@ -1793,7 +1982,8 @@ const AGENT_SYSTEM = `Du bist "BetriebsKostenBot Agent" – ein Handlungs-Assist
 Du hast Schreibrechte über Tools (Datenbank-Updates). Behaupte NIEMALS, du könntest Stammdaten nicht speichern oder hättest keine Schreibrechte.
 
 ## Wichtige Tools (Stammdaten)
-- sync_mieter_from_mietvertraege – übernimmt Kaltmiete, NK, Mietbeginn/Ende aus verknüpften Mietverträgen in die Mieter-Stammdaten. Bei „Stammdaten nachtragen/aktualisieren/ergänzen“ SOFORT aufrufen.
+- sync_mieter_from_mietvertraege – übernimmt Kaltmiete, NK, Mietbeginn/Ende aus verknüpften Mietverträgen in die Mieter-Stammdaten. Parameter mieter_name oder liegenschaft_query. Bei „Stammdaten nachtragen/Mietbeginn nachpflegen“ SOFORT aufrufen.
+- update_mieter – setzt Stammdaten eines Mieters direkt (kaltmiete, mietbeginn, NK, …) per ID oder Name.
 - reassign_mietvertrag – Wohnung/Mieter eines Vertrags neu setzen + optional Stammdaten sync.
 - delete_mietvertrag – Mietvertrag löschen (nur mit user_confirmed=true; vorher list_mietvertraege).
 - list_mietvertraege / list_ablage / list_unpassende_dokumente – Übersicht.
@@ -2402,10 +2592,24 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
 
   // Mieter aus Mietverträgen
   if (wantsMieterSync) {
-    // Straße/Query aus Nachricht ziehen
+    // Straße/Query und optionaler Mietername aus Nachricht
     let query = "";
+    let mieterName = "";
+    const nameMatch = message.match(
+      /\b(?:mieter(?:in|s)?|von|fuer|für)\s+([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß]+)+)/
+    );
+    if (nameMatch) mieterName = nameMatch[1].trim();
+    // „Yvonne Paul“ / „Paul“ in freier Formulierung
+    if (!mieterName) {
+      const freeName = message.match(
+        /\b([A-ZÄÖÜ][a-zäöüß]{2,}\s+[A-ZÄÖÜ][a-zäöüß]{2,})\b/
+      );
+      if (freeName && !/(Straße|Weg|Platz|Str\.)/i.test(freeName[1])) {
+        mieterName = freeName[1].trim();
+      }
+    }
     const fuer = message.match(
-      /\b(?:in|fuer|für|der|die)\s+([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\s\d.-]{3,40})/i
+      /\b(?:in|der|die)\s+([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\s\d.-]{3,40})/i
     );
     if (fuer) query = fuer[1].replace(/[?.!,]+$/, "").trim();
     if (!query) {
@@ -2414,13 +2618,19 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
       );
       if (str) query = str[1];
     }
+    // Wenn die Query wie ein Personenname aussieht und wir keinen mieterName haben → als Name nutzen
+    if (query && !mieterName && !/(straße|strasse|str\.|weg|platz|\d)/i.test(query)) {
+      mieterName = query;
+      query = "";
+    }
     const sync = (await executeTool("sync_mieter_from_mietvertraege", {
       liegenschaft_query: query || undefined,
+      mieter_name: mieterName || undefined,
       nur_leere_felder: true,
     })) as any;
     steps.push({
       tool: "sync_mieter_from_mietvertraege",
-      args: { liegenschaft_query: query },
+      args: { liegenschaft_query: query, mieter_name: mieterName },
       result: sync,
     });
     lines.push("");
@@ -2435,8 +2645,12 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
       lines.push(
         "• Keine übernehmbaren Werte gefunden (Mietverträge ohne sollMiete/mietbeginn, ohne Mieter-Verknüpfung, oder Felder bereits gesetzt)."
       );
+      if (Array.isArray(sync?.diagnostik) && sync.diagnostik.length) {
+        lines.push("• Diagnose:");
+        for (const d of sync.diagnostik.slice(0, 8)) lines.push(`  – ${d}`);
+      }
       lines.push(
-        "• Tipp: Unter /mietvertraege Verträge mit „Neu zuordnen“ an Wohnung+Mieter hängen, danach erneut „Stammdaten nachtragen“."
+        "• Tipp: Unter /mietvertraege Verträge mit „Neu zuordnen“ an Wohnung+Mieter hängen, oder konkrete Werte mit update_mieter setzen."
       );
     }
   }

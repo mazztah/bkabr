@@ -64,6 +64,10 @@ function Field({
 }) {
   const [val, setVal] = useState(value ?? "");
   const [saved, setSaved] = useState(false);
+  // Prop-Änderungen (nach Speichern/Refresh oder Wechsel des Mieters) in den lokalen State übernehmen
+  useEffect(() => {
+    setVal(value ?? "");
+  }, [value]);
   const dirty = String(val) !== String(value ?? "");
 
   const save = () => {
@@ -703,9 +707,23 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
                       </button>
                     </p>
                   )}
-                  {(data.mietvertraege || [])
-                    .filter((mv) => mv.mieterId === mieter.id)
-                    .map((mv) => (
+                  {(() => {
+                    const linked = (data.mietvertraege || []).filter(
+                      (mv) =>
+                        mv.mieterId === mieter.id ||
+                        (!mv.mieterId && mv.wohnungId === mieter.wohnungId)
+                    );
+                    if (linked.length === 0) {
+                      return (
+                        <p className="text-xs text-muted-foreground">
+                          Kein Mietvertrag verknüpft.{" "}
+                          <a href="/mietvertraege" className="text-primary hover:underline">
+                            Hochladen / zuordnen ↗
+                          </a>
+                        </p>
+                      );
+                    }
+                    return linked.map((mv) => (
                       <p key={mv.id}>
                         Mietvertrag:{" "}
                         <a href={`/mietvertraege?id=${mv.id}`} className="text-primary hover:underline">
@@ -728,16 +746,10 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
                         )}
                         {mv.sollMiete != null ? ` · ${mv.sollMiete} €` : ""}
                         {mv.mietbeginn ? ` · ab ${mv.mietbeginn}` : ""}
+                        {!mv.mieterId ? " · (nur über Wohnung verknüpft)" : ""}
                       </p>
-                    ))}
-                  {(data.mietvertraege || []).filter((mv) => mv.mieterId === mieter.id).length === 0 && (
-                    <p className="text-xs text-muted-foreground">
-                      Kein Mietvertrag verknüpft.{" "}
-                      <a href="/mietvertraege" className="text-primary hover:underline">
-                        Hochladen / zuordnen ↗
-                      </a>
-                    </p>
-                  )}
+                    ));
+                  })()}
                   {mieterLiegenschaft && (
                     <p>
                       PM-Vertrag:{" "}

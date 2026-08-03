@@ -177,22 +177,45 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
   // Hilfsfunktion: Zahlen robust aus string/number lesen (JSON-DB kann Strings speichern)
   const asPositiveNumber = (v: unknown): number | undefined => {
     if (v == null || v === "") return undefined;
-    const n = typeof v === "number" ? v : Number(String(v).replace(",", "."));
+    const n = typeof v === "number" ? v : Number(String(v).replace(/\s/g, "").replace(",", "."));
     return Number.isFinite(n) && n > 0 ? n : undefined;
   };
   const asNonNegNumber = (v: unknown): number | undefined => {
     if (v == null || v === "") return undefined;
-    const n = typeof v === "number" ? v : Number(String(v).replace(",", "."));
+    const n = typeof v === "number" ? v : Number(String(v).replace(/\s/g, "").replace(",", "."));
     return Number.isFinite(n) && n >= 0 ? n : undefined;
   };
   const hasText = (v: unknown): boolean =>
     typeof v === "string" ? v.trim().length > 0 : v != null && String(v).trim().length > 0;
 
-  // Verträge pro Mieter bzw. Wohnung für Abgleich (auch wenn mieterId fehlt)
-  const vertraegeFuerMieter = (mieterId: string, wohnungId: string) =>
-    mietvertraege.filter(
-      (mv) => mv.mieterId === mieterId || (!mv.mieterId && mv.wohnungId === wohnungId)
-    );
+  /** Mietverträge, die zu diesem Mieter gehören – großzügig, aber sicher:
+   *  1) explizite mieterId
+   *  2) gleiche Wohnung und (keine mieterId ODER nur ein Mieter auf der Wohnung)
+   */
+  const vertraegeFuerMieter = (mieterId: string, wohnungId: string) => {
+    const mieterAufWohnung = mieter.filter((x) => x.wohnungId === wohnungId);
+    const allein = mieterAufWohnung.length === 1 && mieterAufWohnung[0].id === mieterId;
+    return mietvertraege.filter((mv) => {
+      if (mv.mieterId && mv.mieterId === mieterId) return true;
+      if (mv.wohnungId !== wohnungId) return false;
+      if (!mv.mieterId) return true;
+      if (allein) return true;
+      return false;
+    });
+  };
+
+  const nkAusVertrag = (mv: (typeof mietvertraege)[0]): number | undefined => {
+    const direkt = asNonNegNumber(mv.nebenkostenVorauszahlung);
+    if (direkt != null) return direkt;
+    const bk = asNonNegNumber(mv.bkVorauszahlung) ?? 0;
+    const hk = asNonNegNumber(mv.hkVorauszahlung) ?? 0;
+    if (bk + hk > 0) return bk + hk;
+    // Warmmiete − Kaltmiete als Näherung, falls beides vorhanden
+    const warm = asPositiveNumber(mv.warmmiete);
+    const kalt = asPositiveNumber(mv.sollMiete);
+    if (warm != null && kalt != null && warm > kalt) return Math.round((warm - kalt) * 100) / 100;
+    return undefined;
+  };
 
   // ---- Mieter: verwaiste Referenzen + fehlende Stammdaten ----
   for (const m of mieter) {
@@ -215,58 +238,64 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
     // Fehlmeldungen, wenn die Werte im Vertrag (nach Korrektur) stehen, aber
     // noch nicht in die Mieter-Stammdaten übernommen wurden.
     const linked = vertraegeFuerMieter(m.id, m.wohnungId);
+    const mieterKalt = asPositiveNumber(m.kaltmiete);
+    const mieterNk = asNonNegNumber(m.nebenkostenVorauszahlung);
+    const mieterBeginn = hasText(m.mietbeginn) ? String(m.mietbeginn).trim() : undefined;
+
     const vertragKalt =
-      asPositiveNumber(m.kaltmiete) ??
-      linked.map((mv) => asPositiveNumber(mv.sollMiete)).find((n) => n != null);
+      mieterKalt ?? linked.map((mv) => asPositiveNumber(mv.sollMiete)).find((n) => n != null);
     const vertragNk =
-      asNonNegNumber(m.nebenkostenVorauszahlung) ??
-      linked
-        .map((mv) => asNonNegNumber(mv.nebenkostenVorauszahlung))
-        .find((n) => n != null) ??
-      linked
-        .map((mv) => {
-          const bk = asNonNegNumber(mv.bkVorauszahlung) ?? 0;
-          const hk = asNonNegNumber(mv.hkVorauszahlung) ?? 0;
-          return bk + hk > 0 ? bk + hk : undefined;
-        })
-        .find((n) => n != null);
+      mieterNk ?? linked.map((mv) => nkAusVertrag(mv)).find((n) => n != null);
     const vertragBeginn =
-      (hasText(m.mietbeginn) ? String(m.mietbeginn) : undefined) ??
-      linked.map((mv) => (hasText(mv.mietbeginn) ? String(mv.mietbeginn) : undefined)).find(Boolean);
+      mieterBeginn ??
+      linked.map((mv) => (hasText(mv.mietbeginn) ? String(mv.mietbeginn).trim() : undefined)).find(Boolean);
 
-    const fehlend: string[] = [];
-    if (vertragKalt == null) fehlend.push("Kaltmiete");
-    if (vertragNk == null) fehlend.push("NK-Vorauszahlung");
-    if (!vertragBeginn) fehlend.push("Mietbeginn");
+    // Pflicht für „vollständig“: Kaltmiete + Mietbeginn (NK ist oft 0 / später und nur Hinweis)
+    const fehlendKritisch: string[] = [];
+    if (vertragKalt == null) fehlendKritisch.push("Kaltmiete");
+    if (!vertragBeginn) fehlendKritisch.push("Mietbeginn");
 
-    // Werte stehen nur im Vertrag → Hinweis zum Sync, kein „fehlend“-Alarm
+    // Werte stehen nur im Vertrag → Sync-Hinweis mit anwendbarem Patch
     const nurImVertrag: string[] = [];
-    if (asPositiveNumber(m.kaltmiete) == null && vertragKalt != null) nurImVertrag.push("Kaltmiete");
-    if (asNonNegNumber(m.nebenkostenVorauszahlung) == null && vertragNk != null)
-      nurImVertrag.push("NK-Vorauszahlung");
-    if (!hasText(m.mietbeginn) && vertragBeginn) nurImVertrag.push("Mietbeginn");
+    if (mieterKalt == null && vertragKalt != null) nurImVertrag.push("Kaltmiete");
+    if (mieterNk == null && vertragNk != null) nurImVertrag.push("NK-Vorauszahlung");
+    if (!mieterBeginn && vertragBeginn) nurImVertrag.push("Mietbeginn");
 
-    if (fehlend.length > 0) {
+    if (fehlendKritisch.length > 0) {
+      // Diagnose in die Beschreibung, damit klar ist WAS geprüft wurde
+      const diagTeile: string[] = [];
+      diagTeile.push(
+        `Mieter-Felder: Kaltmiete=${m.kaltmiete ?? "–"}, Mietbeginn=${m.mietbeginn || "–"}, NK=${m.nebenkostenVorauszahlung ?? "–"}`
+      );
+      if (linked.length) {
+        diagTeile.push(
+          `Verträge (${linked.length}): ` +
+            linked
+              .map(
+                (mv) =>
+                  `„${mv.dateiName}" sollMiete=${mv.sollMiete ?? "–"} mietbeginn=${mv.mietbeginn || "–"} NK=${mv.nebenkostenVorauszahlung ?? "–"}`
+              )
+              .join("; ")
+        );
+      } else {
+        diagTeile.push("Kein verknüpfter Mietvertrag (weder mieterId noch alleinige Wohnung).");
+      }
       befunde.push(
         neuerBefund(
           "mieter",
           "warnung",
           "Mieter mit unvollständigen Stammdaten",
-          `Bei „${m.name}" fehlen: ${fehlend.join(", ")}.`,
+          `Bei „${m.name}" fehlen: ${fehlendKritisch.join(", ")}. ${diagTeile.join(" ")}`,
           [{ art: "Mieter", id: m.id, label: m.name }],
           undefined,
-          "/mieter"
+          `/mieter`
         )
       );
     } else if (nurImVertrag.length > 0) {
       const patch: Record<string, string | number> = {
-        ...(asPositiveNumber(m.kaltmiete) == null && vertragKalt != null
-          ? { kaltmiete: vertragKalt }
-          : {}),
-        ...(asNonNegNumber(m.nebenkostenVorauszahlung) == null && vertragNk != null
-          ? { nebenkostenVorauszahlung: vertragNk }
-          : {}),
-        ...(!hasText(m.mietbeginn) && vertragBeginn ? { mietbeginn: vertragBeginn } : {}),
+        ...(mieterKalt == null && vertragKalt != null ? { kaltmiete: vertragKalt } : {}),
+        ...(mieterNk == null && vertragNk != null ? { nebenkostenVorauszahlung: vertragNk } : {}),
+        ...(!mieterBeginn && vertragBeginn ? { mietbeginn: vertragBeginn } : {}),
       };
       befunde.push(
         neuerBefund(
@@ -284,9 +313,22 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
           "/mieter"
         )
       );
+    } else if (mieterNk == null && vertragNk == null) {
+      // Nur NK fehlt – weicher Hinweis, kein Alarm „unvollständig“
+      befunde.push(
+        neuerBefund(
+          "mieter",
+          "hinweis",
+          "NK-Vorauszahlung nicht hinterlegt",
+          `Bei „${m.name}" sind Kaltmiete und Mietbeginn vorhanden, die NK-Vorauszahlung fehlt noch (optional).`,
+          [{ art: "Mieter", id: m.id, label: m.name }],
+          undefined,
+          "/mieter"
+        )
+      );
     }
 
-    // Vertrag vorhanden, wenn mieterId passt ODER (ohne mieterId) gleiche Wohnung
+    // Vertrag vorhanden?
     const hatVertrag = linked.length > 0;
     if (!hatVertrag) {
       befunde.push(
