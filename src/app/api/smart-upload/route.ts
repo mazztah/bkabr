@@ -23,7 +23,12 @@ import {
 } from "@/lib/db";
 import { ingestRechnungDokument } from "@/lib/rechnung-intake";
 import { storeFile } from "@/lib/storage";
-import { matchLiegenschaft, parseAddress } from "@/lib/matching";
+import {
+  heuristicMietvertragFromText,
+  matchLiegenschaft,
+  matchMietvertragVorschlag,
+  parseAddress,
+} from "@/lib/matching";
 import { uid } from "@/lib/utils";
 import {
   AnhangTyp,
@@ -152,44 +157,55 @@ async function verarbeiteDatei(
       }
 
       case "mietvertrag": {
-        const extraktion = await extractMietvertrag({ text: ocr.text, fileName: file.name });
-        let vorgeschlagenerMieterId: string | undefined;
-        let vorgeschlagenerMieterName: string | undefined;
-        let vorgeschlageneWohnungId: string | undefined;
+        let extraktion: Awaited<ReturnType<typeof extractMietvertrag>>;
+        try {
+          extraktion = await extractMietvertrag({ text: ocr.text, fileName: file.name });
+        } catch (exErr: any) {
+          console.warn(`Mietvertrag-Extraktion LLM fehlgeschlagen (${file.name}):`, exErr?.message || exErr);
+          extraktion = heuristicMietvertragFromText(ocr.text, file.name);
+        }
+        // Leere LLM-Felder mit Heuristik auffüllen
+        const heur = heuristicMietvertragFromText(ocr.text, file.name);
+        extraktion = {
+          mieterName: extraktion.mieterName || heur.mieterName,
+          vermieterName: extraktion.vermieterName || heur.vermieterName,
+          mietbeginn: extraktion.mietbeginn || heur.mietbeginn,
+          mietende: extraktion.mietende || heur.mietende,
+          sollMiete: extraktion.sollMiete || heur.sollMiete,
+          nebenkostenVorauszahlung:
+            extraktion.nebenkostenVorauszahlung ?? heur.nebenkostenVorauszahlung,
+          kaution: extraktion.kaution || heur.kaution,
+          objektAdresse: extraktion.objektAdresse || heur.objektAdresse,
+          wohnungsbezeichnung: extraktion.wohnungsbezeichnung || heur.wohnungsbezeichnung,
+        };
 
-        if (extraktion.mieterName) {
-          const alleMieter = await mieterDb.list();
-          const zielName = normalize(extraktion.mieterName);
-          const match = alleMieter.find((m) => {
-            const n = normalize(m.name);
-            return n.length > 2 && (n.includes(zielName) || zielName.includes(n));
-          });
-          if (match) {
-            vorgeschlagenerMieterId = match.id;
-            vorgeschlagenerMieterName = match.name;
-            vorgeschlageneWohnungId = match.wohnungId;
-          }
-        }
-        if (!vorgeschlageneWohnungId && (extraktion.wohnungsbezeichnung || extraktion.objektAdresse)) {
-          const alleWohnungen = await wohnungenDb.list();
-          const ziel = normalize(extraktion.wohnungsbezeichnung || extraktion.objektAdresse || "");
-          const match = alleWohnungen.find((w) => {
-            const n = normalize(w.bezeichnung);
-            return n.length > 2 && ziel.includes(n);
-          });
-          if (match) vorgeschlageneWohnungId = match.id;
-        }
+        const [alleMieter, alleWohnungen, alleGebaeude, alleLg] = await Promise.all([
+          mieterDb.list(),
+          wohnungenDb.list(),
+          gebaeudeDb.list(),
+          liegenschaftenDb.list(),
+        ]);
+        const vorschlag = matchMietvertragVorschlag({
+          fileName: file.name,
+          extraktion,
+          ocrText: ocr.text,
+          liegenschaften: alleLg,
+          gebaeude: alleGebaeude,
+          wohnungen: alleWohnungen,
+          mieter: alleMieter,
+        });
 
         return {
           ...ergebnis,
           mietvertrag: {
             extraktion,
             vorschlag: {
-              mieterId: vorgeschlagenerMieterId,
-              mieterName: vorgeschlagenerMieterName,
-              wohnungId: vorgeschlageneWohnungId,
+              mieterId: vorschlag.mieterId,
+              mieterName: vorschlag.mieterName || extraktion.mieterName,
+              wohnungId: vorschlag.wohnungId,
             },
           },
+          hinweisText: vorschlag.hinweis,
         };
       }
 

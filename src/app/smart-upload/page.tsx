@@ -415,10 +415,14 @@ function MietvertragCard(
   const [wohnungId, setWohnungId] = useState(v.wohnungId || "");
   const [mieterModus, setMieterModus] = useState<"vorhanden" | "neu">(v.mieterId ? "vorhanden" : "neu");
   const [gewaehlterMieter, setGewaehlterMieter] = useState(v.mieterId || "");
-  const [mieterName, setMieterName] = useState(e.mieterName || "");
-  const [sollMiete, setSollMiete] = useState(String(e.sollMiete ?? ""));
-  const [nk, setNk] = useState(String(e.nebenkostenVorauszahlung ?? ""));
-  const [kaution, setKaution] = useState(String(e.kaution ?? ""));
+  const [mieterName, setMieterName] = useState(e.mieterName || v.mieterName || "");
+  const [sollMiete, setSollMiete] = useState(e.sollMiete != null && e.sollMiete !== 0 ? String(e.sollMiete) : "");
+  const [nk, setNk] = useState(
+    e.nebenkostenVorauszahlung != null && e.nebenkostenVorauszahlung !== 0
+      ? String(e.nebenkostenVorauszahlung)
+      : ""
+  );
+  const [kaution, setKaution] = useState(e.kaution != null && e.kaution !== 0 ? String(e.kaution) : "");
   const [mietbeginn, setMietbeginn] = useState(e.mietbeginn || "");
   const [mietende, setMietende] = useState(e.mietende || "");
 
@@ -427,6 +431,22 @@ function MietvertragCard(
     const l = g ? liegenschaften.find((x) => x.id === g.liegenschaftId) : undefined;
     return `${l?.name ? l.name + " · " : ""}${g?.name ? g.name + " · " : ""}${w.bezeichnung}`;
   };
+
+  // Passende Wohnungen zuerst (Vorschlag oben), Rest alphabetisch nach Label
+  const sortedWohnungen = [...wohnungen].sort((a, b) => {
+    if (a.id === v.wohnungId) return -1;
+    if (b.id === v.wohnungId) return 1;
+    return wohnungLabel(a).localeCompare(wohnungLabel(b), "de");
+  });
+
+  // Mieter der gewählten Wohnung zuerst
+  const sortedMieter = [...(props.mieter as Mieter[])].sort((a, b) => {
+    if (a.id === v.mieterId) return -1;
+    if (b.id === v.mieterId) return 1;
+    if (wohnungId && a.wohnungId === wohnungId && b.wohnungId !== wohnungId) return -1;
+    if (wohnungId && b.wohnungId === wohnungId && a.wohnungId !== wohnungId) return 1;
+    return a.name.localeCompare(b.name, "de");
+  });
 
   const bestaetigen = async () => {
     if (!wohnungId) return;
@@ -509,9 +529,10 @@ function MietvertragCard(
             className="rounded border border-border bg-background px-2 py-1.5 text-sm"
           >
             <option value="">— wählen —</option>
-            {wohnungen.map((w: Wohnung) => (
+            {sortedWohnungen.map((w: Wohnung) => (
               <option key={w.id} value={w.id}>
                 {wohnungLabel(w)}
+                {w.id === v.wohnungId ? " ★" : ""}
               </option>
             ))}
           </select>
@@ -540,9 +561,10 @@ function MietvertragCard(
               className="rounded border border-border bg-background px-2 py-1.5 text-sm"
             >
               <option value="">— wählen —</option>
-              {props.mieter.map((m: Mieter) => (
+              {sortedMieter.map((m: Mieter) => (
                 <option key={m.id} value={m.id}>
                   {m.name}
+                  {m.id === v.mieterId ? " ★" : ""}
                 </option>
               ))}
             </select>
@@ -554,6 +576,14 @@ function MietvertragCard(
         <Field label="Mietbeginn" value={mietbeginn} onChange={setMietbeginn} />
         <Field label="Mietende" value={mietende} onChange={setMietende} />
       </div>
+      {(e.mieterName || e.objektAdresse || e.wohnungsbezeichnung || item.hinweisText) && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Erkannt:{" "}
+          {[e.mieterName, e.objektAdresse, e.wohnungsbezeichnung, item.hinweisText]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
+      )}
       <button
         onClick={bestaetigen}
         disabled={busy || !wohnungId || (mieterModus === "neu" && !mieterName.trim())}

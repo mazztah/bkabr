@@ -1,15 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { extractMietvertrag } from "@/lib/ai";
 import { extractTextFromFile } from "@/lib/document-ocr";
-import { mieterDb, wohnungenDb } from "@/lib/db";
+import { gebaeudeDb, liegenschaftenDb, mieterDb, wohnungenDb } from "@/lib/db";
+import { heuristicMietvertragFromText, matchMietvertragVorschlag } from "@/lib/matching";
 import { storeFile } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-
-function normalize(s: string): string {
-  return s.toLowerCase().replace(/[^a-zäöüß]/g, "");
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -26,42 +23,43 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: ocr.error }, { status: 415 });
     }
 
-    const extraktion = await extractMietvertrag({ text: ocr.text, fileName: file.name });
+    let extraktion;
+    try {
+      extraktion = await extractMietvertrag({ text: ocr.text, fileName: file.name });
+    } catch {
+      extraktion = heuristicMietvertragFromText(ocr.text, file.name);
+    }
+    const heur = heuristicMietvertragFromText(ocr.text, file.name);
+    extraktion = {
+      mieterName: extraktion.mieterName || heur.mieterName,
+      vermieterName: extraktion.vermieterName || heur.vermieterName,
+      mietbeginn: extraktion.mietbeginn || heur.mietbeginn,
+      mietende: extraktion.mietende || heur.mietende,
+      sollMiete: extraktion.sollMiete || heur.sollMiete,
+      nebenkostenVorauszahlung: extraktion.nebenkostenVorauszahlung ?? heur.nebenkostenVorauszahlung,
+      kaution: extraktion.kaution || heur.kaution,
+      objektAdresse: extraktion.objektAdresse || heur.objektAdresse,
+      wohnungsbezeichnung: extraktion.wohnungsbezeichnung || heur.wohnungsbezeichnung,
+    };
 
-    // Datei bereits jetzt sichern (wird beim Bestätigen referenziert, unabhängig
-    // davon, ob automatisch oder manuell zugeordnet wird)
     const tempId = crypto.randomUUID();
     const storedFileName = await storeFile(tempId, file.name, buffer);
 
-    // Fuzzy-Matching gegen bestehende Mieter (Namensabgleich)
-    let vorgeschlagenerMieterId: string | undefined;
-    let vorgeschlagenerMieterName: string | undefined;
-    let vorgeschlageneWohnungId: string | undefined;
-
-    if (extraktion.mieterName) {
-      const alleMieter = await mieterDb.list();
-      const zielName = normalize(extraktion.mieterName);
-      const match = alleMieter.find((m) => {
-        const n = normalize(m.name);
-        return n.length > 2 && (n.includes(zielName) || zielName.includes(n));
-      });
-      if (match) {
-        vorgeschlagenerMieterId = match.id;
-        vorgeschlagenerMieterName = match.name;
-        vorgeschlageneWohnungId = match.wohnungId;
-      }
-    }
-
-    // Falls kein Mieter-Treffer, versuchsweise über die Wohnungsbezeichnung/Adresse matchen
-    if (!vorgeschlageneWohnungId && (extraktion.wohnungsbezeichnung || extraktion.objektAdresse)) {
-      const alleWohnungen = await wohnungenDb.list();
-      const ziel = normalize(extraktion.wohnungsbezeichnung || extraktion.objektAdresse || "");
-      const match = alleWohnungen.find((w) => {
-        const n = normalize(w.bezeichnung);
-        return n.length > 2 && ziel.includes(n);
-      });
-      if (match) vorgeschlageneWohnungId = match.id;
-    }
+    const [alleMieter, alleWohnungen, alleGebaeude, alleLg] = await Promise.all([
+      mieterDb.list(),
+      wohnungenDb.list(),
+      gebaeudeDb.list(),
+      liegenschaftenDb.list(),
+    ]);
+    const vorschlag = matchMietvertragVorschlag({
+      fileName: file.name,
+      extraktion,
+      ocrText: ocr.text,
+      liegenschaften: alleLg,
+      gebaeude: alleGebaeude,
+      wohnungen: alleWohnungen,
+      mieter: alleMieter,
+    });
 
     return NextResponse.json({
       extraktion,
@@ -69,9 +67,11 @@ export async function POST(req: NextRequest) {
       storedFileName,
       mimeType,
       vorschlag: {
-        mieterId: vorgeschlagenerMieterId,
-        mieterName: vorgeschlagenerMieterName,
-        wohnungId: vorgeschlageneWohnungId,
+        mieterId: vorschlag.mieterId,
+        mieterName: vorschlag.mieterName || extraktion.mieterName,
+        wohnungId: vorschlag.wohnungId,
+        liegenschaftId: vorschlag.liegenschaftId,
+        hinweis: vorschlag.hinweis,
       },
     });
   } catch (e: any) {

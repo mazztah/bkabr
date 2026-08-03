@@ -1,10 +1,19 @@
-import { Liegenschaft } from "./types";
+import { Liegenschaft, Mieter, Wohnung, Gebaeude, MietvertragExtraktion } from "./types";
 
 export interface ParsedAddress {
   strasse: string;
   hausnummer: string;
   plz: string;
   ort: string;
+}
+
+export interface MietvertragMatchVorschlag {
+  mieterId?: string;
+  mieterName?: string;
+  wohnungId?: string;
+  liegenschaftId?: string;
+  score: number;
+  hinweis?: string;
 }
 
 /** Sehr einfacher, toleranter Parser für deutsche Adressen à la "Musterstr. 12, 30159 Hannover". */
@@ -87,4 +96,218 @@ export function zeitraumEnthaeltJahr(zeitraum: string, jahr: number): boolean {
 
 export function jahresZeitraum(jahr: number): string {
   return `01.01.${jahr} - 31.12.${jahr}`;
+}
+
+/**
+ * Dateiname-Hints wie GFS6, GFS2, SHG10, UZDU4 → Straße/Hausnummer-Fragmente.
+ * Hilft, wenn OCR die Adresse schlecht liest, der Dateiname aber die Liegenschaft kodiert.
+ */
+const DATEINAME_LIEGENSCHAFT_HINTS: { re: RegExp; strasse: string; hnr?: string }[] = [
+  { re: /\bgfs\s*6\b|\bgfs6\b/i, strasse: "gorchfock", hnr: "6" },
+  { re: /\bgfs\s*4\b|\bgfs4\b/i, strasse: "gorchfock", hnr: "4" },
+  { re: /\bgfs\s*2\b|\bgfs2\b/i, strasse: "gorchfock", hnr: "2" },
+  { re: /\bshg\s*10\b|\bshg10\b/i, strasse: "spannhagengarten", hnr: "10" },
+  { re: /\bshg\s*6\b|\bshg6\b/i, strasse: "spannhagengarten", hnr: "6" },
+  { re: /\bshg\s*4\b|\bshg4\b/i, strasse: "spannhagengarten", hnr: "4" },
+  { re: /\buzdu\s*4\b|\buzdu4\b/i, strasse: "uzdu", hnr: "4" },
+];
+
+function scoreLiegenschaftAgainstText(
+  lg: Liegenschaft,
+  textNorm: string,
+  fileNameNorm: string
+): number {
+  let score = 0;
+  const strasseHnr = normalize(`${lg.strasse}${lg.hausnummer}`);
+  const strasse = normalize(lg.strasse);
+  if (strasseHnr.length > 3 && (textNorm.includes(strasseHnr) || fileNameNorm.includes(strasseHnr))) {
+    score += 50;
+  } else if (strasse.length > 4 && (textNorm.includes(strasse) || fileNameNorm.includes(strasse))) {
+    score += 25;
+    if (lg.hausnummer && (textNorm.includes(normalize(lg.hausnummer)) || fileNameNorm.includes(normalize(lg.hausnummer)))) {
+      score += 20;
+    }
+  }
+  if (lg.plz && (textNorm.includes(lg.plz) || fileNameNorm.includes(lg.plz))) score += 8;
+  if (lg.ort && normalize(lg.ort).length > 2 && textNorm.includes(normalize(lg.ort))) score += 5;
+
+  for (const hint of DATEINAME_LIEGENSCHAFT_HINTS) {
+    if (hint.re.test(fileNameNorm) || hint.re.test(textNorm)) {
+      if (strasse.includes(hint.strasse) || normalize(lg.name).includes(hint.strasse)) {
+        score += 40;
+        if (hint.hnr && normalize(lg.hausnummer) === normalize(hint.hnr)) score += 25;
+      }
+    }
+  }
+  return score;
+}
+
+function scoreWohnung(bezeichnung: string, extrakt: string, fileName: string): number {
+  const n = normalize(bezeichnung);
+  if (n.length < 2) return 0;
+  let score = 0;
+  const e = normalize(extrakt);
+  const f = normalize(fileName);
+  if (e.includes(n) || n.includes(e)) score += 40;
+  // typische Lagen
+  const lageTokens = n.match(/(eg|og|dg|links|rechts|mitte|\d+)/g) || [];
+  for (const t of lageTokens) {
+    if (t.length >= 2 && (e.includes(t) || f.includes(t))) score += 8;
+  }
+  return score;
+}
+
+/**
+ * Robustes Matching Wohnung/Mieter/Liegenschaft für Mietvertrags-Upload.
+ * Nutzt Dateiname, Adresse, Wohnungsbezeichnung und Mieternamen.
+ */
+export function matchMietvertragVorschlag(params: {
+  fileName: string;
+  extraktion: Partial<MietvertragExtraktion>;
+  ocrText?: string;
+  liegenschaften: Liegenschaft[];
+  gebaeude: Gebaeude[];
+  wohnungen: Wohnung[];
+  mieter: Mieter[];
+}): MietvertragMatchVorschlag {
+  const { fileName, extraktion, ocrText = "", liegenschaften, gebaeude, wohnungen, mieter } = params;
+  const textBlob = [extraktion.objektAdresse, extraktion.wohnungsbezeichnung, ocrText.slice(0, 2500), fileName]
+    .filter(Boolean)
+    .join(" ");
+  const textNorm = normalize(textBlob);
+  const fileNameNorm = normalize(fileName);
+
+  // 1) Liegenschaft
+  let bestLg: Liegenschaft | undefined;
+  let bestLgScore = 0;
+  for (const lg of liegenschaften) {
+    const s = scoreLiegenschaftAgainstText(lg, textNorm, fileNameNorm);
+    if (s > bestLgScore) {
+      bestLgScore = s;
+      bestLg = lg;
+    }
+  }
+  // Fallback: matchLiegenschaft
+  if ((!bestLg || bestLgScore < 20) && extraktion.objektAdresse) {
+    const m = matchLiegenschaft(extraktion.objektAdresse, liegenschaften);
+    if (m) {
+      bestLg = m;
+      bestLgScore = Math.max(bestLgScore, 35);
+    }
+  }
+
+  const gebaeudeIds = bestLg
+    ? new Set(gebaeude.filter((g) => g.liegenschaftId === bestLg!.id).map((g) => g.id))
+    : null;
+
+  // 2) Wohnung – bevorzugt innerhalb der Liegenschaft
+  let bestW: Wohnung | undefined;
+  let bestWScore = 0;
+  const kandidatWohnungen = gebaeudeIds
+    ? wohnungen.filter((w) => gebaeudeIds.has(w.gebaeudeId))
+    : wohnungen;
+  const extraktWohnung = `${extraktion.wohnungsbezeichnung || ""} ${extraktion.objektAdresse || ""}`;
+  for (const w of kandidatWohnungen) {
+    let s = scoreWohnung(w.bezeichnung, extraktWohnung, fileName);
+    if (gebaeudeIds) s += 15; // Bonus im richtigen Haus
+    if (s > bestWScore) {
+      bestWScore = s;
+      bestW = w;
+    }
+  }
+  // Wenn nur eine Wohnung in der Liegenschaft und Liegenschaft sicher: die nehmen
+  if (!bestW && kandidatWohnungen.length === 1 && bestLgScore >= 40) {
+    bestW = kandidatWohnungen[0];
+    bestWScore = 30;
+  }
+
+  // 3) Mieter – Name, bevorzugt in passender Wohnung/Liegenschaft
+  let bestM: Mieter | undefined;
+  let bestMScore = 0;
+  const zielName = normalize(extraktion.mieterName || "");
+  if (zielName.length > 2) {
+    for (const m of mieter) {
+      const n = normalize(m.name);
+      if (n.length < 2) continue;
+      let s = 0;
+      if (n === zielName) s = 60;
+      else if (n.includes(zielName) || zielName.includes(n)) s = 40;
+      else {
+        // Nachname-Token
+        const tokens = zielName.split(/\s+/).filter((t) => t.length > 2);
+        if (tokens.some((t) => n.includes(t))) s = 25;
+      }
+      if (bestW && m.wohnungId === bestW.id) s += 25;
+      else if (gebaeudeIds) {
+        const w = wohnungen.find((x) => x.id === m.wohnungId);
+        if (w && gebaeudeIds.has(w.gebaeudeId)) s += 12;
+      }
+      if (s > bestMScore) {
+        bestMScore = s;
+        bestM = m;
+      }
+    }
+  }
+
+  // Wenn Mieter gefunden und noch keine Wohnung: dessen Wohnung
+  if (bestM && !bestW) {
+    bestW = wohnungen.find((w) => w.id === bestM!.wohnungId);
+  }
+  // Wenn Wohnung gefunden und kein Mieter: ersten Mieter der Wohnung?
+  // (nicht automatisch – oft mehrere/leer)
+
+  const score = bestLgScore + bestWScore + bestMScore;
+  const hinweise: string[] = [];
+  if (bestLg) hinweise.push(`Liegenschaft: ${bestLg.name}`);
+  if (bestW) hinweise.push(`Wohnung: ${bestW.bezeichnung}`);
+  if (bestM) hinweise.push(`Mieter: ${bestM.name}`);
+
+  return {
+    mieterId: bestMScore >= 25 ? bestM?.id : undefined,
+    mieterName: bestMScore >= 25 ? bestM?.name : extraktion.mieterName,
+    wohnungId: bestWScore >= 20 || (bestM && bestW) ? bestW?.id : bestWScore >= 15 ? bestW?.id : undefined,
+    liegenschaftId: bestLgScore >= 20 ? bestLg?.id : undefined,
+    score,
+    hinweis: hinweise.length ? hinweise.join(" · ") : undefined,
+  };
+}
+
+/**
+ * Notfall-Extraktion aus OCR-Text, wenn das LLM-JSON fehlschlägt.
+ */
+export function heuristicMietvertragFromText(text: string, fileName: string): MietvertragExtraktion {
+  const t = text || "";
+  const mieterMatch =
+    t.match(/(?:Mieter(?:in)?|Pächter)\s*[:\-]?\s*([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+)+)/) ||
+    t.match(/(?:Herr|Frau)\s+([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+)+)/);
+  const mieteMatch =
+    t.match(/(?:Kaltmiete|Grundmiete|Nettomiete)\s*[:\-]?\s*(\d{1,4}(?:[.,]\d{2})?)\s*€?/i) ||
+    t.match(/(\d{1,4}(?:[.,]\d{2})?)\s*€\s*(?:Kaltmiete|monatlich)/i);
+  const nkMatch = t.match(
+    /(?:Nebenkosten|Betriebskosten|Vorauszahlung)\s*[:\-]?\s*(\d{1,4}(?:[.,]\d{2})?)/i
+  );
+  const kautionMatch = t.match(/(?:Kaution|Mietkaution)\s*[:\-]?\s*(\d{1,5}(?:[.,]\d{2})?)/i);
+  const beginnMatch =
+    t.match(/(?:Mietbeginn|Beginn|ab)\s*[:\-]?\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i) ||
+    t.match(/(\d{1,2}\.\d{1,2}\.\d{4})\s*(?:als\s+)?(?:Mietbeginn|Beginn)/i);
+  const endeMatch = t.match(/(?:Mietende|Ende|bis)\s*[:\-]?\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i);
+  const adresseMatch = t.match(
+    /((?:[A-ZÄÖÜ][a-zäöüß]+(?:straße|strasse|str\.|weg|platz|allee)[\s\d,]*)+(?:\d{5}\s+[A-Za-zäöüÄÖÜß\-]+)?)/i
+  );
+  const lageMatch = t.match(
+    /((?:\d\.\s*)?(?:EG|OG|DG|Erdgeschoss|Dachgeschoss)[^\n,]{0,30}(?:links|rechts|mitte)?)/i
+  );
+
+  const num = (s?: string) => (s ? parseFloat(s.replace(",", ".")) : undefined);
+
+  return {
+    mieterName: mieterMatch?.[1]?.trim(),
+    sollMiete: num(mieteMatch?.[1]),
+    nebenkostenVorauszahlung: num(nkMatch?.[1]),
+    kaution: num(kautionMatch?.[1]),
+    mietbeginn: beginnMatch?.[1],
+    mietende: endeMatch?.[1],
+    objektAdresse: adresseMatch?.[1]?.trim() || (fileName.match(/GFS|SHG|UZDU/i) ? fileName : undefined),
+    wohnungsbezeichnung: lageMatch?.[1]?.trim(),
+  };
 }
