@@ -13,7 +13,7 @@ Wohnen · Gewerbe · Hausverwaltung · Property Management
 [![License](https://img.shields.io/badge/License-frei%20nutzbar-green)](#lizenz)
 [![Budget](https://img.shields.io/badge/Bisherige%20Kosten-0%20€-brightgreen)](#warum-0--und-trotzdem-viel-m%C3%B6glich)
 
-[Features](#-was-kann-die-app) · [Schnellstart](#-schnellstart) · [Module](#-alle-module-im-detail) · [Tech](#-technik-stack) · [Mitmachen](#-mitmachen--developer-community)
+[Features](#-was-kann-die-app) · [Schnellstart](#-schnellstart) · [Agentic Assistant](#-agentic-assistant-system--der-ki-agent-mit-23-tools) · [Module](#-alle-module-im-detail) · [Tech](#-technik-stack) · [Mitmachen](#-mitmachen--developer-community)
 
 </div>
 
@@ -44,6 +44,7 @@ Mit mehr Budget ginge noch mehr (bessere Modelle, echte Multi-User-DB, OCR-Hardw
 | 🔍 **Plausibilitätsprüfung** | Modulweise Checks mit Befunden (ok / Hinweise / Fehler) und optionaler Übernahme von Korrekturen |
 | ✉️ **Schriftverkehr** | KI-Anschreiben, Vorschau, **„Fertigstellen“** → versandfertige PDF mit Briefkopf & Logo |
 | 💬 **Kontext-Chat** | Bot kennt die aktuelle Abrechnung *und* den Rest – Vorschläge, fehlende Positionen, Rechtshinweise |
+| 🤖 **Agentic Assistant** | Derselbe Bot führt auf natürlichsprachlichen Auftrag hin **mehrstufige Workflows selbstständig aus** – 23 Tools, bis zu 20 verkettete Schritte, siehe [eigener Abschnitt](#-agentic-assistant-system--der-ki-agent-mit-23-tools) |
 | ⚖️ **Recht-Check** | Einschätzung auf Basis BetrKV, HeizkostenV, § 556 BGB inkl. Quellen |
 | 📊 **Export** | PDF (pdf-lib), CSV, Excel (xlsx) – ohne Extra-Cloud |
 
@@ -226,7 +227,74 @@ Diese Module sind **bewusst** als Einstiegspunkte angelegt – ideale Stellen, u
 
 ---
 
-## 🛠 Technik-Stack
+## 🤖 Agentic Assistant System – der KI-Agent mit 23 Tools
+
+Der Chat-Button unten rechts ist mehr als ein Q&A-Bot. Erkennt die App einen **Auftrag** statt einer Frage (z. B. *„Erstelle alle Mahnungen für die Spannhagengartenstraße“* oder *„Räume die Ablage auf und lege fehlende Gebäude an“*), übernimmt ein **echter Tool-Calling-Agent** (`src/lib/agent.ts`, `runAgent()`): Er plant selbst, ruft nacheinander die passenden Funktionen auf, wertet deren Ergebnisse aus und entscheidet, ob noch ein weiterer Schritt nötig ist – bis zu **20 verkettete Tool-Aufrufe pro Auftrag**, bevor er eine Zusammenfassung an den Nutzer zurückgibt.
+
+```
+Nutzer-Auftrag (natürliche Sprache)
+        │
+        ▼
+isAgentIntent()  ──  erkennt Ausführungs-Absicht vs. reine Frage
+        │
+        ▼
+runAgent()  ──  Groq Function-Calling-Loop (max. 20 Schritte)
+        │
+        ├─▶ Tool 1: z. B. find_mieter          (lesen)
+        ├─▶ Tool 2: z. B. get_mietrueckstaende (lesen)
+        ├─▶ Tool 3: z. B. create_briefe_batch  (schreiben)
+        └─▶ …bis Auftrag erledigt oder Bestätigung nötig
+        │
+        ▼
+Antwort inkl. ausgeführter Schritte + erzeugter Dokumente
+```
+
+### Die 23 Tools im Überblick
+
+| Kategorie | Tool | Was es tut |
+|-----------|------|------------|
+| **Lesen & Recherche** | `list_liegenschaften` | Alle Liegenschaften (Name, Adresse, ID) auflisten – Basis für Adresszuordnung |
+| | `find_mieter` | Mieter nach Liegenschaft, Straße, Adresse oder Name finden, optional nur mit Rückstand |
+| | `get_mietrueckstaende` | Alle Mieter mit offenem Mietrückstand, optional gefiltert nach Objekt |
+| | `list_brief_vorlagen` | Verfügbare Schriftverkehr-Vorlagen auflisten (Mahnung, Kündigung, BK-Abrechnung …) |
+| | `list_gespeicherte_briefe` | Bereits erzeugte Schreiben durchsuchen (nach Mieter/Liegenschaft) |
+| | `get_pruef_befunde` | Letzten Plausibilitäts-Prüflauf lesen – offene Befunde über alle Module hinweg |
+| | `list_unpassende_dokumente` | Dokumente ohne Zuordnung / mit unplausibler Zuordnung finden |
+| **Schriftverkehr erzeugen** | `create_brief` | Ein Anschreiben/eine Mahnung für einen Mieter aus Vorlage generieren & ablegen |
+| | `create_briefe_batch` | Denselben Brieftyp für **mehrere Mieter gleichzeitig** erzeugen (z. B. alle Mahnungen einer Straße) |
+| **Prüfung** | `run_pruefung` | Einen neuen vollständigen Plausibilitäts-Prüflauf über alle Module starten |
+| | `apply_pruef_befund` | Automatischen Korrekturvorschlag eines Befunds anwenden |
+| | `mark_befund_status` | Befund als „übernommen“ oder „abgelehnt“ markieren |
+| **Stammdaten pflegen** | `create_gebaeude` | Gebäude unter einer Liegenschaft anlegen |
+| | `update_liegenschaft` | Stammdaten einer Liegenschaft korrigieren (Adresse, Flurstück, Notizen …) |
+| | `update_wohnung` | Wohnungsdaten ergänzen/korrigieren (Fläche, Typ, Zimmer …) |
+| | `update_abrechnung` | Abrechnung korrigieren (z. B. Status zurücksetzen bei 0-€-Summe) |
+| | `update_ablage_zuordnung` | Falsch zugeordnetes Dokument der richtigen Liegenschaft/Objekt zuweisen |
+| | `sync_mieter_from_mietvertraege` | Mietbeginn, Kaltmiete & NK-Vorauszahlung aus Mietverträgen in Mieter-Stammdaten übernehmen |
+| **Aufräumen (mit Sicherheitsnetz)** | `merge_liegenschaften` | Duplikate zusammenführen (z. B. zwei Einträge „Spannhagengartenstraße“) |
+| | `delete_liegenschaft` | Liegenschaft löschen – **nur ohne Abhängigkeiten oder mit `force` + `user_confirmed`** |
+| | `delete_abrechnung` | Leere/fehlerhafte Abrechnung löschen – **erfordert `user_confirmed=true`** |
+| | `analyze_and_plan_cleanup` | Erstellt aus allen offenen Befunden einen strukturierten Plan (`auto_fix` / `fragen` / `manuell`) – **verändert nichts, nur Analyse** |
+| | `execute_safe_cleanup` | Führt **ausschließlich zweifelsfreie** Korrekturen automatisch aus; alles Riskante (Neuanlagen, Löschungen) nur nach expliziter Nutzerfreigabe |
+
+### Eingebaute Sicherheitsmechanismen
+
+Der Agent ist bewusst **nicht** blind autonom – jedes destruktive oder mehrdeutige Tool verlangt ausdrücklich `user_confirmed`/`force`-Flags, und `analyze_and_plan_cleanup` trennt sauber zwischen *sofort sicher ausführbar*, *Nutzer muss entscheiden* und *manuell nötig*. Das Ergebnis: Routineaufgaben laufen vollautomatisch durch, während irreversible Aktionen (Löschen, Zusammenführen) immer einen Menschen im Loop behalten – ein Design-Muster, keine Notlösung.
+
+### Beispiel-Aufträge, die der Agent in einem Rutsch erledigt
+
+- *„Erstelle Mahnungen für alle Mieter mit Rückstand in der Spannhagengartenstraße“* → `find_mieter` → `get_mietrueckstaende` → `create_briefe_batch`
+- *„Prüfe alles und behebe, was eindeutig ist“* → `run_pruefung` → `analyze_and_plan_cleanup` → `execute_safe_cleanup`
+- *„Führe die doppelte Liegenschaft Musterstraße 5 zusammen“* → `list_liegenschaften` → `merge_liegenschaften` (mit Rückfrage vor dem Löschen der leeren Quelle)
+- *„Übernimm die neuen Mieten aus den Mietverträgen in die Mieter-Stammdaten“* → `sync_mieter_from_mietvertraege`
+
+### Wie nah ist das an einer vollautomatisierten Hausverwaltung?
+
+Wenn man sich ansieht, was diese 23 Tools zusammen abdecken – **lesen, prüfen, korrigieren, Schriftverkehr erzeugen, Duplikate bereinigen, Stammdaten synchronisieren, alles über eine einzige natürlichsprachliche Anweisung verkettet** – wird deutlich: Eine **vollautomatisierte Hausverwaltung erscheint keineswegs unerreichbar.** Der Kern eines autonomen Verwaltungs-Agenten ist hier bereits gelegt: Intent-Erkennung, mehrstufige Tool-Orchestrierung, Sicherheits-Guardrails für riskante Schritte und eine Domänenmodellierung, die praktisch jeden Verwaltungsvorgang abbildet.
+
+Was fehlt, ist eher **Breite als Grundgerüst**: Anbindung an Zahlungsverkehr/Kontoauszüge für automatischen Abgleich, terminierte/eventgesteuerte Läufe (z. B. „prüfe jeden Monatsersten automatisch“) statt nur Chat-getriggerter Aufträge, sowie die Erweiterung der bereits als Platzhalter angelegten Module (Instandhaltung, Budgetierung, Assetmanagement) um eigene Tools nach demselben Muster. Architektonisch ist der Agent so gebaut, dass genau das – neue Tools registrieren, in den bestehenden Loop einhängen – ein inkrementeller, kein grundlegender Schritt ist.
+
+---
 
 | Schicht | Technologie |
 |---------|-------------|
