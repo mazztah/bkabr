@@ -1473,9 +1473,10 @@ liegenschaften · gebaeude · wohnungen · mieter · mietvertraege · pmVertraeg
 4. Sonst zweifelsfreie Fixes mit execute_safe_cleanup (ohne allow_*): Abrechnung Fertig+0€ → Rohdaten; Befunde mit vorschlag anwenden.
 5. Wenn Nutzer „zeig mir Dokumente die zu keiner Liegenschaft passen" / „unpassende Dokumente" sagt:
    → list_unpassende_dokumente und die Liste klar auf Deutsch ausgeben (Dateiname, aktuelle Zuordnung, Grund).
-6. Nur nachfragen, wenn der Nutzer NICHT explizit freigegeben hat (Löschen von Liegenschaften, PM-Verträge erfinden, Wohnflächen raten).
-7. Fehlende Wohnflächen und fehlende PM-Verträge NICHT erfinden – als offen melden.
-8. Am Ende kurz: was erledigt, was offen, welche Dokumente unpassend sind.
+6. Wenn der Nutzer eine Wohnfläche nennt (z.B. „alle 77 m²“): update_wohnung / Batch auf alle Wohnungen ohne Fläche – keine erneute Rückfrage.
+7. Wenn der Nutzer Liegenschaften ohne PM-Vertrag zum Löschen freigibt: löschen (leere/Duplikate). Nicht löschen, wenn noch echte Wohnungen/Mieter dranhängen – dann melden.
+8. PM-Verträge und Wohnflächen NICHT erfinden, wenn der Nutzer keine Zahl/Freigabe genannt hat.
+9. Am Ende kurz: was erledigt, was offen.
 
 ## Schriftverkehr-Workflow
 1. Mieter/Rückstände finden (find_mieter, get_mietrueckstaende).
@@ -1705,118 +1706,308 @@ async function tryDeterministicMahnung(message: string): Promise<AgentResult | n
 
 /** Deterministische Bereinigung ohne LLM-Tool-Loop (Fallback + bei klarem Auftrag). */
 async function tryDeterministicCleanup(message: string): Promise<AgentResult | null> {
-  const m = message.toLowerCase();
+  const m = message
+    .toLowerCase()
+    .replace(/ß/g, "ss")
+    .replace(/ä/g, "ae")
+    .replace(/ö/g, "oe")
+    .replace(/ü/g, "ue");
+
+  // --- Fläche: 77 m² / 77 qm / 77m2 / "wohnungen ... 77" ---
+  const flaecheMatch =
+    m.match(/(\d+(?:[.,]\d+)?)\s*(?:m\s*[²2]|qm|quadratmeter)/i) ||
+    m.match(/(?:flaeche|fläche|wohnflaeche|wohnfläche)\s*(?:ist|sind|von|auf|=|:)?\s*(\d+(?:[.,]\d+)?)/i) ||
+    m.match(/(?:alle|jeweils|je|pro\s+wohnung)\s+(\d+(?:[.,]\d+)?)/i) ||
+    (/\bwohnung/.test(m) ? m.match(/\b(\d{2,3})(?:\s|$)/) : null);
+  const flaecheWert = flaecheMatch ? parseFloat(flaecheMatch[1].replace(",", ".")) : NaN;
+  const wantsFlaeche =
+    Number.isFinite(flaecheWert) &&
+    flaecheWert >= 10 &&
+    flaecheWert <= 500 &&
+    (/\b(wohnung|flaeche|fläche|m\s*[²2]|qm|stammdaten|aktualis)/i.test(m) ||
+      /\b(setz|eintrag|hinterleg)\w*/.test(m));
+
+  // --- Löschen: explizit Liegenschaften / ohne PM / "die beiden" ---
+  const wantsDeleteLiegenschaften =
+    /\b(loesch|entfernen)\w*/.test(m) &&
+    /\b(liegenschaft)/.test(m);
+
+  const wantsDeleteOhnePm =
+    wantsDeleteLiegenschaften ||
+    (/\b(loesch|entfernen|weg|koennen|soll)\w*/.test(m) &&
+      /\b(ohne\s+pm|pm[- ]?vertrag)/.test(m));
+
   const wantsCleanup =
-    /\\b(beseitig|beheb|berein|korrigier|fix)\\w*/.test(m) ||
-    /\\b(fehlende[n]?\\s+)?(gebäude|gebaeude)\\s*(anlegen|an)\\b/.test(m) ||
-    (/\\b(hinweise?|fehler|probleme?|befunde?)\\b/.test(m) &&
-      /\\b(beheb|beseitig|berein|korrigier)\\w*/.test(m));
-  if (!wantsCleanup && !/\\b(unpassend|keine[r]?\\s+liegenschaft)\\b/.test(m)) {
+    /\b(beseitig|beheb|berein|korrigier|fix)\w*/.test(m) ||
+    (/\b(hinweise?|fehler|probleme?|befunde?)\b/.test(m) &&
+      /\b(beheb|beseitig|berein|korrigier|fix)\w*/.test(m));
+
+  const wantsDocs = /\b(unpassend|keine[r]?\s+liegenschaft)\b/.test(m);
+
+  // Hausnummer-Korrektur: "hausnummer ... falsch" / "alle haben 16"
+  const wantsFixHausnummer =
+    /\b(hausnummer|hausnr)\b/.test(m) &&
+    /\b(falsch|korrigier|richtig|alle\s+haben|ueberall|überall)\b/.test(m);
+
+  if (
+    !wantsCleanup &&
+    !wantsDocs &&
+    !wantsFlaeche &&
+    !wantsDeleteLiegenschaften &&
+    !wantsDeleteOhnePm &&
+    !wantsFixHausnummer
+  ) {
     return null;
   }
 
   const steps: AgentResult["steps"] = [];
   const lines: string[] = [];
 
-  const allowGebaeude =
-    /\\b(gebäude|gebaeude)\\b/.test(m) &&
-    /\\b(anlegen|leg[e]?\\s+.*an|fehlend)\\b/.test(m);
-
-  // 1) Safe cleanup (+ Gebäude wenn explizit)
-  const cleanupResult = (await executeTool("execute_safe_cleanup", {
-    allow_create_gebaeude: allowGebaeude,
-  })) as any;
-  steps.push({
-    tool: "execute_safe_cleanup",
-    args: { allow_create_gebaeude: allowGebaeude },
-    result: cleanupResult,
-  });
-  if (Array.isArray(cleanupResult?.ausgefuehrt) && cleanupResult.ausgefuehrt.length) {
-    lines.push("**Erledigt:**");
-    for (const a of cleanupResult.ausgefuehrt) lines.push(`• ${a}`);
-  }
-  if (Array.isArray(cleanupResult?.uebersprungen) && cleanupResult.uebersprungen.length) {
-    lines.push("**Übersprungen:**");
-    for (const a of cleanupResult.uebersprungen) lines.push(`• ${a}`);
-  }
-
-  // 2) Unpassende Dokumente
-  if (
-    /\\b(dokument|rechnung|ablage|unpassend|liegenschaft)\\b/.test(m) ||
-    wantsCleanup
-  ) {
-    const docs = (await executeTool("list_unpassende_dokumente", {})) as any;
-    steps.push({ tool: "list_unpassende_dokumente", args: {}, result: docs });
-    if (docs?.dokumente?.length) {
-      lines.push("");
-      lines.push(`**Dokumente ohne passende Liegenschaft / unplausible Zuordnung (${docs.anzahl}):**`);
-      for (const d of docs.dokumente.slice(0, 30)) {
-        lines.push(`• ${d.dateiName} — ${d.zugeordnetAn} — ${d.grund}`);
+  // 1) Wohnflächen
+  if (wantsFlaeche) {
+    const wohnungen = await wohnungenDb.list();
+    const targets = wohnungen.filter((w) => !w.flaeche || w.flaeche <= 0);
+    const updatedNames: string[] = [];
+    for (const w of targets) {
+      await wohnungenDb.update(w.id, { flaeche: flaecheWert });
+      updatedNames.push(`${w.bezeichnung} → ${flaecheWert} m²`);
+    }
+    const laeufe = await pruefLaufDb.list();
+    if (laeufe.length) {
+      const lauf = [...laeufe].sort(
+        (a, b) => new Date(b.gestartetAm).getTime() - new Date(a.gestartetAm).getTime()
+      )[0];
+      for (const b of lauf.befunde) {
+        if (b.status === "offen" && b.titel === "Wohnung ohne Flächenangabe") {
+          b.status = "uebernommen";
+        }
       }
-      if (docs.dokumente.length > 30) {
-        lines.push(`… und ${docs.dokumente.length - 30} weitere.`);
+      await pruefLaufDb.update(lauf.id, { befunde: lauf.befunde });
+    }
+    await logEvent(
+      "aenderung",
+      `Agent: ${updatedNames.length} Wohnung(en) auf ${flaecheWert} m² gesetzt.`,
+      { art: "Wohnung" }
+    );
+    steps.push({
+      tool: "update_wohnung_batch_flaeche",
+      args: { flaeche: flaecheWert },
+      result: { updated: updatedNames },
+    });
+    lines.push(`**Wohnflächen gesetzt (${updatedNames.length} × ${flaecheWert} m²):**`);
+    for (const n of updatedNames) lines.push(`• ${n}`);
+    if (!updatedNames.length) lines.push("• Keine Wohnung ohne Fläche – nichts zu tun.");
+  }
+
+  // 2) Liegenschaften ohne PM löschen (bei Lösch-Auftrag)
+  if (wantsDeleteLiegenschaften || wantsDeleteOhnePm) {
+    const [liegenschaften, pm, gebaeude, eigentuemer, wohnungen, mieter] = await Promise.all([
+      liegenschaftenDb.list(),
+      pmVertraegeDb.list(),
+      gebaeudeDb.list(),
+      eigentuemerDb.list(),
+      wohnungenDb.list(),
+      mieterDb.list(),
+    ]);
+    const ohnePm = liegenschaften.filter((l) => !pm.some((p) => p.liegenschaftId === l.id));
+    const geloescht: string[] = [];
+    const behalten: string[] = [];
+
+    for (const l of ohnePm) {
+      const gebs = gebaeude.filter((g) => g.liegenschaftId === l.id);
+      const gebIds = gebs.map((g) => g.id);
+      const wohns = wohnungen.filter((w) => gebIds.includes(w.gebaeudeId));
+      const hasMieter = mieter.some((mi) => wohns.some((w) => w.id === mi.wohnungId));
+
+      // Sicherheit: nicht löschen wenn Mieter existieren
+      if (hasMieter) {
+        behalten.push(`„${l.name}" behalten – hat Mieter.`);
+        continue;
       }
-    } else {
+
+      for (const w of wohns) await wohnungenDb.remove(w.id);
+      for (const g of gebs) await gebaeudeDb.remove(g.id);
+      for (const e of eigentuemer.filter((x) => x.liegenschaftId === l.id)) {
+        await eigentuemerDb.remove(e.id);
+      }
+      await liegenschaftenDb.remove(l.id);
+      geloescht.push(`${l.name} (${l.strasse} ${l.hausnummer})`.trim());
+    }
+
+    const laeufe = await pruefLaufDb.list();
+    if (laeufe.length) {
+      const lauf = [...laeufe].sort(
+        (a, b) => new Date(b.gestartetAm).getTime() - new Date(a.gestartetAm).getTime()
+      )[0];
+      const remaining = new Set((await liegenschaftenDb.list()).map((x) => x.id));
+      for (const b of lauf.befunde) {
+        if (b.status === "offen" && b.titel === "Liegenschaft ohne PM-Vertrag") {
+          if (!b.betroffene.some((t) => remaining.has(t.id))) b.status = "uebernommen";
+        }
+        if (b.status === "offen" && b.modul === "wohnungen") {
+          // ggf. mitgelöscht
+          const still = b.betroffene.some((t) => t.art === "Wohnung");
+          // leave as-is unless we can verify
+        }
+      }
+      await pruefLaufDb.update(lauf.id, { befunde: lauf.befunde });
+    }
+
+    await logEvent(
+      "loeschung",
+      `Agent: ${geloescht.length} Liegenschaft(en) ohne PM gelöscht: ${geloescht.join(", ") || "–"}`,
+      { art: "Liegenschaft" }
+    );
+    steps.push({
+      tool: "delete_liegenschaften_ohne_pm",
+      args: {},
+      result: { geloescht, behalten },
+    });
+    lines.push("");
+    lines.push(`**Liegenschaften gelöscht (${geloescht.length}):**`);
+    for (const n of geloescht) lines.push(`• ${n}`);
+    if (!geloescht.length) lines.push("• Keine Liegenschaft ohne PM-Vertrag (ohne Mieter) gefunden.");
+    for (const b of behalten) lines.push(`• ${b}`);
+  }
+
+  // 3) Hausnummer aus Name ableiten (z.B. Name "Spannhagengartenstraße 10" → hausnummer 10)
+  if (wantsFixHausnummer || wantsCleanup) {
+    const liegenschaften = await liegenschaftenDb.list();
+    const fixed: string[] = [];
+    for (const l of liegenschaften) {
+      // Hausnummer am Ende des Namens: "... 10" oder "...12"
+      const fromName = (l.name || "").match(/(\d+[a-zA-Z]?)\s*$/);
+      const fromStrasse = (l.strasse || "").match(/(\d+[a-zA-Z]?)\s*$/);
+      const expected = fromName?.[1] || fromStrasse?.[1];
+      if (!expected) continue;
+      // Wenn alle fälschlich dieselbe Nr. haben oder Name eine andere Nr. trägt
+      if ((l.hausnummer || "").trim() !== expected) {
+        const newName = (l.name || "").replace(/\s+\d+[a-zA-Z]?\s*$/, "").trim() || l.name;
+        const newStrasse = (l.strasse || "")
+          .replace(/\s+\d+[a-zA-Z]?\s*$/, "")
+          .trim() || l.strasse;
+        await liegenschaftenDb.update(l.id, {
+          hausnummer: expected,
+          name: /\d/.test(l.name || "") ? l.name : `${newName} ${expected}`.trim(),
+          strasse: newStrasse,
+        } as any);
+        fixed.push(`„${l.name}" → Hausnr. ${expected}`);
+      }
+    }
+    if (fixed.length) {
+      await logEvent("aenderung", `Agent: Hausnummern korrigiert (${fixed.length}).`, {
+        art: "Liegenschaft",
+      });
+      steps.push({ tool: "fix_hausnummern", args: {}, result: { fixed } });
       lines.push("");
-      lines.push("Keine unpassenden oder unzugeordneten Ablage-Dokumente gefunden.");
+      lines.push(`**Hausnummern korrigiert (${fixed.length}):**`);
+      for (const f of fixed) lines.push(`• ${f}`);
     }
   }
 
-  // 3) Offene Restbefunde kurz
+  // 4) Safe cleanup buildings if requested
+  if (wantsCleanup) {
+    const allowGebaeude =
+      /\b(gebäude|gebaeude)\b/.test(m) &&
+      /\b(anlegen|leg[e]?\s+.*an|fehlend)\b/.test(m);
+    const cleanupResult = (await executeTool("execute_safe_cleanup", {
+      allow_create_gebaeude: allowGebaeude,
+    })) as any;
+    steps.push({
+      tool: "execute_safe_cleanup",
+      args: { allow_create_gebaeude: allowGebaeude },
+      result: cleanupResult,
+    });
+    if (Array.isArray(cleanupResult?.ausgefuehrt) && cleanupResult.ausgefuehrt.length) {
+      lines.push("");
+      lines.push("**Weitere Korrekturen:**");
+      for (const a of cleanupResult.ausgefuehrt) lines.push(`• ${a}`);
+    }
+  }
+
+  // 5) Restbefunde
   const befunde = (await executeTool("get_pruef_befunde", { nur_offen: true })) as any;
   steps.push({ tool: "get_pruef_befunde", args: { nur_offen: true }, result: befunde });
   if (befunde?.anzahl > 0) {
     lines.push("");
-    lines.push(`**Noch offen (${befunde.anzahl} Befunde):**`);
+    lines.push(`**Noch offen (${befunde.anzahl}):**`);
     const byTitel = new Map<string, number>();
     for (const b of befunde.befunde || []) {
       byTitel.set(b.titel, (byTitel.get(b.titel) || 0) + 1);
     }
     for (const [t, n] of byTitel) lines.push(`• ${t}: ${n}`);
-    lines.push(
-      "Wohnflächen und PM-Verträge lege ich nicht ohne Daten an. Duplikat-Liegenschaften lösche ich nur auf ausdrücklichen Wunsch."
-    );
+    if (byTitel.has("Wohnung ohne Flächenangabe")) {
+      lines.push('→ Schreibe z.B.: „Setze alle Wohnflächen auf 77 m²“');
+    }
+    if (byTitel.has("Liegenschaft ohne PM-Vertrag")) {
+      lines.push('→ Schreibe z.B.: „Lösche die Liegenschaften ohne PM-Vertrag“');
+    }
   } else if (befunde && !befunde.hinweis) {
     lines.push("");
-    lines.push("Keine offenen Prüfbefunde mehr.");
+    lines.push("**Keine offenen Prüfbefunde mehr.**");
   }
 
   if (!lines.length) return null;
-
-  return {
-    reply: lines.join("\\n"),
-    steps,
-    createdBriefIds: [],
-  };
+  return { reply: lines.join("\n"), steps, createdBriefIds: [] };
 }
 
 /** Erkennung, ob eine Chat-Nachricht einen Agenten-Workflow auslösen soll */
 export function isAgentIntent(message: string): boolean {
-  const m = message.toLowerCase();
+  const m = message
+    .toLowerCase()
+    .replace(/ß/g, "ss")
+    .replace(/ä/g, "ae")
+    .replace(/ö/g, "oe")
+    .replace(/ü/g, "ue");
 
-  // Explizite Agent-Anrede oder Bereinigungsauftrag
   if (
     /\b(lieber\s+agent|server[- ]?agent|als\s+agent)\b/.test(m) ||
     /\b(beseitige|behebe|beheben|bereinige|bereinigen|korrigiere|korrigieren)\b/.test(m) ||
     /\b(lege\s+.*\s*(gebäude|gebaeude)\s*an|fehlende[n]?\s+(gebäude|gebaeude)\s*anlegen)\b/.test(m) ||
-    /\b(probleme?|hinweise?|fehler|befunde?)\b/.test(m) &&
-      /\b(beseitig|beheb|berein|korrigier|fix|schließ|schliess)\w*/.test(m)
+    (/\b(probleme?|hinweise?|fehler|befunde?)\b/.test(m) &&
+      /\b(beseitig|beheb|berein|korrigier|fix|schliess)\w*/.test(m))
   ) {
     return true;
   }
 
-  // Dokumente ohne Liegenschaft anzeigen = Agent (braucht Stammdaten-Tools)
+  // Fläche
+  if (
+    /\d+\s*(?:m\s*[²2]|qm)/.test(m) ||
+    (/\b(wohnung|flaeche|fläche)\b/.test(m) &&
+      /\b(aktualis|setz|eintrag|stammdaten|\d{2,3})\b/.test(m))
+  ) {
+    return true;
+  }
+
+  // Löschen Liegenschaften
+  if (/\b(loesch|lösch|entfernen)\w*/.test(m) && /\b(liegenschaft|pm[- ]?vertrag|duplikat)\b/.test(m)) {
+    return true;
+  }
+  if (
+    /\b(liegenschaft)/.test(m) &&
+    /\b(ohne\s+pm|pm[- ]?vertrag)/.test(m) &&
+    /\b(geloescht|loeschen|löschen|koennen|können)\b/.test(m)
+  ) {
+    return true;
+  }
+
+  // Hausnummer
+  if (/\b(hausnummer|hausnr)\b/.test(m) && /\b(falsch|korrigier|richtig|alle)\b/.test(m)) {
+    return true;
+  }
+
   if (
     /\b(dokumente?|rechnungen?|ablage)\b/.test(m) &&
-    /\b(keine[r]?\s+liegenschaft|unpassend|nicht\s+zuordnen|ohne\s+zuordnung)\b/.test(m)
+    /\b(keine[r]?\s+liegenschaft|unpassend|ohne\s+zuordnung)\b/.test(m)
   ) {
     return true;
   }
 
-  // Reine Wissensfragen ohne Handlungsaufforderung → kein Agent
   const pureQuestion =
-    /^(was|wer|wie\s+hoch|wieviel|wie\s+viele|welche|wo|warum|erkläre|erklaere)\b/.test(m) &&
-    !/\b(erstell|generier|schreib|leg\s+an|anlegen|fertig|mach|korrigier|berein|beheb|fix|lösch|loesch|beseitig)\w*/.test(
+    /^(was|wer|wie\s+hoch|wieviel|wie\s+viele|welche|wo|warum|erklaere|erkläre|wann|wie\s+lange)\b/.test(
+      m
+    ) &&
+    !/\b(erstell|generier|schreib|leg\s+an|anlegen|fertig|mach|korrigier|berein|beheb|fix|loesch|lösch|beseitig|aktualis)\w*/.test(
       m
     );
   if (pureQuestion) return false;
@@ -1826,13 +2017,13 @@ export function isAgentIntent(message: string): boolean {
       m
     );
   const documentHint =
-    /\b(mahnung|mahnungen|mahnliste|mahnlauf|anschreiben|kündigung|kuendigung|abmahnung|mieterhöhung|mieterhoehung|brief|briefe|schreiben)\b/.test(
+    /\b(mahnung|mahnungen|mahnliste|mahnlauf|anschreiben|kuendigung|kündigung|abmahnung|mieterhoehung|mieterhöhung|brief|briefe|schreiben)\b/.test(
       m
     );
 
   return (
     (wantsCreate && documentHint) ||
-    (documentHint && /\b(alle|nötig|noetig|offen)\b/.test(m))
+    (documentHint && /\b(alle|noetig|nötig|offen)\b/.test(m))
   );
 }
 
