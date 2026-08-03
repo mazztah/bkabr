@@ -30,6 +30,16 @@ import type {
  *        – frontier agentic, multi-turn Tool-Calling, Vision, Structured Output, 262k
  *      (Hinweis: kimi-k2.6 erfordert i.d.R. Workers Paid Plan)
  *
+ * Zusätzlich (nur wenn NVIDIA_API_KEY gesetzt – NVIDIA Build/NIM, https://build.nvidia.com):
+ *  11. nvidia:meta/llama-3.3-70b-instruct
+ *        – stärkstes Modell der Kette, Reasoning/Function-Calling
+ *  12. nvidia:meta/llama-3.1-8b-instruct
+ *        – schnell, eigenes (kleineres) Kontingent
+ *  13. nvidia:meta/llama-3.2-3b-instruct
+ *        – letzte Reserve, sehr schnell, kleinstes Kontingent
+ *      Hinweis: NVIDIA Build braucht nur einen API-Key (Format "nvapi-…"),
+ *      keine separate Account-ID – anders als Cloudflare.
+ *
  * Stufen 3–5 werden automatisch übersprungen, wenn ein Aufruf `tools`
  * (Agent-Funktionsaufrufe) oder striktes JSON-Mode (Klassifikation/Extraktion,
  * u.a. Smart-Upload, Mietvertrags-Analyse) braucht – siehe
@@ -39,10 +49,11 @@ import type {
  * hat in der Praxis bei striktem JSON-Mode mit "json_validate_failed" abgebrochen
  * (Reasoning-Modelle neigen dazu, dem JSON zusätzlichen Text beizumischen).
  * Für reine Text-Antworten (Chat, Anschreiben-Text, Recht-Einschätzung) stehen
- * dagegen alle Groq-Stufen + optional Cerebras + Cloudflare zur Verfügung.
+ * dagegen alle Groq-Stufen + optional Cerebras + Cloudflare + NVIDIA zur Verfügung.
  *
- * Cerebras- und Cloudflare-Modelle unterstützen Tool-Calling und JSON-Mode und
- * werden daher auch bei strukturierter Ausgabe als Fallback nach Groq genutzt.
+ * Cerebras-, Cloudflare- und NVIDIA-Modelle unterstützen Tool-Calling und
+ * JSON-Mode und werden daher auch bei strukturierter Ausgabe als Fallback
+ * nach Groq genutzt.
  *
  * Überschreibbar per ENV:
  *   GROQ_TEXT_MODEL=...
@@ -53,10 +64,13 @@ import type {
  *   CLOUDFLARE_API_TOKEN=...                   (API Token mit Workers AI Read/Write)
  *   CLOUDFLARE_API_KEY=...                     (Alias für CLOUDFLARE_API_TOKEN)
  *   CLOUDFLARE_TEXT_MODELS=@cf/zai-org/glm-4.7-flash,@cf/google/gemma-4-26b-a4b-it,@cf/moonshotai/kimi-k2.6
+ *   NVIDIA_API_KEY=...                         (aktiviert NVIDIA-Build-Fallbacks, Key beginnt mit "nvapi-")
+ *   NVIDIA_TEXT_MODELS=meta/llama-3.3-70b-instruct,meta/llama-3.1-8b-instruct,meta/llama-3.2-3b-instruct
  */
 
 const CEREBRAS_PREFIX = "cerebras:";
 const CLOUDFLARE_PREFIX = "cloudflare:";
+const NVIDIA_PREFIX = "nvidia:";
 
 const DEFAULT_TEXT_MODELS = [
   process.env.GROQ_TEXT_MODEL || "openai/gpt-oss-120b",
@@ -80,6 +94,17 @@ const DEFAULT_CLOUDFLARE_TEXT_MODELS = [
   "@cf/zai-org/glm-4.7-flash",
   "@cf/google/gemma-4-26b-a4b-it",
   "@cf/moonshotai/kimi-k2.6",
+];
+
+/**
+ * Default-NVIDIA-Build-Fallbacks (nur aktiv, wenn NVIDIA_API_KEY gesetzt).
+ * Absteigend nach Größe/Qualität, damit jede Stufe ein eigenes (kleineres,
+ * schnelleres) Kontingent als letzte Reserve hat, bevor der Request ganz fehlschlägt.
+ */
+const DEFAULT_NVIDIA_TEXT_MODELS = [
+  "meta/llama-3.3-70b-instruct",
+  "meta/llama-3.1-8b-instruct",
+  "meta/llama-3.2-3b-instruct",
 ];
 
 const BLOCKED_TEXT_MODELS = new Set([
@@ -158,6 +183,27 @@ export function getCloudflareTextModels(): string[] {
   return models.map((m) => (m.startsWith(CLOUDFLARE_PREFIX) ? m : `${CLOUDFLARE_PREFIX}${m}`));
 }
 
+/**
+ * NVIDIA-Build-Modelle (NIM, https://build.nvidia.com) als zusätzliche
+ * Fallback-Stufe. Aktiv nur wenn NVIDIA_API_KEY gesetzt ist – im Gegensatz
+ * zu Cloudflare reicht hier ein einzelner API-Key ("nvapi-…"), es gibt
+ * keine separate Account-ID.
+ */
+export function getNvidiaTextModels(): string[] {
+  const apiKey = process.env.NVIDIA_API_KEY?.trim();
+  if (!apiKey) return [];
+
+  let models: string[];
+  if (process.env.NVIDIA_TEXT_MODELS) {
+    models = process.env.NVIDIA_TEXT_MODELS.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  } else {
+    models = [...DEFAULT_NVIDIA_TEXT_MODELS];
+  }
+  return models.map((m) => (m.startsWith(NVIDIA_PREFIX) ? m : `${NVIDIA_PREFIX}${m}`));
+}
+
 export const VISION_MODEL =
   process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
 
@@ -171,6 +217,12 @@ export const CEREBRAS_VISION_MODEL =
  */
 export const CLOUDFLARE_VISION_MODEL =
   process.env.CLOUDFLARE_VISION_MODEL || "@cf/google/gemma-4-26b-a4b-it";
+
+/**
+ * NVIDIA Build unterstützt bei den hier genutzten Llama-3.x-Textmodellen
+ * kein Vision-Input – daher kein eigenes NVIDIA-Vision-Fallback (bewusst
+ * kein NVIDIA_VISION_MODEL, um keine falschen Erwartungen zu wecken).
+ */
 
 let client: Groq | null = null;
 
@@ -224,6 +276,10 @@ function isCloudflareModel(model: string): boolean {
   return model.startsWith(CLOUDFLARE_PREFIX);
 }
 
+function isNvidiaModel(model: string): boolean {
+  return model.startsWith(NVIDIA_PREFIX);
+}
+
 function stripCerebrasPrefix(model: string): string {
   return model.startsWith(CEREBRAS_PREFIX) ? model.slice(CEREBRAS_PREFIX.length) : model;
 }
@@ -232,9 +288,14 @@ function stripCloudflarePrefix(model: string): string {
   return model.startsWith(CLOUDFLARE_PREFIX) ? model.slice(CLOUDFLARE_PREFIX.length) : model;
 }
 
+function stripNvidiaPrefix(model: string): string {
+  return model.startsWith(NVIDIA_PREFIX) ? model.slice(NVIDIA_PREFIX.length) : model;
+}
+
 function stripProviderPrefix(model: string): string {
   if (isCerebrasModel(model)) return stripCerebrasPrefix(model);
   if (isCloudflareModel(model)) return stripCloudflarePrefix(model);
+  if (isNvidiaModel(model)) return stripNvidiaPrefix(model);
   return model;
 }
 
@@ -399,6 +460,81 @@ async function createCloudflareChatCompletion(
     data = data.result;
   }
 
+  return data as ChatCompletion;
+}
+
+/**
+ * OpenAI-kompatibler Aufruf gegen NVIDIA Build / NIM
+ * (https://integrate.api.nvidia.com/v1/chat/completions).
+ * Keine Extra-Dependency – reines fetch.
+ *
+ * Auth: NVIDIA_API_KEY (Bearer-Token, Format "nvapi-…"). Keine Account-ID nötig.
+ * Modell-IDs im NVIDIA-Format, z.B. meta/llama-3.3-70b-instruct.
+ */
+async function createNvidiaChatCompletion(
+  modelId: string,
+  params: ChatParams
+): Promise<ChatCompletion> {
+  const apiKey = process.env.NVIDIA_API_KEY?.trim();
+  if (!apiKey) {
+    const err: any = new Error("NVIDIA_API_KEY ist nicht gesetzt.");
+    err.status = 401;
+    throw err;
+  }
+
+  const { model: _ignored, max_completion_tokens, max_tokens, ...rest } = params as ChatParams & {
+    max_tokens?: number;
+  };
+
+  const maxTokens = max_tokens ?? max_completion_tokens;
+
+  const body: Record<string, unknown> = {
+    model: modelId,
+    messages: rest.messages,
+    temperature: rest.temperature,
+    top_p: rest.top_p,
+    stream: false,
+  };
+  if (maxTokens != null) body.max_tokens = maxTokens;
+  if (rest.response_format) body.response_format = rest.response_format;
+  if (rest.tools?.length) {
+    body.tools = rest.tools;
+    if (rest.tool_choice != null) body.tool_choice = rest.tool_choice;
+  }
+  if (rest.stop != null) body.stop = rest.stop;
+
+  const res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const rawText = await res.text();
+  let data: any;
+  try {
+    data = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    data = { error: { message: rawText || res.statusText } };
+  }
+
+  if (!res.ok) {
+    const msg =
+      data?.error?.message ||
+      data?.message ||
+      rawText ||
+      `NVIDIA Build HTTP ${res.status}`;
+    const err: any = new Error(msg);
+    err.status = res.status;
+    err.statusCode = res.status;
+    err.error = data?.error || { message: msg, code: data?.error?.code };
+    err.code = data?.error?.code;
+    throw err;
+  }
+
+  // Antwort ist bereits OpenAI-Chat-Completions-kompatibel.
   return data as ChatCompletion;
 }
 
@@ -594,10 +730,23 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
     for (const cfm of cloudflareModels) {
       if (!models.includes(cfm)) models.push(cfm);
     }
+
+    // NVIDIA Build (NIM) als weitere, unabhängige Fallback-Stufe.
+    const nvidiaModels = getNvidiaTextModels();
+    for (const nvm of nvidiaModels) {
+      if (!models.includes(nvm)) models.push(nvm);
+    }
   }
 
   let lastError: any;
   const groq = process.env.GROQ_API_KEY ? getGroqClient() : null;
+
+  function providerNameOf(model: string): string {
+    if (isCerebrasModel(model)) return "cerebras";
+    if (isCloudflareModel(model)) return "cloudflare";
+    if (isNvidiaModel(model)) return "nvidia";
+    return "groq";
+  }
 
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
@@ -609,10 +758,13 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
       } else if (isCloudflareModel(model)) {
         const cfId = stripCloudflarePrefix(model);
         completion = await createCloudflareChatCompletion(cfId, params);
+      } else if (isNvidiaModel(model)) {
+        const nvId = stripNvidiaPrefix(model);
+        completion = await createNvidiaChatCompletion(nvId, params);
       } else {
         if (!groq) {
           const err: any = new Error(
-            "GROQ_API_KEY ist nicht gesetzt und kein Cerebras-/Cloudflare-Modell verfügbar."
+            "GROQ_API_KEY ist nicht gesetzt und kein Cerebras-/Cloudflare-/NVIDIA-Modell verfügbar."
           );
           err.status = 401;
           throw err;
@@ -625,15 +777,10 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
         });
       }
       // Sichtbares Erfolgs-Log, sobald NICHT das primäre Modell verwendet wurde –
-      // sonst bleibt bei einem Fallback (insb. Cerebras/Cloudflare) unklar, ob der
-      // Request überhaupt durchgekommen ist ("kein Feedback von der Cloudflare API").
+      // sonst bleibt bei einem Fallback (insb. Cerebras/Cloudflare/NVIDIA) unklar, ob
+      // der Request überhaupt durchgekommen ist ("kein Feedback von der Cloudflare API").
       if (i > 0) {
-        const provider = isCerebrasModel(model)
-          ? "cerebras"
-          : isCloudflareModel(model)
-            ? "cloudflare"
-            : "groq";
-        console.info(`[${provider}] Modell ${stripProviderPrefix(model)} erfolgreich (Fallback-Stufe ${i + 1}/${models.length}).`);
+        console.info(`[${providerNameOf(model)}] Modell ${stripProviderPrefix(model)} erfolgreich (Fallback-Stufe ${i + 1}/${models.length}).`);
       }
       return completion;
     } catch (err: any) {
@@ -641,13 +788,8 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
       const hasMore = i < models.length - 1;
       if (hasMore && isRetryableModelError(err)) {
         const next = models[i + 1];
-        const provider = isCerebrasModel(model)
-          ? "cerebras"
-          : isCloudflareModel(model)
-            ? "cloudflare"
-            : "groq";
         console.warn(
-          `[${provider}] Modell ${stripProviderPrefix(model)} fehlgeschlagen (${err?.status || ""} ${err?.message || err}). Fallback → ${stripProviderPrefix(next)}`
+          `[${providerNameOf(model)}] Modell ${stripProviderPrefix(model)} fehlgeschlagen (${err?.status || ""} ${err?.message || err}). Fallback → ${stripProviderPrefix(next)}`
         );
         continue;
       }
