@@ -15,13 +15,139 @@ import {
 import { mietRueckstand } from "./mietkonto";
 import { createChatCompletion, VISION_MODEL } from "./groq-client";
 
+/**
+ * Robustes JSON-Parsing aus LLM-Antworten.
+ * Free-Tier-Modelle liefern gelegentlich abgeschnittenes JSON, Markdown-Fences
+ * oder Text vor/nach dem Objekt – das hier abfangen, bevor der Upload scheitert.
+ */
 function extractJson(text: string): any {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1] : text;
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  if (start === -1 || end === -1) throw new Error("Keine gültige JSON-Antwort erhalten");
-  return JSON.parse(candidate.slice(start, end + 1));
+  if (!text || !String(text).trim()) {
+    throw new Error("Keine gültige JSON-Antwort erhalten (leere Modell-Antwort)");
+  }
+  let candidate = String(text).trim();
+
+  // Markdown-Codefence entfernen
+  const fenced = candidate.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) candidate = fenced[1].trim();
+
+  // Häufiger Prefix-Müll
+  candidate = candidate.replace(/^[^{[]*?(?=[{\[])/, "");
+
+  const startObj = candidate.indexOf("{");
+  const startArr = candidate.indexOf("[");
+  let start = -1;
+  if (startObj === -1) start = startArr;
+  else if (startArr === -1) start = startObj;
+  else start = Math.min(startObj, startArr);
+
+  if (start === -1) {
+    throw new Error("Keine gültige JSON-Antwort erhalten");
+  }
+
+  candidate = candidate.slice(start);
+
+  // Vollständiges Objekt/Array per Brace-Counting extrahieren
+  const open = candidate[0];
+  const close = open === "[" ? "]" : "}";
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let end = -1;
+  for (let i = 0; i < candidate.length; i++) {
+    const ch = candidate[i];
+    if (inString) {
+      if (escape) escape = false;
+      else if (ch === "\\") escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === open) depth++;
+    else if (ch === close) {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+
+  let jsonStr = end >= 0 ? candidate.slice(0, end + 1) : candidate;
+
+  // Abgeschnittene Strings notdürftig schließen (Free-Tier-Truncation)
+  if (end < 0) {
+    let repaired = jsonStr;
+    // Offene Strings schließen
+    let qs = 0;
+    let esc = false;
+    for (let i = 0; i < repaired.length; i++) {
+      const c = repaired[i];
+      if (esc) {
+        esc = false;
+        continue;
+      }
+      if (c === "\\") {
+        esc = true;
+        continue;
+      }
+      if (c === '"') qs++;
+    }
+    if (qs % 2 === 1) repaired += '"';
+    // Klammern ausbalancieren
+    const opens = (repaired.match(/{/g) || []).length;
+    const closes = (repaired.match(/}/g) || []).length;
+    const aOpens = (repaired.match(/\[/g) || []).length;
+    const aCloses = (repaired.match(/]/g) || []).length;
+    // Trailing Komma entfernen
+    repaired = repaired.replace(/,\s*$/, "");
+    repaired += "}".repeat(Math.max(0, opens - closes));
+    repaired += "]".repeat(Math.max(0, aOpens - aCloses));
+    jsonStr = repaired;
+  }
+
+  try {
+    return JSON.parse(jsonStr);
+  } catch (e: any) {
+    // Letzter Versuch: trailing commas / Steuerzeichen
+    const cleaned = jsonStr
+      .replace(/,\s*([}\]])/g, "$1")
+      .replace(/[\u0000-\u001f]+/g, " ");
+    try {
+      return JSON.parse(cleaned);
+    } catch {
+      throw new Error(
+        `Keine gültige JSON-Antwort erhalten (${e?.message || "Parse-Fehler"}). Bitte Datei erneut versuchen – oft Free-Tier-Limit oder abgeschnittene Antwort.`
+      );
+    }
+  }
+}
+
+/** Einmaliger Retry bei kaputtem JSON – kürzerer Prompt, klarere Anweisung. */
+async function withJsonRetry<T>(
+  run: (strictHint: boolean) => Promise<string>,
+  parse: (raw: string) => T
+): Promise<T> {
+  let lastErr: any;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const raw = await run(attempt > 0);
+      return parse(raw);
+    } catch (e: any) {
+      lastErr = e;
+      const msg = String(e?.message || e || "").toLowerCase();
+      const isJsonFail =
+        msg.includes("json") ||
+        msg.includes("unterminated") ||
+        msg.includes("keine gültige") ||
+        msg.includes("parse");
+      if (!isJsonFail || attempt === 1) throw e;
+      console.warn(`[ai] JSON-Parse fehlgeschlagen, Retry… (${e?.message || e})`);
+    }
+  }
+  throw lastErr;
 }
 
 const SYSTEM_EXTRAKTION = `Du bist "BetriebsKostenBot", ein Experte für deutsche Betriebskosten- und Nebenkostenabrechnungen, Mieteinnahmen, Heizkostenabrechnungen, Mietverträge und Eingangsrechnungen.
@@ -204,21 +330,29 @@ export async function extractEigentuemerDokument(params: {
   fileName: string;
 }): Promise<import("./types").EigentuemerExtraktion> {
   const { text, fileName } = params;
-  const completion = await createChatCompletion({
-    max_completion_tokens: 1200,
-    temperature: 0,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: SYSTEM_EIGENTUEMER },
-      {
-        role: "user",
-        content: `Datei: ${fileName}.\n\nInhalt:\n${text}\n\nExtrahiere die JSON-Daten.`,
-      },
-    ],
-  });
-
-  const result = completion.choices[0]?.message?.content || "";
-  return extractJson(result);
+  // Notarverträge sind oft sehr lang – zu viel Input + Free-Tier-Tokenlimit
+  // führt zu abgeschnittenem JSON ("Unterminated string…").
+  const textSlice = text.slice(0, 8000);
+  return withJsonRetry(
+    async (strict) => {
+      const completion = await createChatCompletion({
+        max_completion_tokens: 1500,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_EIGENTUEMER },
+          {
+            role: "user",
+            content: strict
+              ? `Datei: ${fileName}.\n\nWICHTIG: Antworte NUR mit einem vollständigen, gültigen JSON-Objekt – keine Erklärungen, keine abgeschnittenen Strings.\n\nInhalt (Auszug):\n${textSlice}\n\nExtrahiere die JSON-Daten.`
+              : `Datei: ${fileName}.\n\nInhalt:\n${textSlice}\n\nExtrahiere die JSON-Daten.`,
+          },
+        ],
+      });
+      return completion.choices[0]?.message?.content || "";
+    },
+    (raw) => extractJson(raw)
+  );
 }
 
 const SYSTEM_PM_VERTRAG = `Du bist ein Experte für deutsche Property-Management- und Hausverwaltungsverträge. Analysiere den übergebenen Text eines PM-/Verwaltervertrags und extrahiere die relevanten Stammdaten.
@@ -242,21 +376,27 @@ export async function extractPmVertrag(params: {
   fileName: string;
 }): Promise<import("./types").PmVertragExtraktion> {
   const { text, fileName } = params;
-  const completion = await createChatCompletion({
-    max_completion_tokens: 1200,
-    temperature: 0,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: SYSTEM_PM_VERTRAG },
-      {
-        role: "user",
-        content: `Datei: ${fileName}.\n\nInhalt:\n${text}\n\nExtrahiere die JSON-Daten.`,
-      },
-    ],
-  });
-
-  const result = completion.choices[0]?.message?.content || "";
-  return extractJson(result);
+  const textSlice = text.slice(0, 8000);
+  return withJsonRetry(
+    async (strict) => {
+      const completion = await createChatCompletion({
+        max_completion_tokens: 1500,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_PM_VERTRAG },
+          {
+            role: "user",
+            content: strict
+              ? `Datei: ${fileName}.\n\nWICHTIG: Antworte NUR mit einem vollständigen, gültigen JSON-Objekt – keine Erklärungen, keine abgeschnittenen Strings.\n\nInhalt (Auszug):\n${textSlice}\n\nExtrahiere die JSON-Daten.`
+              : `Datei: ${fileName}.\n\nInhalt:\n${textSlice}\n\nExtrahiere die JSON-Daten.`,
+          },
+        ],
+      });
+      return completion.choices[0]?.message?.content || "";
+    },
+    (raw) => extractJson(raw)
+  );
 }
 
 const SYSTEM_WOHNUNGSUEBERSICHT = `Du bist ein Experte für deutsche Hausverwaltungs-Objektunterlagen. Analysiere den übergebenen Text (Anlage zum PM-Vertrag, Objektbeschreibung, Mieterliste oder eine hochgeladene Excel-/CSV-Stammdatenliste) und extrahiere daraus eine Übersicht der Gebäude, Wohnungen/Einheiten und – falls vorhanden – der zugehörigen Mieter.
