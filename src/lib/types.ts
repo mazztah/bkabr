@@ -308,6 +308,8 @@ export interface MietvertragExtraktion {
   wohnungsbezeichnung?: string;
   flaeche?: number;
   zimmer?: number;
+  /** Feldnamen, bei denen die Extraktion sich selbst als unsicher einschätzt (z.B. mehrdeutige Beträge) */
+  unsicherheiten?: string[];
 }
 
 export interface KontoauszugTransaktion {

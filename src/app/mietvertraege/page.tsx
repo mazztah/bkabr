@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import {
   Mieter,
@@ -18,10 +19,14 @@ interface AnalyseErgebnis {
   dateiName: string;
   storedFileName: string;
   mimeType: string;
+  pruefHinweis?: string;
   vorschlag: { mieterId?: string; mieterName?: string; wohnungId?: string };
 }
 
-export default function MietvertraegePage() {
+function MietvertraegePageInner() {
+  const searchParams = useSearchParams();
+  const highlightId = searchParams.get("id");
+  const highlightRef = useRef<HTMLDivElement>(null);
   const [mietvertraege, setMietvertraege] = useState<Mietvertrag[]>([]);
   const [mieter, setMieter] = useState<Mieter[]>([]);
   const [wohnungen, setWohnungen] = useState<Wohnung[]>([]);
@@ -43,6 +48,17 @@ export default function MietvertraegePage() {
   const [reassignWohnung, setReassignWohnung] = useState("");
   const [reassignMieter, setReassignMieter] = useState("");
   const [reassignBusy, setReassignBusy] = useState(false);
+  // Editierbare Werte im Bestätigungs-Dialog – werden aus der Extraktion
+  // vorbefüllt, können aber vor dem Speichern korrigiert werden (behebt
+  // Fehlübernahmen z.B. bei der Sollmiete).
+  const [editSollMiete, setEditSollMiete] = useState("");
+  const [editBk, setEditBk] = useState("");
+  const [editHk, setEditHk] = useState("");
+  const [editNk, setEditNk] = useState("");
+  const [editWarm, setEditWarm] = useState("");
+  const [editKaution, setEditKaution] = useState("");
+  const [editMietbeginn, setEditMietbeginn] = useState("");
+  const [editMietende, setEditMietende] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = () => {
@@ -62,6 +78,14 @@ export default function MietvertraegePage() {
   };
 
   useEffect(refresh, []);
+
+  useEffect(() => {
+    if (!highlightId || mietvertraege.length === 0) return;
+    const t = setTimeout(() => {
+      highlightRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 150);
+    return () => clearTimeout(t);
+  }, [highlightId, mietvertraege]);
 
   const handleUpload = async (file: File) => {
     setUploading(true);
@@ -83,6 +107,16 @@ export default function MietvertraegePage() {
         setNeueWohnungBezeichnung(json.extraktion.wohnungsbezeichnung || "");
         setNeueWohnungGebaeudeId("");
         setNeueWohnungFlaeche("");
+        setEditSollMiete(json.extraktion.sollMiete ? String(json.extraktion.sollMiete) : "");
+        setEditBk(json.extraktion.bkVorauszahlung ? String(json.extraktion.bkVorauszahlung) : "");
+        setEditHk(json.extraktion.hkVorauszahlung ? String(json.extraktion.hkVorauszahlung) : "");
+        setEditNk(
+          json.extraktion.nebenkostenVorauszahlung ? String(json.extraktion.nebenkostenVorauszahlung) : ""
+        );
+        setEditWarm(json.extraktion.warmmiete ? String(json.extraktion.warmmiete) : "");
+        setEditKaution(json.extraktion.kaution ? String(json.extraktion.kaution) : "");
+        setEditMietbeginn(json.extraktion.mietbeginn || "");
+        setEditMietende(json.extraktion.mietende || "");
       }
     } catch {
       setError("Analyse fehlgeschlagen");
@@ -96,6 +130,18 @@ export default function MietvertraegePage() {
     if (wohnungModus === "vorhanden" && !gewaehlteWohnung) return;
     if (wohnungModus === "neu" && (!neueWohnungGebaeudeId || !neueWohnungBezeichnung.trim())) return;
     const e = ergebnis.extraktion;
+    // Nutzer-geprüfte/korrigierte Werte statt der ungeprüften Roh-Extraktion verwenden.
+    const num = (s: string) => (s.trim() ? Number(s.replace(",", ".")) : undefined);
+    const rev = {
+      sollMiete: num(editSollMiete),
+      bkVorauszahlung: num(editBk),
+      hkVorauszahlung: num(editHk),
+      nebenkostenVorauszahlung: num(editNk),
+      warmmiete: num(editWarm),
+      kaution: num(editKaution),
+      mietbeginn: editMietbeginn || undefined,
+      mietende: editMietende || undefined,
+    };
 
     let wohnungId = gewaehlteWohnung;
     if (wohnungModus === "neu") {
@@ -122,22 +168,22 @@ export default function MietvertraegePage() {
         body: JSON.stringify({
           wohnungId,
           name: neuerMieterName || e.mieterName || "Neuer Mieter",
-          mietbeginn: e.mietbeginn,
-          mietende: e.mietende,
-          kaltmiete: e.sollMiete,
-          nebenkostenVorauszahlung: e.nebenkostenVorauszahlung,
+          mietbeginn: rev.mietbeginn,
+          mietende: rev.mietende,
+          kaltmiete: rev.sollMiete,
+          nebenkostenVorauszahlung: rev.nebenkostenVorauszahlung,
         }),
       });
       const json = await res.json();
       mieterId = json.mieter?.id;
     } else if (mieterId) {
-      // Bestehender Mieter: Stammdaten aus Vertrag übernehmen
+      // Bestehender Mieter: geprüfte Stammdaten aus Vertrag übernehmen
       const patch: Record<string, unknown> = { wohnungId };
-      if (e.mietbeginn) patch.mietbeginn = e.mietbeginn;
-      if (e.mietende) patch.mietende = e.mietende;
-      if (e.sollMiete) patch.kaltmiete = e.sollMiete;
-      if (e.nebenkostenVorauszahlung != null)
-        patch.nebenkostenVorauszahlung = e.nebenkostenVorauszahlung;
+      if (rev.mietbeginn) patch.mietbeginn = rev.mietbeginn;
+      if (rev.mietende) patch.mietende = rev.mietende;
+      if (rev.sollMiete) patch.kaltmiete = rev.sollMiete;
+      if (rev.nebenkostenVorauszahlung != null)
+        patch.nebenkostenVorauszahlung = rev.nebenkostenVorauszahlung;
       await fetch(`/api/mieter/${mieterId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -154,11 +200,14 @@ export default function MietvertraegePage() {
         dateiName: ergebnis.dateiName,
         storedFileName: ergebnis.storedFileName,
         mimeType: ergebnis.mimeType,
-        sollMiete: e.sollMiete,
-        nebenkostenVorauszahlung: e.nebenkostenVorauszahlung,
-        kaution: e.kaution,
-        mietbeginn: e.mietbeginn,
-        mietende: e.mietende,
+        sollMiete: rev.sollMiete,
+        bkVorauszahlung: rev.bkVorauszahlung,
+        hkVorauszahlung: rev.hkVorauszahlung,
+        nebenkostenVorauszahlung: rev.nebenkostenVorauszahlung,
+        warmmiete: rev.warmmiete,
+        kaution: rev.kaution,
+        mietbeginn: rev.mietbeginn,
+        mietende: rev.mietende,
         status: "Aktiv",
       }),
     });
@@ -247,7 +296,15 @@ export default function MietvertraegePage() {
             const w = wohnungen.find((x) => x.id === mv.wohnungId);
             const m = mieter.find((x) => x.id === mv.mieterId);
             return (
-              <div key={mv.id} className="rounded-lg border border-border bg-card p-4 text-sm">
+              <div
+                key={mv.id}
+                ref={highlightId === mv.id ? highlightRef : undefined}
+                className={`rounded-lg border p-4 text-sm transition-colors ${
+                  highlightId === mv.id
+                    ? "border-primary bg-secondary/60 ring-2 ring-primary"
+                    : "border-border bg-card"
+                }`}
+              >
                 <div className="flex items-center justify-between">
                   <div>
                     <span className="font-mono text-xs text-muted-foreground">
@@ -270,7 +327,7 @@ export default function MietvertraegePage() {
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-muted-foreground sm:grid-cols-4">
                   {m ? (
-                    <a href="/mieter" className="text-primary hover:underline">
+                    <a href={`/liegenschaften?select=mieter:${m.id}`} className="text-primary hover:underline">
                       Mieter: {m.name} ↗
                     </a>
                   ) : (
@@ -366,11 +423,106 @@ export default function MietvertraegePage() {
               <> — automatischer Treffer: <strong>{ergebnis.vorschlag.mieterName}</strong></>
             )}
           </p>
-          <div className="mb-3 grid grid-cols-2 gap-3 text-xs text-muted-foreground">
-            {ergebnis.extraktion.sollMiete ? (
-              <span>Kaltmiete: {formatCurrency(ergebnis.extraktion.sollMiete)}</span>
-            ) : null}
-            {ergebnis.extraktion.mietbeginn && <span>Beginn: {ergebnis.extraktion.mietbeginn}</span>}
+
+          {ergebnis.pruefHinweis && (
+            <p className="mb-3 rounded-md border border-[var(--warning,#d97706)] bg-[var(--warning-bg,#fef3c7)] px-3 py-2 text-xs text-[var(--warning-fg,#92400e)]">
+              ⚠️ {ergebnis.pruefHinweis} Bitte die Werte unten vor dem Speichern prüfen/korrigieren.
+            </p>
+          )}
+
+          <div className="mb-3 rounded-md border border-border p-3">
+            <p className="mb-2 text-xs font-semibold text-muted-foreground">
+              Vertragswerte prüfen &amp; ggf. korrigieren
+            </p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              <label className="text-xs">
+                Kaltmiete (€)
+                <input
+                  value={editSollMiete}
+                  onChange={(e) => setEditSollMiete(e.target.value)}
+                  inputMode="decimal"
+                  className="mt-0.5 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="text-xs">
+                BK-VZ (€)
+                <input
+                  value={editBk}
+                  onChange={(e) => setEditBk(e.target.value)}
+                  inputMode="decimal"
+                  className="mt-0.5 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="text-xs">
+                HK-VZ (€)
+                <input
+                  value={editHk}
+                  onChange={(e) => setEditHk(e.target.value)}
+                  inputMode="decimal"
+                  className="mt-0.5 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="text-xs">
+                NK-VZ gesamt (€)
+                <input
+                  value={editNk}
+                  onChange={(e) => setEditNk(e.target.value)}
+                  inputMode="decimal"
+                  className="mt-0.5 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="text-xs">
+                Warmmiete (€)
+                <input
+                  value={editWarm}
+                  onChange={(e) => setEditWarm(e.target.value)}
+                  inputMode="decimal"
+                  className="mt-0.5 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="text-xs">
+                Kaution (€)
+                <input
+                  value={editKaution}
+                  onChange={(e) => setEditKaution(e.target.value)}
+                  inputMode="decimal"
+                  className="mt-0.5 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="text-xs">
+                Mietbeginn
+                <input
+                  value={editMietbeginn}
+                  onChange={(e) => setEditMietbeginn(e.target.value)}
+                  placeholder="TT.MM.JJJJ"
+                  className="mt-0.5 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="text-xs">
+                Mietende
+                <input
+                  value={editMietende}
+                  onChange={(e) => setEditMietende(e.target.value)}
+                  placeholder="TT.MM.JJJJ (optional)"
+                  className="mt-0.5 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+                />
+              </label>
+            </div>
+            {(() => {
+              const s = Number(editSollMiete.replace(",", ".")) || 0;
+              const bk = Number(editBk.replace(",", ".")) || 0;
+              const hk = Number(editHk.replace(",", ".")) || 0;
+              const warm = Number(editWarm.replace(",", ".")) || 0;
+              const summe = s + bk + hk;
+              if (warm > 0 && summe > 0 && Math.abs(summe - warm) > 5) {
+                return (
+                  <p className="mt-2 text-xs text-[var(--warning-fg,#92400e)]">
+                    ⚠️ Kaltmiete + NK-VZ = {summe.toFixed(2)} € weicht von Warmmiete {warm.toFixed(2)} € ab.
+                  </p>
+                );
+              }
+              return null;
+            })()}
           </div>
 
           <div className="mb-3">
@@ -511,13 +663,11 @@ export default function MietvertraegePage() {
                 />
               </label>
               <p className="text-xs text-muted-foreground">
-                Aus dem Vertrag übernommen: Kaltmiete{" "}
-                {ergebnis.extraktion.sollMiete ? formatCurrency(ergebnis.extraktion.sollMiete) : "–"},
+                Aus dem Vertrag übernommen (s. Werte oben): Kaltmiete{" "}
+                {editSollMiete ? formatCurrency(Number(editSollMiete.replace(",", "."))) : "–"},
                 Nebenkosten{" "}
-                {ergebnis.extraktion.nebenkostenVorauszahlung
-                  ? formatCurrency(ergebnis.extraktion.nebenkostenVorauszahlung)
-                  : "–"}
-                , Mietbeginn {ergebnis.extraktion.mietbeginn || "–"}. Der Mieter wird beim
+                {editNk ? formatCurrency(Number(editNk.replace(",", "."))) : "–"}
+                , Mietbeginn {editMietbeginn || "–"}. Der Mieter wird beim
                 Bestätigen mit diesen Stammdaten für die gewählte Wohnung angelegt.
               </p>
             </div>
@@ -563,6 +713,14 @@ export default function MietvertraegePage() {
         </Modal>
       )}
     </div>
+  );
+}
+
+export default function MietvertraegePage() {
+  return (
+    <Suspense fallback={<div className="p-4 text-sm text-muted-foreground">Lade…</div>}>
+      <MietvertraegePageInner />
+    </Suspense>
   );
 }
 

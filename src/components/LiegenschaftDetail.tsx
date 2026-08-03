@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
 import {
   Abrechnung,
@@ -26,6 +26,8 @@ interface Props {
   selection: NodeSelection;
   onSelect: (sel: NodeSelection) => void;
   onChanged: () => void;
+  /** Öffnet beim Anspringen per Deep-Link (z.B. ?tab=PM-Vertrag) direkt den passenden Tab. */
+  initialTab?: string;
 }
 
 const TABS = [
@@ -103,8 +105,15 @@ function Field({
   );
 }
 
-export default function LiegenschaftDetail({ data, selection, onSelect, onChanged }: Props) {
+export default function LiegenschaftDetail({ data, selection, onSelect, onChanged, initialTab }: Props) {
   const [tab, setTab] = useState<Tab>("Stammdaten");
+  useEffect(() => {
+    if (initialTab && TABS.includes(initialTab as Tab)) {
+      setTab(initialTab as Tab);
+    }
+    // Nur reagieren, wenn sich der Deep-Link-Tab oder die Auswahl ändert –
+    // manuelle Tab-Klicks des Nutzers danach nicht überschreiben.
+  }, [initialTab, selection?.type, selection?.id]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
@@ -202,6 +211,43 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
     () => (liegenschaft ? data.pmVertraege.filter((p) => p.liegenschaftId === liegenschaft.id) : []),
     [data.pmVertraege, liegenschaft]
   );
+
+  // Mietverträge + deren Nachträge/Übergabeprotokolle des ausgewählten Mieters –
+  // eigener, direkter Dokumente-Bestand (scopedDokumente deckt nur Abrechnungs-
+  // Rechnungen ab und ist auf Mieter-Ebene bewusst leer).
+  const mieterDokumente = useMemo(() => {
+    if (!mieter) return [];
+    const eigene = (data.mietvertraege || []).filter((mv) => mv.mieterId === mieter.id);
+    const items: {
+      id: string;
+      art: string;
+      name: string;
+      storedFileName?: string;
+      mimeType: string;
+      datum?: string;
+    }[] = [];
+    for (const mv of eigene) {
+      items.push({
+        id: mv.id,
+        art: "Mietvertrag",
+        name: mv.dateiName || mv.nummer || "Mietvertrag",
+        storedFileName: mv.storedFileName,
+        mimeType: mv.mimeType,
+        datum: mv.hochgeladenAm,
+      });
+      for (const a of mv.anhaenge || []) {
+        items.push({
+          id: a.id,
+          art: a.typ || "Nachtrag",
+          name: a.dateiName || "Nachtrag/Übergabeprotokoll",
+          storedFileName: a.storedFileName,
+          mimeType: a.mimeType,
+          datum: a.hochgeladenAm,
+        });
+      }
+    }
+    return items;
+  }, [data.mietvertraege, mieter]);
 
   if (!selection) {
     return (
@@ -662,9 +708,24 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
                     .map((mv) => (
                       <p key={mv.id}>
                         Mietvertrag:{" "}
-                        <a href="/mietvertraege" className="text-primary hover:underline">
+                        <a href={`/mietvertraege?id=${mv.id}`} className="text-primary hover:underline">
                           {mv.dateiName || mv.nummer || mv.id.slice(0, 8)} ↗
                         </a>
+                        {mv.storedFileName && (
+                          <>
+                            {" · "}
+                            <a
+                              href={`/api/files/${mv.storedFileName}?mime=${encodeURIComponent(
+                                mv.mimeType
+                              )}&name=${encodeURIComponent(mv.dateiName)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-primary hover:underline"
+                            >
+                              👁 Datei ansehen
+                            </a>
+                          </>
+                        )}
                         {mv.sollMiete != null ? ` · ${mv.sollMiete} €` : ""}
                         {mv.mietbeginn ? ` · ab ${mv.mietbeginn}` : ""}
                       </p>
@@ -674,6 +735,17 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
                       Kein Mietvertrag verknüpft.{" "}
                       <a href="/mietvertraege" className="text-primary hover:underline">
                         Hochladen / zuordnen ↗
+                      </a>
+                    </p>
+                  )}
+                  {mieterLiegenschaft && (
+                    <p>
+                      PM-Vertrag:{" "}
+                      <a
+                        href={`/liegenschaften?select=liegenschaft:${mieterLiegenschaft.id}&tab=PM-Vertrag`}
+                        className="text-primary hover:underline"
+                      >
+                        {mieterLiegenschaft.name} ↗
                       </a>
                     </p>
                   )}
@@ -702,7 +774,7 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
                   .map((mv) => (
                     <p key={mv.id}>
                       Vertrag:{" "}
-                      <a href="/mietvertraege" className="text-primary hover:underline">
+                      <a href={`/mietvertraege?id=${mv.id}`} className="text-primary hover:underline">
                         {mv.dateiName || mv.nummer || "Dokument"} ↗
                       </a>
                     </p>
@@ -1008,7 +1080,47 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
           </div>
         )}
 
-        {tab === "Dokumente" && (
+        {tab === "Dokumente" && mieter && (
+          <div className="space-y-2">
+            {mieterDokumente.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                Noch keine Dokumente für diesen Mieter.{" "}
+                <a href="/mietvertraege" className="text-primary hover:underline">
+                  Mietvertrag hochladen ↗
+                </a>
+              </p>
+            )}
+            {mieterDokumente.map((d) => (
+              <div key={d.id} className="flex items-center justify-between gap-2 rounded-md border border-border p-3 text-sm">
+                <div>
+                  <span className="mr-1.5 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                    {d.art}
+                  </span>
+                  <span className="font-medium">{d.name}</span>
+                  {d.datum && (
+                    <span className="ml-1.5 text-xs text-muted-foreground">
+                      · {new Date(d.datum).toLocaleDateString("de-DE")}
+                    </span>
+                  )}
+                </div>
+                {d.storedFileName && (
+                  <a
+                    href={`/api/files/${d.storedFileName}?mime=${encodeURIComponent(
+                      d.mimeType
+                    )}&name=${encodeURIComponent(d.name)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
+                  >
+                    👁 Ansehen
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === "Dokumente" && !mieter && (
           <div className="space-y-2">
             {scopedDokumente.length === 0 && (
               <p className="text-sm text-muted-foreground">Keine Dokumente vorhanden.</p>

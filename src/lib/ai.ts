@@ -235,7 +235,16 @@ export async function analyzeDocument(params: {
   return extractJson(result) as ExtractedData;
 }
 
-const SYSTEM_MIETVERTRAG = `Du bist ein Experte für deutsche Mietverträge. Analysiere den Text und extrahiere ALLE erkennbaren Stammdaten für Mieter, Wohnung und Vertrag.
+const SYSTEM_MIETVERTRAG = `Du bist ein Experte für deutsche Mietverträge. Analysiere den Text sorgfältig und extrahiere ALLE erkennbaren Stammdaten für Mieter, Wohnung und Vertrag.
+
+WICHTIGE PRÄZISIONS-REGELN (häufige Fehlerquellen):
+- "sollMiete" ist IMMER die reine Nettokaltmiete (ohne jegliche Nebenkosten) – meist bezeichnet als "Kaltmiete", "Grundmiete", "Nettomiete" oder schlicht "Miete" im Absatz zur monatlichen Zahlung. NIEMALS die Warmmiete/Gesamtmiete hier eintragen.
+- Enthält der Vertrag eine Staffelmiete oder Indexmiete (mehrere Beträge zu verschiedenen zukünftigen Zeitpunkten), nimm für "sollMiete" AUSSCHLIESSLICH den zu Mietbeginn gültigen ERSTEN Betrag – niemals eine spätere Erhöhungsstufe.
+- Unterscheide klar: bkVorauszahlung (Betriebskosten/BK-VZ), hkVorauszahlung (Heizkosten/HK-VZ), nebenkostenVorauszahlung (nur falls NICHT einzeln aufgeschlüsselt) und warmmiete (die Summe aus allem = Gesamtmiete/Bruttomiete). Verwechsle diese vier Werte nicht miteinander.
+- Prüfe intern, ob sollMiete + bkVorauszahlung + hkVorauszahlung ungefähr der genannten Warmmiete entspricht. Wenn nicht, vertraue den explizit im Text genannten Einzelbeträgen (nicht der Summe) – trage aber KEINE geratenen/errechneten Werte ein, sondern nur was wörtlich im Vertrag steht.
+- Bei mehreren Mietparteien/Wohnungen im selben Dokument: extrahiere nur die Daten der im Rubrum/Vertragskopf als Hauptmieter genannten Partei und deren Einheit.
+- Ein Betrag, der eindeutig im Kontext einer Kaution, eines Nachtrags, eines Streitfalls oder eines Rechenbeispiels in den AGB steht, ist NICHT die aktuell gültige Miete – überspringen.
+
 Antworte AUSSCHLIESSLICH mit einem JSON-Objekt in exakt diesem Format:
 {
   "mieterName": "vollständiger Name des Mieters/der Mieter",
@@ -244,25 +253,60 @@ Antworte AUSSCHLIESSLICH mit einem JSON-Objekt in exakt diesem Format:
   "mieterTelefon": "Telefon falls genannt, sonst leerer String",
   "mietbeginn": "Datum z.B. 01.01.2023, sonst leerer String",
   "mietende": "Ende/Auszug z.B. 31.03.2026 falls befristet/genannt, sonst leerer String",
-  "sollMiete": <Kaltmiete/Nettomiete in Euro als Zahl, z.B. 840>,
+  "sollMiete": <Kaltmiete/Nettomiete zu Mietbeginn in Euro als Zahl, z.B. 840>,
   "bkVorauszahlung": <Betriebskosten-Vorauszahlung BK-VZ in Euro, sonst 0>,
   "hkVorauszahlung": <Heizkosten-Vorauszahlung HK-VZ in Euro, sonst 0>,
   "nebenkostenVorauszahlung": <Summe BK+HK oder pauschale NK-VZ in Euro; wenn BK und HK einzeln da: Summe>,
-  "warmmiete": <Gesamtmiete/Warmmiete pro Monat falls genannt, sonst 0>,
+  "warmmiete": <Gesamtmiete/Warmmiete pro Monat falls im Text genannt, sonst 0>,
   "kaution": <Kaution in Euro, sonst 0>,
   "objektAdresse": "Straße Hausnummer, PLZ Ort",
   "wohnungsbezeichnung": "Lage z.B. EG links, 1. OG rechts",
   "flaeche": <Wohnfläche in m² als Zahl, z.B. 72, sonst 0>,
-  "zimmer": <Zimmeranzahl als Zahl, z.B. 3, sonst 0>
+  "zimmer": <Zimmeranzahl als Zahl, z.B. 3, sonst 0>,
+  "unsicherheiten": ["Liste der Feldnamen, bei denen du dir nicht sicher bist, z.B. weil mehrere widersprüchliche Beträge im Text stehen"]
 }
 WICHTIG: Zahlen ohne Tausenderpunkt, Komma als Dezimaltrenner im Text → als Zahl (840,00 → 840). Erfinde nichts. Fehlende Werte: leerer String bzw. 0.`;
+
+/**
+ * Baut für lange Mietverträge einen Auszug, der neben dem Vertragskopf
+ * (Parteien, Objekt) gezielt die Textabschnitte rund um Miet-Schlüsselwörter
+ * enthält – sonst rutscht die eigentliche Mietsumme bei langen Verträgen
+ * (AGB, Hausordnung etc.) leicht aus dem an das Modell gesendeten Ausschnitt.
+ */
+function buildMietvertragExcerpt(text: string, maxLen = 11000): string {
+  if (!text || text.length <= maxLen) return text || "";
+  const kopf = text.slice(0, 4500);
+  const keywords = /(kaltmiete|nettomiete|grundmiete|mietzins|warmmiete|bruttomiete|betriebskosten|heizkosten|nebenkosten|staffelmiete|indexmiete|kaution)/gi;
+  const windows: { start: number; end: number }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = keywords.exec(text))) {
+    const start = Math.max(0, m.index - 200);
+    const end = Math.min(text.length, m.index + 400);
+    windows.push({ start, end });
+  }
+  // Überlappende Fenster zusammenführen
+  windows.sort((a, b) => a.start - b.start);
+  const merged: { start: number; end: number }[] = [];
+  for (const w of windows) {
+    const last = merged[merged.length - 1];
+    if (last && w.start <= last.end) last.end = Math.max(last.end, w.end);
+    else merged.push({ ...w });
+  }
+  let extra = "";
+  const budget = maxLen - kopf.length - 200;
+  for (const w of merged) {
+    if (extra.length >= budget) break;
+    extra += `\n[…]\n${text.slice(w.start, w.end)}`;
+  }
+  return `${kopf}\n\n--- Relevante Textstellen zu Miete/Nebenkosten (aus dem restlichen Dokument) ---${extra.slice(0, budget)}`;
+}
 
 export async function extractMietvertrag(params: {
   text: string;
   fileName: string;
 }): Promise<import("./types").MietvertragExtraktion> {
   const { text, fileName } = params;
-  const textSlice = text.slice(0, 8000);
+  const textSlice = buildMietvertragExcerpt(text, 11000);
   return withJsonRetry(
     async (strict) => {
       const completion = await createChatCompletion({

@@ -21,6 +21,8 @@ function LiegenschaftenPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);
 
+  const initialTab = searchParams.get("tab") || undefined;
+
   return (
     <div className="flex h-full flex-col overflow-hidden lg:flex-row">
       <aside className="w-full shrink-0 overflow-y-auto border-r border-border bg-card max-h-[46vh] lg:h-full lg:max-h-none lg:w-80">
@@ -53,6 +55,7 @@ function LiegenschaftenPageInner() {
           selection={selection}
           onSelect={setSelection}
           onChanged={refresh}
+          initialTab={initialTab}
         />
       </main>
     </div>

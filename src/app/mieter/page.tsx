@@ -90,6 +90,10 @@ export default function MieterPage() {
           <div className="space-y-0.5 p-2">
             {data.mieter.map((m) => {
               const wohnung = data.wohnungen.find((w) => w.id === m.wohnungId);
+              const gebaeude = wohnung ? data.gebaeude.find((g) => g.id === wohnung.gebaeudeId) : undefined;
+              const liegenschaft = gebaeude
+                ? data.liegenschaften.find((l) => l.id === gebaeude.liegenschaftId)
+                : undefined;
               const active = selection?.type === "mieter" && selection.id === m.id;
               return (
                 <button
@@ -109,6 +113,7 @@ export default function MieterPage() {
                     )}
                   >
                     {m.nummer} · {wohnung?.bezeichnung || "ohne Wohnung"}
+                    {liegenschaft ? ` · ${liegenschaft.name}` : ""}
                   </div>
                 </button>
               );

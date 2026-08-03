@@ -57,11 +57,30 @@ export async function POST(req: NextRequest) {
       mieter: alleMieter,
     });
 
+    // Konsistenz-Check: Kaltmiete + NK-VZ sollte in etwa der Warmmiete entsprechen.
+    // Weichen die Werte deutlich ab, weist das auf eine Verwechslung bei der
+    // Extraktion hin (z.B. Warmmiete statt Kaltmiete erfasst) – der Nutzer soll
+    // das im Bestätigungs-Dialog gegenprüfen, bevor die Werte übernommen werden.
+    const pruefHinweise: string[] = [];
+    const summe =
+      (extraktion.sollMiete || 0) + (extraktion.bkVorauszahlung || 0) + (extraktion.hkVorauszahlung || 0);
+    if (extraktion.warmmiete && summe > 0 && Math.abs(summe - extraktion.warmmiete) > 5) {
+      pruefHinweise.push(
+        `Kaltmiete + NK-VZ ergibt ${summe.toFixed(2)} €, im Vertrag steht aber ${extraktion.warmmiete.toFixed(
+          2
+        )} € Warmmiete – bitte Werte gegenprüfen.`
+      );
+    }
+    if (extraktion.unsicherheiten?.length) {
+      pruefHinweise.push(`KI ist sich unsicher bei: ${extraktion.unsicherheiten.join(", ")}.`);
+    }
+
     return NextResponse.json({
       extraktion,
       dateiName: file.name,
       storedFileName,
       mimeType,
+      pruefHinweis: pruefHinweise.length ? pruefHinweise.join(" ") : undefined,
       vorschlag: {
         mieterId: vorschlag.mieterId,
         mieterName: vorschlag.mieterName || extraktion.mieterName,
