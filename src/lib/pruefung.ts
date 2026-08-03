@@ -33,7 +33,8 @@ function neuerBefund(
   titel: string,
   beschreibung: string,
   betroffene: PruefBefund["betroffene"],
-  vorschlag?: PruefBefund["vorschlag"]
+  vorschlag?: PruefBefund["vorschlag"],
+  linkHref?: string
 ): PruefBefund {
   return {
     id: uid(),
@@ -43,6 +44,7 @@ function neuerBefund(
     beschreibung,
     betroffene,
     vorschlag,
+    linkHref,
     status: "offen",
   };
 }
@@ -172,7 +174,7 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
     }
   }
 
-  // ---- Mieter: verwaiste Referenzen ----
+  // ---- Mieter: verwaiste Referenzen + fehlende Stammdaten ----
   for (const m of mieter) {
     if (!wohnungById.has(m.wohnungId)) {
       befunde.push(
@@ -181,7 +183,99 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
           "fehler",
           "Mieter ohne gültige Wohnung",
           `„${m.name}" ist keiner (mehr) existierenden Wohnung zugeordnet.`,
-          [{ art: "Mieter", id: m.id, label: m.name }]
+          [{ art: "Mieter", id: m.id, label: m.name }],
+          undefined,
+          "/mieter"
+        )
+      );
+      continue;
+    }
+    const fehlend: string[] = [];
+    if (!m.kaltmiete || m.kaltmiete <= 0) fehlend.push("Kaltmiete");
+    if (m.nebenkostenVorauszahlung == null) fehlend.push("NK-Vorauszahlung");
+    if (!m.mietbeginn) fehlend.push("Mietbeginn");
+    if (fehlend.length > 0) {
+      befunde.push(
+        neuerBefund(
+          "mieter",
+          "warnung",
+          "Mieter mit unvollständigen Stammdaten",
+          `Bei „${m.name}" fehlen: ${fehlend.join(", ")}.`,
+          [{ art: "Mieter", id: m.id, label: m.name }],
+          undefined,
+          "/mieter"
+        )
+      );
+    }
+    const hatVertrag = mietvertraege.some((mv) => mv.mieterId === m.id);
+    if (!hatVertrag) {
+      befunde.push(
+        neuerBefund(
+          "mietvertraege",
+          "hinweis",
+          "Mieter ohne hinterlegten Mietvertrag",
+          `Für „${m.name}" liegt kein Mietvertrags-Dokument vor – hochladen und zuordnen.`,
+          [{ art: "Mieter", id: m.id, label: m.name }],
+          undefined,
+          "/mietvertraege"
+        )
+      );
+    }
+  }
+
+  // ---- Mietverträge: fehlende Zuordnung / Stammdaten ----
+  for (const mv of mietvertraege) {
+    if (!mv.wohnungId || !wohnungById.has(mv.wohnungId)) {
+      befunde.push(
+        neuerBefund(
+          "mietvertraege",
+          "fehler",
+          "Mietvertrag ohne gültige Wohnung",
+          `„${mv.dateiName}" ist keiner Wohnung zugeordnet.`,
+          [{ art: "Mietvertrag", id: mv.id, label: mv.dateiName }],
+          undefined,
+          "/mietvertraege"
+        )
+      );
+    }
+    if (!mv.mieterId) {
+      befunde.push(
+        neuerBefund(
+          "mietvertraege",
+          "warnung",
+          "Mietvertrag ohne Mieter-Zuordnung",
+          `„${mv.dateiName}" hat keine Mieter-ID – bitte neu zuordnen.`,
+          [{ art: "Mietvertrag", id: mv.id, label: mv.dateiName }],
+          undefined,
+          "/mietvertraege"
+        )
+      );
+    } else if (!mieter.some((m) => m.id === mv.mieterId)) {
+      befunde.push(
+        neuerBefund(
+          "mietvertraege",
+          "fehler",
+          "Mietvertrag verweist auf fehlenden Mieter",
+          `„${mv.dateiName}" zeigt auf eine nicht existierende Mieter-ID.`,
+          [{ art: "Mietvertrag", id: mv.id, label: mv.dateiName }],
+          undefined,
+          "/mietvertraege"
+        )
+      );
+    }
+    const fehlMv: string[] = [];
+    if (!mv.sollMiete || mv.sollMiete <= 0) fehlMv.push("Kaltmiete");
+    if (!mv.mietbeginn) fehlMv.push("Mietbeginn");
+    if (fehlMv.length > 0) {
+      befunde.push(
+        neuerBefund(
+          "mietvertraege",
+          "hinweis",
+          "Mietvertrag mit unvollständigen Stammdaten",
+          `Bei „${mv.dateiName}" fehlen: ${fehlMv.join(", ")}.`,
+          [{ art: "Mietvertrag", id: mv.id, label: mv.dateiName }],
+          undefined,
+          "/mietvertraege"
         )
       );
     }
@@ -217,20 +311,99 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
     }
   }
 
-  // ---- Ablage: seit Tagen unzugeordnete Dokumente ----
+  // ---- Ablage: unbearbeitete Dokumente (sofort sichtbar + Deep-Link) ----
   const jetzt = Date.now();
   const SIEBEN_TAGE_MS = 7 * 24 * 60 * 60 * 1000;
   const offeneAblage = ablage.filter((a) => a.status === "neu" || a.status === "in_pruefung");
+  if (offeneAblage.length > 0) {
+    befunde.push(
+      neuerBefund(
+        "ablage",
+        offeneAblage.length >= 5 ? "warnung" : "hinweis",
+        `${offeneAblage.length} unbearbeitete Ablage-Dokument(e)`,
+        offeneAblage
+          .slice(0, 12)
+          .map((a) => `• ${a.dateiName} (${a.status}${a.erkannterTyp ? `, ${a.erkannterTyp}` : ""})`)
+          .join("\n") +
+          (offeneAblage.length > 12 ? `\n… und ${offeneAblage.length - 12} weitere` : "") +
+          "\n→ Zur Bearbeitung: /ablage oder /smart-upload. Agent: „ordne die offenen Ablage-Dokumente zu“.",
+        offeneAblage.slice(0, 8).map((a) => ({ art: "Ablage", id: a.id, label: a.dateiName })),
+        undefined,
+        "/ablage"
+      )
+    );
+  }
   for (const a of offeneAblage) {
     const alterMs = jetzt - new Date(a.hochgeladenAm).getTime();
     if (alterMs > SIEBEN_TAGE_MS) {
       befunde.push(
         neuerBefund(
           "ablage",
-          "hinweis",
+          "warnung",
           "Dokument seit über 7 Tagen nicht zugeordnet",
           `„${a.dateiName}" liegt seit ${Math.floor(alterMs / (24 * 60 * 60 * 1000))} Tagen unzugeordnet in der Ablage.`,
-          [{ art: "Ablage", id: a.id, label: a.dateiName }]
+          [{ art: "Ablage", id: a.id, label: a.dateiName }],
+          undefined,
+          "/ablage"
+        )
+      );
+    }
+  }
+
+  // ---- System / Funktionsprüfung der Module ----
+  {
+    const checks: { ok: boolean; name: string; detail: string }[] = [
+      { ok: Array.isArray(liegenschaften), name: "Liegenschaften-DB", detail: `${liegenschaften.length} Einträge` },
+      { ok: Array.isArray(gebaeude), name: "Gebäude-DB", detail: `${gebaeude.length} Einträge` },
+      { ok: Array.isArray(wohnungen), name: "Wohnungen-DB", detail: `${wohnungen.length} Einträge` },
+      { ok: Array.isArray(mieter), name: "Mieter-DB", detail: `${mieter.length} Einträge` },
+      { ok: Array.isArray(mietvertraege), name: "Mietverträge-DB", detail: `${mietvertraege.length} Einträge` },
+      { ok: Array.isArray(pmVertraege), name: "PM-Verträge-DB", detail: `${pmVertraege.length} Einträge` },
+      { ok: Array.isArray(eigentuemer), name: "Eigentümer-DB", detail: `${eigentuemer.length} Einträge` },
+      { ok: Array.isArray(abrechnungen), name: "Abrechnungen-DB", detail: `${abrechnungen.length} Einträge` },
+      { ok: Array.isArray(kontoauszuege), name: "Kontoauszüge-DB", detail: `${kontoauszuege.length} Einträge` },
+      { ok: Array.isArray(ablage), name: "Ablage-DB", detail: `${ablage.length} Einträge` },
+      {
+        ok: Boolean(process.env.GROQ_API_KEY),
+        name: "GROQ_API_KEY",
+        detail: process.env.GROQ_API_KEY ? "gesetzt" : "FEHLT – KI-Funktionen deaktiviert",
+      },
+      {
+        ok: true,
+        name: "CEREBRAS_API_KEY",
+        detail: process.env.CEREBRAS_API_KEY ? "gesetzt (Fallback aktiv)" : "nicht gesetzt (nur Groq)",
+      },
+    ];
+    const kaputt = checks.filter((c) => !c.ok);
+    if (kaputt.length > 0) {
+      for (const c of kaputt) {
+        befunde.push(
+          neuerBefund(
+            "system",
+            "fehler",
+            `Modul/Config defekt: ${c.name}`,
+            c.detail,
+            [{ art: "System", id: c.name, label: c.name }]
+          )
+        );
+      }
+    } else {
+      // Nur Info-Snapshot, wenn alles erreichbar ist (kein Alarm)
+      const summary = checks.map((c) => `${c.name}: ${c.detail}`).join("; ");
+      // Kein Befund bei OK – modulStatus wird unten auf ok gesetzt
+      void summary;
+    }
+    // Leere Hierarchie als Hinweis (neue Installation)
+    if (liegenschaften.length === 0) {
+      befunde.push(
+        neuerBefund(
+          "system",
+          "hinweis",
+          "Noch keine Liegenschaft angelegt",
+          "Lege unter /liegenschaften eine Liegenschaft an oder nutze den Intelligenten Upload.",
+          [],
+          undefined,
+          "/liegenschaften"
         )
       );
     }

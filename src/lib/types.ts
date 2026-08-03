@@ -716,7 +716,8 @@ export type PruefModul =
   | "eigentuemer"
   | "abrechnungen"
   | "kontoauszuege"
-  | "ablage";
+  | "ablage"
+  | "system";
 
 export const PRUEF_MODUL_LABEL: Record<PruefModul, string> = {
   liegenschaften: "Liegenschaften",
@@ -729,9 +730,11 @@ export const PRUEF_MODUL_LABEL: Record<PruefModul, string> = {
   abrechnungen: "Abrechnungen",
   kontoauszuege: "Kontoauszüge",
   ablage: "Ablage",
+  system: "System / Module",
 };
 
 export const PRUEF_MODUL_REIHENFOLGE: PruefModul[] = [
+  "system",
   "liegenschaften",
   "gebaeude",
   "wohnungen",
@@ -743,6 +746,20 @@ export const PRUEF_MODUL_REIHENFOLGE: PruefModul[] = [
   "kontoauszuege",
   "ablage",
 ];
+
+/** Deep-Link-Ziele in der UI (Prüfung / Agent-Hinweise). */
+export const ENTITAET_ROUTE: Record<string, string> = {
+  Liegenschaft: "/liegenschaften",
+  Gebäude: "/gebaeude",
+  Wohnung: "/wohnungen",
+  Mieter: "/mieter",
+  Mietvertrag: "/mietvertraege",
+  Ablage: "/ablage",
+  Abrechnung: "/rechnungen",
+  Eigentümer: "/eigentuemer",
+  "PM-Vertrag": "/pm-vertrag",
+  Kontoauszug: "/kontoauszuege",
+};
 
 export type PruefStatus = "ok" | "hinweise" | "fehler" | "ausstehend";
 
@@ -765,6 +782,8 @@ export interface PruefBefund {
   titel: string;
   beschreibung: string;
   betroffene: { art: string; id: string; label: string }[];
+  /** Optionaler UI-Pfad, z.B. /ablage oder /mietvertraege – für „Zur Bearbeitung“. */
+  linkHref?: string;
   vorschlag?: PruefKorrekturVorschlag;
   status: "offen" | "uebernommen" | "abgelehnt";
 }

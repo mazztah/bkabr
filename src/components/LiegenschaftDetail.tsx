@@ -642,7 +642,75 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
                     }).then(onChanged)
                   }
                 />
+                {/* Verknüpfte Mietverträge + Wohnung */}
+                <div className="col-span-full mt-2 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-sm">
+                  <p className="text-xs font-semibold text-muted-foreground">Verknüpfungen</p>
+                  {mieterWohnung && (
+                    <p>
+                      Wohnung:{" "}
+                      <button
+                        type="button"
+                        className="text-primary hover:underline"
+                        onClick={() => onSelect({ type: "wohnung", id: mieterWohnung.id })}
+                      >
+                        {mieterWohnung.bezeichnung} ↗
+                      </button>
+                    </p>
+                  )}
+                  {(data.mietvertraege || [])
+                    .filter((mv) => mv.mieterId === mieter.id)
+                    .map((mv) => (
+                      <p key={mv.id}>
+                        Mietvertrag:{" "}
+                        <a href="/mietvertraege" className="text-primary hover:underline">
+                          {mv.dateiName || mv.nummer || mv.id.slice(0, 8)} ↗
+                        </a>
+                        {mv.sollMiete != null ? ` · ${mv.sollMiete} €` : ""}
+                        {mv.mietbeginn ? ` · ab ${mv.mietbeginn}` : ""}
+                      </p>
+                    ))}
+                  {(data.mietvertraege || []).filter((mv) => mv.mieterId === mieter.id).length === 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      Kein Mietvertrag verknüpft.{" "}
+                      <a href="/mietvertraege" className="text-primary hover:underline">
+                        Hochladen / zuordnen ↗
+                      </a>
+                    </p>
+                  )}
+                </div>
               </>
+            )}
+            {wohnung && (
+              <div className="col-span-full mt-2 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-sm">
+                <p className="text-xs font-semibold text-muted-foreground">Mietverträge & Mieter dieser Einheit</p>
+                {(data.mieter || [])
+                  .filter((m) => m.wohnungId === wohnung.id)
+                  .map((m) => (
+                    <p key={m.id}>
+                      Mieter:{" "}
+                      <button
+                        type="button"
+                        className="text-primary hover:underline"
+                        onClick={() => onSelect({ type: "mieter", id: m.id })}
+                      >
+                        {m.name} ↗
+                      </button>
+                    </p>
+                  ))}
+                {(data.mietvertraege || [])
+                  .filter((mv) => mv.wohnungId === wohnung.id)
+                  .map((mv) => (
+                    <p key={mv.id}>
+                      Vertrag:{" "}
+                      <a href="/mietvertraege" className="text-primary hover:underline">
+                        {mv.dateiName || mv.nummer || "Dokument"} ↗
+                      </a>
+                    </p>
+                  ))}
+                {(data.mietvertraege || []).filter((mv) => mv.wohnungId === wohnung.id).length === 0 && (
+                  <p className="text-xs text-muted-foreground">Noch kein Mietvertrag für diese Wohnung.</p>
+                )}
+              </div>
             )}
           </div>
         )}

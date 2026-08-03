@@ -39,6 +39,10 @@ export default function MietvertraegePage() {
   const [neueWohnungTyp, setNeueWohnungTyp] = useState<EinheitTyp>("Wohnung");
   const [neueWohnungFlaeche, setNeueWohnungFlaeche] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [reassignId, setReassignId] = useState<string | null>(null);
+  const [reassignWohnung, setReassignWohnung] = useState("");
+  const [reassignMieter, setReassignMieter] = useState("");
+  const [reassignBusy, setReassignBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = () => {
@@ -126,6 +130,19 @@ export default function MietvertraegePage() {
       });
       const json = await res.json();
       mieterId = json.mieter?.id;
+    } else if (mieterId) {
+      // Bestehender Mieter: Stammdaten aus Vertrag übernehmen
+      const patch: Record<string, unknown> = { wohnungId };
+      if (e.mietbeginn) patch.mietbeginn = e.mietbeginn;
+      if (e.mietende) patch.mietende = e.mietende;
+      if (e.sollMiete) patch.kaltmiete = e.sollMiete;
+      if (e.nebenkostenVorauszahlung != null)
+        patch.nebenkostenVorauszahlung = e.nebenkostenVorauszahlung;
+      await fetch(`/api/mieter/${mieterId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
     }
 
     await fetch("/api/mietvertraege", {
@@ -147,6 +164,45 @@ export default function MietvertraegePage() {
     });
     setErgebnis(null);
     refresh();
+  };
+
+  const startReassign = (mv: Mietvertrag) => {
+    setReassignId(mv.id);
+    setReassignWohnung(mv.wohnungId || "");
+    setReassignMieter(mv.mieterId || "");
+  };
+
+  const saveReassign = async () => {
+    if (!reassignId || !reassignWohnung) return;
+    setReassignBusy(true);
+    try {
+      const mv = mietvertraege.find((x) => x.id === reassignId);
+      await fetch(`/api/mietvertraege/${reassignId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          wohnungId: reassignWohnung,
+          mieterId: reassignMieter || undefined,
+        }),
+      });
+      if (reassignMieter && mv) {
+        const patch: Record<string, unknown> = { wohnungId: reassignWohnung };
+        if (mv.sollMiete) patch.kaltmiete = mv.sollMiete;
+        if (mv.nebenkostenVorauszahlung != null)
+          patch.nebenkostenVorauszahlung = mv.nebenkostenVorauszahlung;
+        if (mv.mietbeginn) patch.mietbeginn = mv.mietbeginn;
+        if (mv.mietende) patch.mietende = mv.mietende;
+        await fetch(`/api/mieter/${reassignMieter}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+      }
+      setReassignId(null);
+      refresh();
+    } finally {
+      setReassignBusy(false);
+    }
   };
 
   return (
@@ -213,7 +269,13 @@ export default function MietvertraegePage() {
                   )}
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-muted-foreground sm:grid-cols-4">
-                  <span>Mieter: {m?.name || "–"}</span>
+                  {m ? (
+                    <a href="/mieter" className="text-primary hover:underline">
+                      Mieter: {m.name} ↗
+                    </a>
+                  ) : (
+                    <span className="text-[var(--destructive)]">Mieter: nicht zugeordnet</span>
+                  )}
                   <a
                     href={`/liegenschaften?select=wohnung:${mv.wohnungId}`}
                     className="text-primary hover:underline"
@@ -225,6 +287,69 @@ export default function MietvertraegePage() {
                   <span>Status: {mv.status}</span>
                   <span>Hochgeladen: {formatDate(mv.hochgeladenAm)}</span>
                 </div>
+
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => startReassign(mv)}
+                    className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
+                  >
+                    🔗 Neu zuordnen
+                  </button>
+                </div>
+
+                {reassignId === mv.id && (
+                  <div className="mt-3 space-y-2 rounded-md border border-primary/40 bg-muted/40 p-3">
+                    <p className="text-xs font-medium">Zuordnung korrigieren</p>
+                    <label className="block text-xs">
+                      Wohnung
+                      <select
+                        value={reassignWohnung}
+                        onChange={(e) => setReassignWohnung(e.target.value)}
+                        className="mt-0.5 w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+                      >
+                        <option value="">— wählen —</option>
+                        {wohnungen.map((w) => (
+                          <option key={w.id} value={w.id}>
+                            {w.bezeichnung}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block text-xs">
+                      Mieter
+                      <select
+                        value={reassignMieter}
+                        onChange={(e) => setReassignMieter(e.target.value)}
+                        className="mt-0.5 w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+                      >
+                        <option value="">— optional —</option>
+                        {mieter.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={reassignBusy || !reassignWohnung}
+                        onClick={saveReassign}
+                        className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                      >
+                        {reassignBusy ? "Speichere…" : "Speichern & Stammdaten sync"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setReassignId(null)}
+                        className="rounded-md border border-border px-3 py-1.5 text-xs"
+                      >
+                        Abbrechen
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <NachtragUploader mietvertrag={mv} onDone={refresh} />
               </div>

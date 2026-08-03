@@ -137,8 +137,9 @@ export default function PruefungPage() {
         <div>
           <h1 className="mb-1 text-xl font-bold">🔍 Plausibilitätsprüfung</h1>
           <p className="text-sm text-muted-foreground">
-            Automatisierte KI-Prüfung deiner Stammdaten und Dokumentenzuordnung. Findet Fehler
-            erstellt daraus eine To-do-Liste, die du komplett oder einzeln freigeben kannst.
+            Stammdaten, Ablage und System-Module prüfen. Fehlende Zuordnungen und unbearbeitete
+            Unterlagen erscheinen als To-do mit Direktlink – oder du gibst dem Agent den Auftrag
+            („ordne offene Ablage-Dokumente zu“ / „korrigiere Mietvertrags-Zuordnung“).
           </p>
         </div>
         <button
@@ -236,13 +237,21 @@ export default function PruefungPage() {
                         <p className="text-sm font-medium">
                           {SCHWEREGRAD_ICON[b.schweregrad]} {b.titel}
                         </p>
-                        <p className="text-xs text-muted-foreground">{b.beschreibung}</p>
+                        <p className="whitespace-pre-line text-xs text-muted-foreground">{b.beschreibung}</p>
+                        {b.linkHref && (
+                          <a
+                            href={b.linkHref}
+                            className="mt-1 inline-block text-xs font-medium text-primary hover:underline"
+                          >
+                            → Zur Bearbeitung ({b.linkHref})
+                          </a>
+                        )}
                         {b.vorschlag && (
                           <p className="mt-0.5 text-xs text-primary">→ Vorschlag: {b.vorschlag.beschreibung}</p>
                         )}
-                        {!b.vorschlag && (
+                        {!b.vorschlag && !b.linkHref && (
                           <p className="mt-0.5 text-xs italic text-muted-foreground">
-                            Kein automatischer Korrekturvorschlag – bitte manuell prüfen.
+                            Kein automatischer Korrekturvorschlag – bitte manuell prüfen oder Agent beauftragen.
                           </p>
                         )}
                       </div>

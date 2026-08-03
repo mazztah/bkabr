@@ -489,6 +489,67 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "list_ablage",
+      description:
+        "Listet Dokumente in der Ablage (Dokumenteneingang). Filter: status (neu|in_pruefung|zugeordnet|verworfen|offen), erkannter_typ (z.B. mietvertrag). Nutzen bei 'zeig offene Unterlagen' oder 'welche Mietverträge liegen in der Ablage'.",
+      parameters: {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            description: "neu | in_pruefung | zugeordnet | verworfen | offen (= neu+in_pruefung)",
+          },
+          erkannter_typ: {
+            type: "string",
+            description: "Optional z.B. mietvertrag, rechnung, pm_vertrag",
+          },
+          limit: { type: "number", description: "Max. Treffer (Standard 30)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "reassign_mietvertrag",
+      description:
+        "Ordnet einen bestehenden Mietvertrag neu zu (Wohnung und/oder Mieter) und aktualisiert optional die Mieter-Stammdaten aus den Vertragsfeldern (Kaltmiete, NK, Mietbeginn). Nutzen wenn Zuordnung falsch ist oder fehlte.",
+      parameters: {
+        type: "object",
+        properties: {
+          mietvertrag_id: { type: "string", description: "ID des Mietvertrags" },
+          wohnung_id: { type: "string", description: "Neue Wohnungs-ID" },
+          mieter_id: { type: "string", description: "Neue Mieter-ID (optional)" },
+          sync_mieter_stammdaten: {
+            type: "boolean",
+            description: "Wenn true (Standard): Kaltmiete/NK/Daten aus Vertrag auf Mieter übernehmen",
+          },
+        },
+        required: ["mietvertrag_id", "wohnung_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_mietvertraege",
+      description:
+        "Listet Mietverträge mit Mieter-, Wohnungs- und Stammdaten. Optional Filter nach fehlender Zuordnung (ohne_mieter / ohne_wohnung).",
+      parameters: {
+        type: "object",
+        properties: {
+          ohne_mieter: { type: "boolean" },
+          ohne_wohnung: { type: "boolean" },
+          query: { type: "string", description: "Suche in Dateiname / Nummer" },
+        },
+        required: [],
+      },
+    },
+  },
 ];
 
 // -------- Kontext-Helfer --------
@@ -1562,6 +1623,119 @@ case "list_unpassende_dokumente": {
           (l) => `${l.name}: ${l.strasse} ${l.hausnummer}, ${l.plz} ${l.ort}`
         ),
         dokumente: result,
+      };
+    }
+
+    case "list_ablage": {
+      const docs = await ablageDb.list();
+      const statusFilter = String(args.status || "").toLowerCase();
+      const typFilter = String(args.erkannter_typ || "").toLowerCase();
+      const limit = Math.min(Number(args.limit) || 30, 80);
+      let filtered = docs;
+      if (statusFilter === "offen") {
+        filtered = filtered.filter((d) => d.status === "neu" || d.status === "in_pruefung");
+      } else if (statusFilter) {
+        filtered = filtered.filter((d) => d.status === statusFilter);
+      }
+      if (typFilter) {
+        filtered = filtered.filter((d) => (d.erkannterTyp || "").toLowerCase().includes(typFilter));
+      }
+      filtered = [...filtered].sort(
+        (a, b) => new Date(b.hochgeladenAm).getTime() - new Date(a.hochgeladenAm).getTime()
+      );
+      return {
+        anzahl: filtered.length,
+        link: "/ablage",
+        dokumente: filtered.slice(0, limit).map((d) => ({
+          id: d.id,
+          dateiName: d.dateiName,
+          status: d.status,
+          erkannterTyp: d.erkannterTyp,
+          konfidenz: d.konfidenz,
+          zugeordnetAn: d.zugeordnetAn
+            ? `${d.zugeordnetAn.art}: ${d.zugeordnetAn.label}`
+            : null,
+          hochgeladenAm: d.hochgeladenAm,
+        })),
+      };
+    }
+
+    case "list_mietvertraege": {
+      const [vertraege, mieterAll, wohnungenAll] = await Promise.all([
+        mietvertraegeDb.list(),
+        mieterDb.list(),
+        wohnungenDb.list(),
+      ]);
+      const q = String(args.query || "").toLowerCase();
+      let list = vertraege;
+      if (args.ohne_mieter) list = list.filter((v) => !v.mieterId);
+      if (args.ohne_wohnung) list = list.filter((v) => !v.wohnungId || !wohnungenAll.some((w) => w.id === v.wohnungId));
+      if (q) {
+        list = list.filter(
+          (v) =>
+            (v.dateiName || "").toLowerCase().includes(q) ||
+            (v.nummer || "").toLowerCase().includes(q)
+        );
+      }
+      return {
+        anzahl: list.length,
+        link: "/mietvertraege",
+        mietvertraege: list.slice(0, 40).map((v) => {
+          const m = mieterAll.find((x) => x.id === v.mieterId);
+          const w = wohnungenAll.find((x) => x.id === v.wohnungId);
+          return {
+            id: v.id,
+            dateiName: v.dateiName,
+            status: v.status,
+            mieter: m?.name || null,
+            mieterId: v.mieterId || null,
+            wohnung: w?.bezeichnung || null,
+            wohnungId: v.wohnungId || null,
+            sollMiete: v.sollMiete,
+            mietbeginn: v.mietbeginn,
+            nebenkostenVorauszahlung: v.nebenkostenVorauszahlung,
+          };
+        }),
+      };
+    }
+
+    case "reassign_mietvertrag": {
+      const mvId = String(args.mietvertrag_id || "");
+      const wohnungId = String(args.wohnung_id || "");
+      const mieterId = args.mieter_id ? String(args.mieter_id) : undefined;
+      const sync = args.sync_mieter_stammdaten !== false;
+      const mv = await mietvertraegeDb.get(mvId);
+      if (!mv) return { error: `Mietvertrag ${mvId} nicht gefunden` };
+      const wohnung = await wohnungenDb.get(wohnungId);
+      if (!wohnung) return { error: `Wohnung ${wohnungId} nicht gefunden` };
+      if (mieterId) {
+        const m = await mieterDb.get(mieterId);
+        if (!m) return { error: `Mieter ${mieterId} nicht gefunden` };
+      }
+      const patch: Record<string, unknown> = { wohnungId };
+      if (mieterId) patch.mieterId = mieterId;
+      const updated = await mietvertraegeDb.update(mvId, patch as any);
+      let mieterPatch: Record<string, unknown> | null = null;
+      const targetMieterId = mieterId || mv.mieterId;
+      if (sync && targetMieterId) {
+        mieterPatch = { wohnungId };
+        if (mv.sollMiete) mieterPatch.kaltmiete = mv.sollMiete;
+        if (mv.nebenkostenVorauszahlung != null)
+          mieterPatch.nebenkostenVorauszahlung = mv.nebenkostenVorauszahlung;
+        if (mv.mietbeginn) mieterPatch.mietbeginn = mv.mietbeginn;
+        if (mv.mietende) mieterPatch.mietende = mv.mietende;
+        await mieterDb.update(targetMieterId, mieterPatch as any);
+      }
+      await logEvent(
+        "aenderung",
+        `Agent: Mietvertrag „${mv.dateiName}" neu zugeordnet (Wohnung ${wohnung.bezeichnung}${mieterId ? ", Mieter gesetzt" : ""}).`,
+        { art: "Mietvertrag", id: mvId }
+      );
+      return {
+        ok: true,
+        mietvertrag: updated,
+        mieterAktualisiert: mieterPatch,
+        hinweis: "Zuordnung gespeichert. UI: /mietvertraege",
       };
     }
 
