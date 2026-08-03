@@ -350,16 +350,54 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
-      name: "delete_abrechnung",
+      name: "list_abrechnungen",
       description:
-        "Löscht eine leere/fehlerhafte Abrechnung. Erfordert user_confirmed=true.",
+        "Listet Rechnungen/Abrechnungen (Belege). Filter optional nach Name, Firma, Liegenschaft, Status, Adresse. Vor dem Löschen nutzen, um IDs zu finden. 'Rechnung' und 'Abrechnung' meinen denselben Datensatz.",
       parameters: {
         type: "object",
         properties: {
-          abrechnung_id: { type: "string" },
-          user_confirmed: { type: "boolean" },
+          query: {
+            type: "string",
+            description: "Freitext: Name, Firma, Adresse, Rechnungsnummer, Liegenschaft",
+          },
+          status: {
+            type: "string",
+            description: "Optional: Rohdaten|Validierung|Fertig",
+          },
+          limit: {
+            type: "number",
+            description: "Max. Treffer (Default 30)",
+          },
         },
-        required: ["abrechnung_id"],
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_abrechnung",
+      description:
+        "Löscht eine oder mehrere Rechnungen/Abrechnungen (Belege im Modul Rechnungen). Suche per abrechnung_id, query (Name/Firma/Adresse) oder abrechnung_ids. Bei mehreren Treffer ohne eindeutige ID: Liste zurückgeben. Erfordert user_confirmed=true zum endgültigen Löschen. Nach Nutzer-Bestätigung ('ja', 'lösche', 'endgültig') sofort mit user_confirmed=true erneut aufrufen.",
+      parameters: {
+        type: "object",
+        properties: {
+          abrechnung_id: { type: "string", description: "Einzel-ID" },
+          abrechnung_ids: {
+            type: "array",
+            items: { type: "string" },
+            description: "Mehrere IDs auf einmal löschen",
+          },
+          query: {
+            type: "string",
+            description: "Name, Firma, Adresse oder Teilstring wenn ID unbekannt",
+          },
+          user_confirmed: {
+            type: "boolean",
+            description: "Muss true sein zum endgültigen Löschen, sonst needsConfirmation",
+          },
+        },
+        required: [],
       },
     },
   },
@@ -1256,23 +1294,150 @@ async function executeTool(
       };
     }
 
+    case "list_abrechnungen": {
+      const q = String(args.query || "").trim().toLowerCase();
+      const statusFilter = args.status ? String(args.status).trim() : "";
+      const limit = Math.min(Math.max(Number(args.limit) || 30, 1), 100);
+      let list = await listAbrechnungen();
+      if (statusFilter) {
+        list = list.filter((a) => String(a.status || "").toLowerCase() === statusFilter.toLowerCase());
+      }
+      if (q) {
+        list = list.filter((a) => {
+          const hay = [
+            a.name,
+            a.adresse,
+            a.nummer,
+            a.zeitraum,
+            a.status,
+            a.mieterName,
+            a.vermieterName,
+            (a as any).firma,
+            (a as any).rechnungsnummer,
+            a.liegenschaftId,
+          ]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+          return hay.includes(q) || q.split(/\s+/).every((p) => hay.includes(p));
+        });
+      }
+      const items = list.slice(0, limit).map((a) => ({
+        id: a.id,
+        name: a.name,
+        adresse: a.adresse,
+        zeitraum: a.zeitraum,
+        gesamtSumme: a.gesamtSumme,
+        status: a.status,
+        nummer: a.nummer,
+        liegenschaftId: a.liegenschaftId,
+        updatedAt: a.updatedAt,
+      }));
+      return { anzahl: list.length, gezeigt: items.length, items };
+    }
+
     case "delete_abrechnung": {
-      const id = String(args.abrechnung_id || "");
+      const list = await listAbrechnungen();
+      const ids: string[] = [];
+      if (Array.isArray(args.abrechnung_ids)) {
+        for (const x of args.abrechnung_ids) {
+          if (x) ids.push(String(x));
+        }
+      }
+      if (args.abrechnung_id) ids.push(String(args.abrechnung_id));
+
+      // Suche per query (Name/Firma/Adresse), wenn keine ID
+      if (ids.length === 0 && args.query) {
+        const q = String(args.query).trim().toLowerCase();
+        const treffer = list.filter((a) => {
+          const hay = [
+            a.name,
+            a.adresse,
+            a.nummer,
+            a.mieterName,
+            (a as any).firma,
+            (a as any).rechnungsnummer,
+          ]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+          return hay.includes(q) || q.split(/\s+/).every((p) => p && hay.includes(p));
+        });
+        if (treffer.length === 0) {
+          return { error: `Keine Rechnung/Abrechnung zu „${args.query}" gefunden. list_abrechnungen nutzen.` };
+        }
+        if (treffer.length > 1 && !args.user_confirmed) {
+          return {
+            error: "Mehrere Treffer – bitte abrechnung_id wählen oder alle bestätigen",
+            treffer: treffer.slice(0, 20).map((a) => ({
+              id: a.id,
+              name: a.name,
+              adresse: a.adresse,
+              gesamtSumme: a.gesamtSumme,
+              status: a.status,
+            })),
+          };
+        }
+        ids.push(...treffer.map((a) => a.id));
+      }
+
+      if (ids.length === 0) {
+        return { error: "abrechnung_id, abrechnung_ids oder query erforderlich" };
+      }
+
+      const uniqueIds = [...new Set(ids)];
+      const targets = uniqueIds
+        .map((id) => list.find((a) => a.id === id))
+        .filter(Boolean) as Awaited<ReturnType<typeof listAbrechnungen>>;
+
+      if (targets.length === 0) {
+        return { error: "Rechnung/Abrechnung nicht gefunden" };
+      }
+
       if (!args.user_confirmed) {
-        const a = await listAbrechnungen().then((list) => list.find((x) => x.id === id));
+        if (targets.length === 1) {
+          const a = targets[0];
+          return {
+            needsConfirmation: true,
+            frage: `Rechnung/Abrechnung „${a.name}" (${a.gesamtSumme ?? "?"} €, Status ${a.status}, ${a.adresse || "ohne Adresse"}) wirklich endgültig löschen?`,
+            abrechnung_id: a.id,
+            abrechnung_ids: [a.id],
+          };
+        }
+        const sum = targets.reduce((s, a) => s + (Number(a.gesamtSumme) || 0), 0);
         return {
           needsConfirmation: true,
-          frage: `Abrechnung „${a?.name || id}" (Summe ${a?.gesamtSumme ?? "?"} €, Status ${a?.status}) wirklich löschen?`,
-          abrechnung_id: id,
+          frage: `${targets.length} Rechnungen/Abrechnungen (Summe ca. ${sum} €) wirklich endgültig löschen?`,
+          abrechnung_ids: targets.map((a) => a.id),
+          treffer: targets.slice(0, 15).map((a) => ({
+            id: a.id,
+            name: a.name,
+            gesamtSumme: a.gesamtSumme,
+            status: a.status,
+          })),
         };
       }
-      const ok = await deleteAbrechnung(id);
-      if (!ok) return { error: "Abrechnung nicht gefunden" };
-      await logEvent("loeschung", `Abrechnung ${id} vom Agent gelöscht.`, {
-        art: "Abrechnung",
-        id,
-      });
-      return { ok: true };
+
+      const geloescht: { id: string; name: string }[] = [];
+      const fehlgeschlagen: string[] = [];
+      for (const a of targets) {
+        const ok = await deleteAbrechnung(a.id);
+        if (ok) {
+          geloescht.push({ id: a.id, name: a.name });
+          await logEvent("loeschung", `Rechnung/Abrechnung „${a.name}" (${a.id}) vom Agent gelöscht.`, {
+            art: "Abrechnung",
+            id: a.id,
+          });
+        } else {
+          fehlgeschlagen.push(a.id);
+        }
+      }
+      return {
+        ok: true,
+        anzahl: geloescht.length,
+        geloescht,
+        fehlgeschlagen: fehlgeschlagen.length ? fehlgeschlagen : undefined,
+      };
     }
 
     case "update_ablage_zuordnung": {
@@ -2286,11 +2451,13 @@ Du hast Schreibrechte über Tools (Datenbank-Updates). Behaupte NIEMALS, du kön
 - delete_mieter – Mieter löschen (user_confirmed; optional delete_vertraege).
 - delete_ablage_dokument – Ablage-Datei löschen (user_confirmed; ID oder datei_name).
 - delete_liegenschaft – ganze Liegenschaft löschen (user_confirmed / force bei Abhängigkeiten).
+- list_abrechnungen – Rechnungen/Abrechnungen (Belege) auflisten; Filter query/status.
+- delete_abrechnung – Rechnung/Abrechnung löschen (ID, query oder abrechnung_ids; user_confirmed=true). „Lösche die Rechnung X“ → list_abrechnungen oder direkt delete_abrechnung mit query.
 - update_ablage_zuordnung – Ablageort ändern (datei_name + ziel_liegenschaft_query möglich).
 - delete_gebaeude / delete_wohnung / delete_liegenschaft (cascade) – Hierarchie kaskadiert löschen.
 - beende_pm_vertrag – PM beenden → Liegenschaft inaktiv (raus aus Analysen).
-- Löschen immer erst mit needsConfirmation fragen, dann user_confirmed=true ausführen, wenn der Nutzer klar bestätigt („ja“, „lösche“, „endgültig“).
-- list_mietvertraege / list_ablage / list_unpassende_dokumente – Übersicht.
+- Löschen immer erst mit needsConfirmation fragen, dann user_confirmed=true ausführen, wenn der Nutzer klar bestätigt („ja“, „lösche“, „endgültig“, „ja bitte“, „mach das“). Bestätigung aus dem Chat-Verlauf erkennen und Tool erneut mit user_confirmed=true aufrufen – nicht erneut nur fragen.
+- list_mietvertraege / list_ablage / list_unpassende_dokumente / list_abrechnungen – Übersicht.
 - get_pruef_befunde / run_pruefung / execute_safe_cleanup – Prüfbefunde.
 
 ## Module der Plausibilitätsprüfung
@@ -3013,8 +3180,13 @@ export function isAgentIntent(message: string): boolean {
     return true;
   }
 
-  // Löschen Liegenschaften
-  if (/\b(loesch|lösch|entfernen)\w*/.test(m) && /\b(liegenschaft|pm[- ]?vertrag|duplikat)\b/.test(m)) {
+  // Löschen: Liegenschaften, Rechnungen/Abrechnungen, Belege, Mieter, Verträge, Ablage, Gebäude
+  if (
+    /\b(loesch|lösch|entfernen|entferne|remove)\w*/.test(m) &&
+    /\b(liegenschaft|pm[- ]?vertrag|duplikat|rechnung|rechnungen|abrechnung|abrechnungen|beleg|belege|mieter|mietvertrag|mietvertraege|ablage|dokument|geb(ae|ä)ude|wohnung)\b/.test(
+      m
+    )
+  ) {
     return true;
   }
   if (
@@ -3031,7 +3203,17 @@ export function isAgentIntent(message: string): boolean {
   ) {
     return true;
   }
-  if (/\b(trotzdem|force)\b/.test(m) && /\b(loesch|entfernen|liegenschaft)\w*/.test(m)) {
+  if (/\b(trotzdem|force)\b/.test(m) && /\b(loesch|entfernen|liegenschaft|rechnung|abrechnung)\w*/.test(m)) {
+    return true;
+  }
+
+  // Bestätigung nach needsConfirmation (z.B. „ja“, „lösche“, „endgültig“) – Agent muss Tool mit user_confirmed ausführen
+  if (
+    /^(ja|yes|ok|okay|genau|richtig|mach\s*das|bitte\s*loeschen|bitte\s*löschen|endgueltig|endgültig|loeschen|löschen|bestaetigt|bestätigt|einverstanden)(\b|[!.\s,]|$)/.test(
+      m.trim()
+    ) ||
+    /\b(ja[,.]?\s*(bitte|loesch|lösch|mach|genau)|user_confirmed|endgueltig\s+loesch|endgültig\s+lösch)\w*/.test(m)
+  ) {
     return true;
   }
 

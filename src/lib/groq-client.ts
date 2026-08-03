@@ -421,6 +421,125 @@ function messageHasImages(params: ChatParams): boolean {
  * Bei Bild-Eingaben (Vision) wird nicht auf reine Text-Modelle gewechselt, sondern
  * optional auf Cerebras gemma-4-31b bzw. Cloudflare gemma-4-26b (vision-fähig).
  */
+
+/** Grobe Token-Schätzung (DE/EN): ~4 Zeichen ≈ 1 Token. */
+function estimateTokens(text: string): number {
+  if (!text) return 0;
+  return Math.ceil(String(text).length / 4);
+}
+
+function estimateMessagesTokens(messages: ChatParams["messages"]): number {
+  let n = 0;
+  for (const m of messages || []) {
+    const c = (m as any)?.content;
+    if (typeof c === "string") n += estimateTokens(c);
+    else if (Array.isArray(c)) {
+      for (const part of c) {
+        if (typeof part?.text === "string") n += estimateTokens(part.text);
+        else if (part?.type === "image_url" || part?.type === "image") n += 800; // Vision-Pauschale
+      }
+    }
+    // tool_calls / name
+    const tcs = (m as any)?.tool_calls;
+    if (Array.isArray(tcs)) {
+      for (const tc of tcs) {
+        n += estimateTokens(tc?.function?.name || "");
+        n += estimateTokens(tc?.function?.arguments || "");
+      }
+    }
+    n += 4; // role overhead
+  }
+  return n;
+}
+
+/**
+ * Nur für qwen/qwen3.6-27b (Groq TPM 8000): Nachrichten so kürzen und
+ * max_completion_tokens so setzen, dass Input+Output ≤ 7500 Tokens bleiben.
+ * Andere Modelle bleiben unberührt.
+ */
+function applyQwenTokenBudget(model: string, params: ChatParams): ChatParams {
+  if (!model.includes("qwen/qwen3.6-27b") && !model.includes("qwen3.6-27b")) {
+    return params;
+  }
+
+  const TPM_SAFE = 7500; // unter dem Hard-Limit 8000 TPM
+  const MIN_COMPLETION = 256;
+  const messages = [...(params.messages || [])];
+
+  // System + letzte User-Nachricht priorisieren; ältere Turns kürzen
+  let inputTokens = estimateMessagesTokens(messages);
+  const toolsTax = params.tools?.length
+    ? Math.min(2000, estimateTokens(JSON.stringify(params.tools)))
+    : 0;
+  inputTokens += toolsTax;
+
+  // max completion so wählen, dass Input + Completion ≤ TPM_SAFE
+  let maxCompletion =
+    (params as any).max_completion_tokens ??
+    (params as any).max_tokens ??
+    2000;
+  maxCompletion = Math.min(maxCompletion, Math.max(MIN_COMPLETION, TPM_SAFE - inputTokens));
+
+  // Wenn Input schon zu groß: von vorn (älteste non-system) kürzen / truncaten
+  if (inputTokens + MIN_COMPLETION > TPM_SAFE) {
+    const system = messages.filter((m) => m.role === "system");
+    const rest = messages.filter((m) => m.role !== "system");
+    // Behalte die letzten N Nachrichten, bis Budget passt
+    let kept = [...rest];
+    while (kept.length > 1) {
+      const trial = [...system, ...kept];
+      const t = estimateMessagesTokens(trial) + toolsTax;
+      if (t + MIN_COMPLETION <= TPM_SAFE) break;
+      // älteste droppen
+      kept = kept.slice(1);
+    }
+    // Falls immer noch zu groß: letzte User-Nachricht hart kürzen
+    let trialMsgs = [...system, ...kept];
+    let t = estimateMessagesTokens(trialMsgs) + toolsTax;
+    if (t + MIN_COMPLETION > TPM_SAFE) {
+      const budgetForLast = Math.max(500, TPM_SAFE - toolsTax - MIN_COMPLETION - 200);
+      trialMsgs = trialMsgs.map((m, idx) => {
+        if (idx < trialMsgs.length - 1) return m;
+        const c = (m as any).content;
+        if (typeof c !== "string") return m;
+        const maxChars = budgetForLast * 4;
+        if (c.length <= maxChars) return m;
+        return {
+          ...m,
+          content:
+            c.slice(0, Math.floor(maxChars * 0.7)) +
+            "\n…[gekürzt wegen qwen TPM-Limit]…\n" +
+            c.slice(-Math.floor(maxChars * 0.25)),
+        } as any;
+      });
+      t = estimateMessagesTokens(trialMsgs) + toolsTax;
+    }
+    maxCompletion = Math.min(
+      maxCompletion,
+      Math.max(MIN_COMPLETION, TPM_SAFE - (estimateMessagesTokens(trialMsgs) + toolsTax))
+    );
+    console.warn(
+      `[groq] qwen/qwen3.6-27b: Token-Budget angepasst (input≈${estimateMessagesTokens(trialMsgs) + toolsTax}, max_completion=${maxCompletion}, safe=${TPM_SAFE})`
+    );
+    return {
+      ...params,
+      messages: trialMsgs,
+      max_completion_tokens: maxCompletion,
+    } as ChatParams;
+  }
+
+  if (maxCompletion < ((params as any).max_completion_tokens ?? 2000)) {
+    console.warn(
+      `[groq] qwen/qwen3.6-27b: max_completion_tokens auf ${maxCompletion} begrenzt (input≈${inputTokens}, safe=${TPM_SAFE})`
+    );
+  }
+  return {
+    ...params,
+    max_completion_tokens: maxCompletion,
+  } as ChatParams;
+}
+
+
 export async function createChatCompletion(params: ChatParams): Promise<ChatCompletion> {
   const hasImages = messageHasImages(params);
   const isExplicitVision =
@@ -498,7 +617,8 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
         err.status = 401;
         throw err;
       }
-      const { model: _ignored, ...rest } = params;
+      const budgeted = applyQwenTokenBudget(model, params);
+      const { model: _ignored, ...rest } = budgeted;
       return await groq.chat.completions.create({
         ...rest,
         model,
