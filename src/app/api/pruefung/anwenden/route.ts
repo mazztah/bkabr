@@ -23,6 +23,15 @@ export async function POST(req: NextRequest) {
       ergebnisse.push({ befundId, ok: true, meldung: "Bereits übernommen." });
       continue;
     }
+    if (!befund.vorschlag) {
+      ergebnisse.push({
+        befundId,
+        ok: false,
+        meldung:
+          "Kein Auto-Patch. Chat: „Stammdaten nachtragen“ (Agent) oder Deep-Link nutzen.",
+      });
+      continue;
+    }
     const { ok, meldung } = await wendeBefundAn(befund);
     befund.status = ok ? "uebernommen" : "offen";
     ergebnisse.push({ befundId, ok, meldung });

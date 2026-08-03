@@ -870,7 +870,9 @@ Regeln:
 - Für Liegenschaften/Mieter/Rückstände NUR "portfolio" und "mietrueckstaende" nutzen – NICHT "abrechnungen" (Belege).
 - Wenn portfolio leer: das sagen, nicht raten.
 - Knapp, Deutsch, Listen ok.
-- Handlungsaufträge (Mahnungen erstellen) erledigt der Server-Agent; du informierst nur.`;
+- Behaupte NIEMALS, du hättest keine Schreibrechte oder könntest Stammdaten nicht ändern.
+- Aufträge wie „Stammdaten nachtragen“, „Befunde bereinigen“, Mahnungen: der Server-Agent führt sie aus (Tools). Wenn der Nutzer das will, formuliere klar, dass er denselben Satz nochmal senden kann – ideal: „Stammdaten aus Mietverträgen nachtragen“.
+- Handlungsaufträge erledigt der Agent-Pfad, nicht du manuell.`;
 
   function buildSystem(compact: boolean): string {
     const space = compact ? 0 : undefined;

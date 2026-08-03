@@ -1747,35 +1747,32 @@ case "list_unpassende_dokumente": {
 // -------- Agent-Loop --------
 
 const AGENT_SYSTEM = `Du bist "BetriebsKostenBot Agent" – ein Handlungs-Assistent in einer deutschen Hausverwaltungs-App.
-Du kannst Tools aufrufen für: Schriftverkehr (Mahnungen, Anschreiben) UND vollständige Stammdaten-Bereinigung nach der Plausibilitätsprüfung.
+Du hast Schreibrechte über Tools (Datenbank-Updates). Behaupte NIEMALS, du könntest Stammdaten nicht speichern oder hättest keine Schreibrechte.
 
-## Module der Plausibilitätsprüfung (nichts auslassen)
-liegenschaften · gebaeude · wohnungen · mieter · mietvertraege · pmVertraege · eigentuemer · abrechnungen · kontoauszuege · ablage
+## Wichtige Tools (Stammdaten)
+- sync_mieter_from_mietvertraege – übernimmt Kaltmiete, NK, Mietbeginn/Ende aus verknüpften Mietverträgen in die Mieter-Stammdaten. Bei „Stammdaten nachtragen/aktualisieren/ergänzen“ SOFORT aufrufen.
+- reassign_mietvertrag – Wohnung/Mieter eines Vertrags neu setzen + optional Stammdaten sync.
+- list_mietvertraege / list_ablage / list_unpassende_dokumente – Übersicht.
+- get_pruef_befunde / run_pruefung / execute_safe_cleanup – Prüfbefunde.
 
-## Bereinigungs-Workflow (wenn Nutzer Fehler/Hinweise korrigieren will)
-1. get_pruef_befunde laden (oder run_pruefung wenn keiner existiert).
-2. analyze_and_plan_cleanup – Überblick.
-3. Wenn der Nutzer EXPLIZIT sagt „lege die fehlenden Gebäude an" / „Gebäude anlegen" / „beseitige die Probleme":
-   → execute_safe_cleanup mit allow_create_gebaeude=true SOFORT (keine erneute Rückfrage).
-4. Sonst zweifelsfreie Fixes mit execute_safe_cleanup (ohne allow_*): Abrechnung Fertig+0€ → Rohdaten; Befunde mit vorschlag anwenden.
-5. Wenn Nutzer „zeig mir Dokumente die zu keiner Liegenschaft passen" / „unpassende Dokumente" sagt:
-   → list_unpassende_dokumente und die Liste klar auf Deutsch ausgeben (Dateiname, aktuelle Zuordnung, Grund).
-6. Wenn der Nutzer eine Wohnfläche nennt (z.B. „alle 77 m²“): update_wohnung / Batch auf alle Wohnungen ohne Fläche – keine erneute Rückfrage.
-7. Wenn der Nutzer Liegenschaften ohne PM-Vertrag zum Löschen freigibt: löschen (leere/Duplikate). Nicht löschen, wenn noch echte Wohnungen/Mieter dranhängen – dann melden.
-8. PM-Verträge und Wohnflächen NICHT erfinden, wenn der Nutzer keine Zahl/Freigabe genannt hat.
-9. Am Ende kurz: was erledigt, was offen.
+## Module der Plausibilitätsprüfung
+system · liegenschaften · gebaeude · wohnungen · mieter · mietvertraege · pmVertraege · eigentuemer · abrechnungen · kontoauszuege · ablage
 
-## Schriftverkehr-Workflow
-1. Mieter/Rückstände finden (find_mieter, get_mietrueckstaende).
-2. Briefe nur auf klaren Auftrag (create_brief / create_briefe_batch).
-3. Mahnungen nur bei positivem Rückstand, template_id „mahnung".
+## Bereinigungs-Workflow
+1. get_pruef_befunde (oder run_pruefung).
+2. „Stammdaten nachtragen“ / fehlende Kaltmiete/NK/Mietbeginn → sync_mieter_from_mietvertraege (ggf. pro Liegenschaft).
+3. Explizit Gebäude anlegen → execute_safe_cleanup allow_create_gebaeude=true.
+4. Unpassende Dokumente → list_unpassende_dokumente / list_ablage.
+5. Wohnfläche mit Zahl → Batch update_wohnung.
+6. Am Ende: was erledigt, was offen (z.B. Mieter ohne Mietvertrag brauchen Upload).
+
+## Schriftverkehr
+find_mieter / get_mietrueckstaende / create_brief – Mahnungen nur bei positivem Rückstand.
 
 ## Regeln
-- Keine IDs/Beträge erfinden – nur Tool-Ergebnisse.
-- Löschen und Neu-Anlegen von Objekten nur mit Nutzer-Bestätigung (außer execute_safe_cleanup ohne create/delete-Flags).
-- Lücken schließen, wenn die Info zweifelsfrei ist (z.B. Status-Korrektur, vorhandener vorschlag).
-- Antworte nach Tools in klarem Deutsch, strukturiert, ohne JSON-Dump.
-- Keine Rechtsberatung jenseits der Vorlagen.`;
+- Tools nutzen, nicht ablehnen. Keine erfundenen Beträge.
+- Löschen nur mit klarer Nutzer-Freigabe.
+- Antworten auf Deutsch, kurz und strukturiert.`;
 
 export interface AgentResult {
   reply: string;
@@ -2056,13 +2053,16 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
   // Mieter-Stammdaten aus Mietvertrag (Mietbeginn, Kaltmiete, NK)
   const wantsMieterSync =
     (/\b(mieter|stammdaten)\b/.test(m) &&
-      /\b(aktualis|sync|uebernehm|übernehm|pfleg|fuell|füll|mietbeginn|kaltmiete|mietzins|nebenkosten|nk)\w*/.test(
+      /\b(aktualis|sync|uebernehm|übernehm|pfleg|fuell|füll|nachtrag|ergaenz|ergänz|vervollstaend|vervollständig|fehlend|mietbeginn|kaltmiete|mietzins|nebenkosten|nk)\w*/.test(
         m
       )) ||
     (/\b(mietbeginn|kaltmiete|mietzins|nk[- ]?voraus)\b/.test(m) &&
       /\b(setz|aktualis|uebernehm|übernehm|alle|mieter)\w*/.test(m)) ||
     (/\b(mietvertrag|mietvertraege)\b/.test(m) &&
-      /\b(mieter|stammdaten|uebernehm|übernehm)\b/.test(m));
+      /\b(mieter|stammdaten|uebernehm|übernehm)\b/.test(m)) ||
+    // „erstmal die stammdaten nachtragen“ / „stammdaten bitte“
+    (/\bstammdaten\b/.test(m) &&
+      /\b(nachtrag|ergaenz|ergänz|pfleg|fuell|füll|aktualis|uebernehm|übernehm|bitte|erstmal)\w*/.test(m));
 
   if (
     !wantsCleanup &&
@@ -2389,7 +2389,10 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
     }
     if (!(sync?.anzahl > 0)) {
       lines.push(
-        "• Keine übernehmbaren Werte gefunden (Mietverträge ohne sollMiete/mietbeginn oder Felder bereits gesetzt)."
+        "• Keine übernehmbaren Werte gefunden (Mietverträge ohne sollMiete/mietbeginn, ohne Mieter-Verknüpfung, oder Felder bereits gesetzt)."
+      );
+      lines.push(
+        "• Tipp: Unter /mietvertraege Verträge mit „Neu zuordnen“ an Wohnung+Mieter hängen, danach erneut „Stammdaten nachtragen“."
       );
     }
   }
@@ -2482,11 +2485,15 @@ export function isAgentIntent(message: string): boolean {
     return true;
   }
 
-  // Mieter-Stammdaten aus Vertrag
+  // Mieter-Stammdaten aus Vertrag / nachtragen
   if (
     (/\b(mieter|stammdaten)\b/.test(m) &&
-      /\b(aktualis|sync|uebernehm|pfleg|mietbeginn|kaltmiete|mietzins|nebenkosten)\w*/.test(m)) ||
-    (/\b(mietbeginn|kaltmiete|mietzins)\b/.test(m) && /\b(alle|mieter|setz|aktualis)\w*/.test(m))
+      /\b(aktualis|sync|uebernehm|übernehm|pfleg|fuell|füll|nachtrag|ergaenz|ergänz|vervollstaend|vervollständig|fehlend|mietbeginn|kaltmiete|mietzins|nebenkosten)\w*/.test(
+        m
+      )) ||
+    (/\b(mietbeginn|kaltmiete|mietzins)\b/.test(m) && /\b(alle|mieter|setz|aktualis)\w*/.test(m)) ||
+    (/\bstammdaten\b/.test(m) &&
+      /\b(nachtrag|ergaenz|ergänz|pfleg|fuell|füll|bitte|erstmal)\w*/.test(m))
   ) {
     return true;
   }
