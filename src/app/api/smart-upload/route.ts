@@ -585,7 +585,27 @@ async function verarbeiteDatei(
     }
   } catch (e: any) {
     console.error(`Sammel-Upload: Fehler bei ${file.name}:`, e);
-    return { ...ergebnis, fehler: e.message || "Verarbeitung fehlgeschlagen" };
+    const raw = String(e?.message || e || "Verarbeitung fehlgeschlagen");
+    const lower = raw.toLowerCase();
+    let fehler = raw;
+    if (
+      lower.includes("rate limit") ||
+      lower.includes("requests per minute") ||
+      lower.includes("tokens per day") ||
+      lower.includes("too many requests") ||
+      e?.status === 429
+    ) {
+      fehler =
+        "API-Rate-Limit erreicht (Free-Tier). Bitte 1–2 Minuten warten und diese Datei erneut hochladen.";
+    } else if (
+      lower.includes("json") ||
+      lower.includes("unterminated") ||
+      lower.includes("keine gültige")
+    ) {
+      fehler =
+        "Die KI-Antwort war unvollständig (oft Free-Tier/lange Dokumente). Bitte Datei einzeln erneut versuchen.";
+    }
+    return { ...ergebnis, fehler };
   }
 }
 
@@ -620,7 +640,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const ergebnisse = await mapMitLimit(files, 3, (file, i) => verarbeiteDatei(file, i, anweisung));
+    // Concurrency 1: Free-Tier hat ~30 RPM; pro Datei mehrere LLM-Calls
+    // (OCR/Vision + Klassifikation + Extraktion). Parallelität 3 sprengt das Limit
+    // und erzeugt abgeschnittenes JSON ("Unterminated string…").
+    const ergebnisse = await mapMitLimit(files, 1, (file, i) => verarbeiteDatei(file, i, anweisung));
 
     const typenListe = ergebnisse.map((e) => DOKUMENT_TYP_LABEL[e.typ] || e.typ);
     await logEvent(
