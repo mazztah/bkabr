@@ -1840,7 +1840,7 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
     (/\b(wohnung|flaeche|fläche|m\s*[²2]|qm|stammdaten|aktualis)/i.test(m) ||
       /\b(setz|eintrag|hinterleg)\w*/.test(m));
 
-  // --- Löschen: explizit Liegenschaften / ohne PM / "die beiden" ---
+  // --- Löschen ---
   const wantsDeleteLiegenschaften =
     /\b(loesch|entfernen)\w*/.test(m) &&
     /\b(liegenschaft)/.test(m);
@@ -1849,6 +1849,23 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
     wantsDeleteLiegenschaften ||
     (/\b(loesch|entfernen|weg|koennen|soll)\w*/.test(m) &&
       /\b(ohne\s+pm|pm[- ]?vertrag)/.test(m));
+
+  // "ohne Gebäude", leere, Duplikate
+  const wantsDeleteOhneGebaeude =
+    /\b(loesch|entfernen)\w*/.test(m) &&
+    /\b(ohne\s+geb(ae|ä)ude|kein\s+geb(ae|ä)ude|leere?\s+liegenschaft|duplikat)/.test(m);
+
+  // Expliziter Force: trotzdem / force / !!!! / "bitte löschen" nach Ablehnung
+  const forceDelete =
+    /\b(trotzdem|force|erzwungen|unbedingt|wirklich|sofort)\b/.test(m) ||
+    /!{2,}/.test(message) ||
+    (/\b(bitte)\b/.test(m) && /\b(loesch|entfernen)\w*/.test(m) && /\b(liegenschaft)/.test(m));
+
+  const wantsAnyDelete =
+    wantsDeleteLiegenschaften ||
+    wantsDeleteOhnePm ||
+    wantsDeleteOhneGebaeude ||
+    (forceDelete && /\b(liegenschaft)/.test(m));
 
   const wantsCleanup =
     /\b(beseitig|beheb|berein|korrigier|fix)\w*/.test(m) ||
@@ -1877,8 +1894,7 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
     !wantsCleanup &&
     !wantsDocs &&
     !wantsFlaeche &&
-    !wantsDeleteLiegenschaften &&
-    !wantsDeleteOhnePm &&
+    !wantsAnyDelete &&
     !wantsFixHausnummer &&
     !wantsMieterSync
   ) {
@@ -1924,8 +1940,8 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
     if (!updatedNames.length) lines.push("• Keine Wohnung ohne Fläche – nichts zu tun.");
   }
 
-  // 2) Liegenschaften ohne PM löschen (bei Lösch-Auftrag)
-  if (wantsDeleteLiegenschaften || wantsDeleteOhnePm) {
+  // 2) Liegenschaften löschen (leer / ohne PM / ohne Gebäude / Duplikate)
+  if (wantsAnyDelete) {
     const [liegenschaften, pm, gebaeude, eigentuemer, wohnungen, mieter] = await Promise.all([
       liegenschaftenDb.list(),
       pmVertraegeDb.list(),
@@ -1934,31 +1950,144 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
       wohnungenDb.list(),
       mieterDb.list(),
     ]);
-    const ohnePm = liegenschaften.filter((l) => !pm.some((p) => p.liegenschaftId === l.id));
-    const geloescht: string[] = [];
-    const behalten: string[] = [];
 
-    for (const l of ohnePm) {
+    function score(l: (typeof liegenschaften)[0]) {
       const gebs = gebaeude.filter((g) => g.liegenschaftId === l.id);
       const gebIds = gebs.map((g) => g.id);
       const wohns = wohnungen.filter((w) => gebIds.includes(w.gebaeudeId));
-      const hasMieter = mieter.some((mi) => wohns.some((w) => w.id === mi.wohnungId));
+      const miet = mieter.filter((mi) => wohns.some((w) => w.id === mi.wohnungId));
+      const hasPm = pm.some((p) => p.liegenschaftId === l.id);
+      return {
+        gebs,
+        gebIds,
+        wohns,
+        miet,
+        hasPm,
+        hasMieter: miet.length > 0,
+        hasGebaeude: gebs.length > 0,
+        points: gebs.length * 10 + wohns.length * 3 + miet.length * 5 + (hasPm ? 2 : 0),
+      };
+    }
 
-      // Sicherheit: nicht löschen wenn Mieter existieren
-      if (hasMieter) {
-        behalten.push(`„${l.name}" behalten – hat Mieter.`);
-        continue;
+    // Name normalisieren für Duplikat-Gruppen
+    function normName(n: string) {
+      return (n || "")
+        .toLowerCase()
+        .replace(/ß/g, "ss")
+        .replace(/ä/g, "ae")
+        .replace(/ö/g, "oe")
+        .replace(/ü/g, "ue")
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+    }
+
+    // Query aus Nachricht (Straßenname)
+    let nameQuery = "";
+    const strMatch = message.match(
+      /([A-ZÄÖÜ][a-zäöüßA-ZÄÖÜ\-]+(?:straße|strasse|str\.?|weg|platz|allee)[^\s,]*(?:\s*\d+)?)/i
+    );
+    if (strMatch) nameQuery = normName(strMatch[1]);
+    if (!nameQuery) {
+      const gorch = message.match(/gorch[\s\-]*fock/i);
+      if (gorch) nameQuery = "gorch fock";
+    }
+
+    const byName = new Map<string, typeof liegenschaften>();
+    for (const l of liegenschaften) {
+      const key = normName(l.name || l.strasse || l.id);
+      if (!byName.has(key)) byName.set(key, []);
+      byName.get(key)!.push(l);
+    }
+
+    const toDelete = new Set<string>();
+    const behalten: string[] = [];
+    const geloescht: string[] = [];
+
+    // a) Duplikat-Gruppen: behalte die „reichste“, lösche leere Geschwister
+    for (const [key, group] of byName) {
+      if (group.length < 2) continue;
+      if (nameQuery && !key.includes(nameQuery) && !nameQuery.includes(key.split(" ")[0] || "")) {
+        // wenn Nutzer konkreten Namen nennt, nur diese Gruppe
+        if (nameQuery.length > 3 && !key.includes(nameQuery.slice(0, 8))) continue;
       }
+      const ranked = group
+        .map((l) => ({ l, s: score(l) }))
+        .sort((a, b) => b.s.points - a.s.points);
+      const keep = ranked[0];
+      for (const r of ranked.slice(1)) {
+        // Leeres Geschwister (kein Mieter) → löschen
+        if (!r.s.hasMieter) {
+          toDelete.add(r.l.id);
+        } else if (forceDelete && !r.s.hasGebaeude) {
+          toDelete.add(r.l.id);
+        } else {
+          behalten.push(
+            `„${r.l.name}" (${r.l.id.slice(0, 8)}…) behalten – hat ${r.s.miet.length} Mieter / ${r.s.gebs.length} Gebäude (Kanone: ${keep.l.id.slice(0, 8)}…)`
+          );
+        }
+      }
+    }
 
-      for (const w of wohns) await wohnungenDb.remove(w.id);
-      for (const g of gebs) await gebaeudeDb.remove(g.id);
+    // b) Ohne Gebäude (wenn angefragt oder force)
+    if (wantsDeleteOhneGebaeude || wantsDeleteOhnePm || forceDelete || wantsDeleteLiegenschaften) {
+      for (const l of liegenschaften) {
+        if (toDelete.has(l.id)) continue;
+        const s = score(l);
+        if (s.hasGebaeude) continue;
+        if (nameQuery) {
+          const key = normName(l.name || l.strasse || "");
+          if (!key.includes(nameQuery) && !nameQuery.split(" ").every((w) => key.includes(w))) {
+            continue;
+          }
+        }
+        // Ohne Gebäude und ohne Mieter → immer löschen bei Löschauftrag
+        if (!s.hasMieter) {
+          toDelete.add(l.id);
+        } else if (forceDelete) {
+          // Force: auch mit „hängenden“ Mietern ohne Gebäude (Dateninkonsistenz)
+          toDelete.add(l.id);
+        } else {
+          behalten.push(`„${l.name}" behalten – hat Mieter, aber kein Gebäude (force mit „trotzdem löschen“).`);
+        }
+      }
+    }
+
+    // c) Ohne PM und ohne Mieter (klassisch)
+    if (wantsDeleteOhnePm || wantsDeleteLiegenschaften) {
+      for (const l of liegenschaften) {
+        if (toDelete.has(l.id)) continue;
+        const s = score(l);
+        if (s.hasPm) continue;
+        if (s.hasMieter && !forceDelete) {
+          behalten.push(`„${l.name}" behalten – hat Mieter (kein PM).`);
+          continue;
+        }
+        if (!s.hasMieter || forceDelete) toDelete.add(l.id);
+      }
+    }
+
+    // Ausführen
+    for (const id of toDelete) {
+      const l = liegenschaften.find((x) => x.id === id);
+      if (!l) continue;
+      const s = score(l);
+      // PM an dieser leeren LG entfernen
+      for (const p of pm.filter((x) => x.liegenschaftId === l.id)) {
+        await pmVertraegeDb.remove(p.id);
+      }
+      for (const mi of s.miet) await mieterDb.remove(mi.id);
+      for (const w of s.wohns) await wohnungenDb.remove(w.id);
+      for (const g of s.gebs) await gebaeudeDb.remove(g.id);
       for (const e of eigentuemer.filter((x) => x.liegenschaftId === l.id)) {
         await eigentuemerDb.remove(e.id);
       }
       await liegenschaftenDb.remove(l.id);
-      geloescht.push(`${l.name} (${l.strasse} ${l.hausnummer})`.trim());
+      geloescht.push(
+        `${l.name} [${l.id.slice(0, 8)}…] (Gebäude:${s.gebs.length} Mieter:${s.miet.length} PM:${s.hasPm ? "ja" : "nein"})`
+      );
     }
 
+    // Befunde markieren
     const laeufe = await pruefLaufDb.list();
     if (laeufe.length) {
       const lauf = [...laeufe].sort(
@@ -1966,13 +2095,12 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
       )[0];
       const remaining = new Set((await liegenschaftenDb.list()).map((x) => x.id));
       for (const b of lauf.befunde) {
-        if (b.status === "offen" && b.titel === "Liegenschaft ohne PM-Vertrag") {
+        if (b.status !== "offen") continue;
+        if (
+          b.titel === "Liegenschaft ohne PM-Vertrag" ||
+          b.titel === "Liegenschaft ohne Gebäude"
+        ) {
           if (!b.betroffene.some((t) => remaining.has(t.id))) b.status = "uebernommen";
-        }
-        if (b.status === "offen" && b.modul === "wohnungen") {
-          // ggf. mitgelöscht
-          const still = b.betroffene.some((t) => t.art === "Wohnung");
-          // leave as-is unless we can verify
         }
       }
       await pruefLaufDb.update(lauf.id, { befunde: lauf.befunde });
@@ -1980,18 +2108,21 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
 
     await logEvent(
       "loeschung",
-      `Agent: ${geloescht.length} Liegenschaft(en) ohne PM gelöscht: ${geloescht.join(", ") || "–"}`,
+      `Agent: ${geloescht.length} Liegenschaft(en) gelöscht${forceDelete ? " (force)" : ""}: ${geloescht.join("; ") || "–"}`,
       { art: "Liegenschaft" }
     );
     steps.push({
-      tool: "delete_liegenschaften_ohne_pm",
-      args: {},
+      tool: "delete_liegenschaften",
+      args: { force: forceDelete, nameQuery },
       result: { geloescht, behalten },
     });
     lines.push("");
-    lines.push(`**Liegenschaften gelöscht (${geloescht.length}):**`);
+    lines.push(`**Liegenschaften gelöscht (${geloescht.length})${forceDelete ? " [force]" : ""}:**`);
     for (const n of geloescht) lines.push(`• ${n}`);
-    if (!geloescht.length) lines.push("• Keine Liegenschaft ohne PM-Vertrag (ohne Mieter) gefunden.");
+    if (!geloescht.length) {
+      lines.push("• Keine passende leere/Duplikat-Liegenschaft gefunden.");
+      lines.push('→ Bei hartnäckigen Duplikaten: „Lösche leere Gorch-Fock-Straße trotzdem“');
+    }
     for (const b of behalten) lines.push(`• ${b}`);
   }
 
@@ -2152,6 +2283,16 @@ export function isAgentIntent(message: string): boolean {
     /\b(ohne\s+pm|pm[- ]?vertrag)/.test(m) &&
     /\b(geloescht|loeschen|löschen|koennen|können)\b/.test(m)
   ) {
+    return true;
+  }
+
+  if (
+    /\b(loesch|entfernen)\w*/.test(m) &&
+    /\b(liegenschaft|pm[- ]?vertrag|duplikat|geb(ae|ä)ude|leere?)\b/.test(m)
+  ) {
+    return true;
+  }
+  if (/\b(trotzdem|force)\b/.test(m) && /\b(loesch|entfernen|liegenschaft)\w*/.test(m)) {
     return true;
   }
 
