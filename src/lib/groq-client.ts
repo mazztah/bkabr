@@ -16,12 +16,16 @@ import type {
  *   4. groq/compound-mini    – agentisches Groq-System, eigenes (kleineres) Kontingent
  *   5. groq/compound         – größtes agentisches Groq-System, letzte Reserve
  *
- * Stufen 4+5 (Compound) unterstützen laut Groq keine eigenen/benutzerdefinierten
- * Tools und werden daher automatisch übersprungen, wenn ein Aufruf `tools`
+ * Stufen 3–5 werden automatisch übersprungen, wenn ein Aufruf `tools`
  * (Agent-Funktionsaufrufe) oder striktes JSON-Mode (Klassifikation/Extraktion,
- * u.a. Smart-Upload) braucht – siehe COMPOUND_MODELS weiter unten. Dort greifen
- * dann weiterhin nur Stufen 1–3. Für reine Text-Antworten (Chat, Anschreiben-Text,
- * Recht-Einschätzung) stehen alle 5 Stufen zur Verfügung.
+ * u.a. Smart-Upload, Mietvertrags-Analyse) braucht – siehe
+ * STRUCTURED_OUTPUT_UNSAFE_MODELS weiter unten. Dort greifen dann weiterhin nur
+ * Stufen 1–2 (genau wie vor dieser Erweiterung, also unverändert zuverlässig).
+ * Grund: Compound unterstützt laut Groq keine eigenen Tools, und qwen/qwen3.6-27b
+ * hat in der Praxis bei striktem JSON-Mode mit "json_validate_failed" abgebrochen
+ * (Reasoning-Modelle neigen dazu, dem JSON zusätzlichen Text beizumischen).
+ * Für reine Text-Antworten (Chat, Anschreiben-Text, Recht-Einschätzung) stehen
+ * dagegen alle 5 Stufen zur Verfügung.
  *
  * Überschreibbar per ENV:
  *   GROQ_TEXT_MODEL=...
@@ -43,11 +47,15 @@ const BLOCKED_TEXT_MODELS = new Set([
   "qwen/qwen3-32b", // von Groq zugunsten gpt-oss-120b / qwen3.6-27b abgekündigt
 ]);
 
-// Groq Compound-Systeme führen intern eigene (Web-Suche/Code-Ausführung) Tools
-// aus, unterstützen aber keine benutzerdefinierten `tools` und halten JSON-Mode
-// nicht zuverlässig ein. Deshalb: nie für Agent-Funktionsaufrufe oder strikte
-// JSON-Extraktion verwenden (Smart-Upload, Klassifikation, Rechnungsprüfung, …).
-const COMPOUND_MODELS = new Set(["groq/compound", "groq/compound-mini"]);
+// Modelle, die bei Funktionsaufrufen (`tools`) oder striktem JSON-Mode
+// (`response_format: json_object`) nicht zuverlässig genug sind, um für
+// Smart-Upload, Klassifikation/Extraktion oder den Agenten verwendet zu
+// werden. Nur für reine Text-Antworten als Fallback nutzen.
+const STRUCTURED_OUTPUT_UNSAFE_MODELS = new Set([
+  "groq/compound",
+  "groq/compound-mini", // unterstützt keine eigenen Tools
+  "qwen/qwen3.6-27b", // in Praxis vereinzelt json_validate_failed bei strikter Extraktion
+]);
 
 export function getTextModels(): string[] {
   let models: string[];
@@ -94,6 +102,10 @@ function isRetryableModelError(err: any): boolean {
   if (msg.includes("tokens per day") || msg.includes("tpd")) return true;
   if (msg.includes("tokens per minute") || msg.includes("tpm")) return true;
   if (msg.includes("request too large") || msg.includes("reduce your message size")) return true;
+  // Modell liefert bei striktem JSON-Mode ungültiges/nicht-schema-konformes JSON
+  // (kommt vereinzelt bei bestimmten Modellen vor) -> nächstes Modell versuchen.
+  if (code.includes("json_validate_failed")) return true;
+  if (msg.includes("failed to validate json")) return true;
   // Modell nicht verfügbar / deaktiviert
   if (status === 404 || status === 400) {
     if (msg.includes("model") || msg.includes("deprecat") || msg.includes("not found")) {
@@ -114,16 +126,17 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
     ? [params.model, ...getTextModels().filter((m) => m !== params.model)]
     : getTextModels();
 
-  // Compound-Systeme unterstützen keine eigenen `tools` und halten JSON-Mode
-  // nicht zuverlässig ein -> für Agent-Funktionsaufrufe und strikte
-  // JSON-Extraktion (Smart-Upload, Klassifikation, …) konsequent ausschließen.
+  // Modelle ohne Tool-Support bzw. mit unzuverlässigem JSON-Mode für
+  // Agent-Funktionsaufrufe und strikte JSON-Extraktion (Smart-Upload,
+  // Klassifikation, Mietvertrags-/PM-Vertrags-Analyse, …) konsequent
+  // ausschließen.
   const needsStructuredOutput =
     Boolean(params.tools?.length) || params.response_format?.type === "json_object";
   if (needsStructuredOutput) {
-    const withoutCompound = models.filter((m) => !COMPOUND_MODELS.has(m));
+    const filtered = models.filter((m) => !STRUCTURED_OUTPUT_UNSAFE_MODELS.has(m));
     // Nur ausschließen, wenn danach noch mindestens ein Modell übrig bleibt
-    // (z.B. bei GROQ_TEXT_MODELS-Override auf ausschließlich Compound-Systeme).
-    if (withoutCompound.length > 0) models = withoutCompound;
+    // (z.B. bei GROQ_TEXT_MODELS-Override auf ausschließlich unsichere Modelle).
+    if (filtered.length > 0) models = filtered;
   }
 
   let lastError: any;
