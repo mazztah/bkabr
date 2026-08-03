@@ -1,6 +1,4 @@
 import Groq from "groq-sdk";
-import OpenAI from "openai"; // Cerebras API is OpenAI-compatible
-
 import type {
   ChatCompletion,
   ChatCompletionCreateParamsNonStreaming,
@@ -41,26 +39,13 @@ const DEFAULT_TEXT_MODELS = [
   "groq/compound",
 ];
 
-const CEREBRAS_MODELS = [
-  "cerebras/llama-4-scout",
-  "cerebras/qwen3-32b",
-  "cerebras/deepseek-r1-distill",
-  "cerebras/gemma-4-31b",
-  "cerebras/gpt-oss-120b", // Already in Groq, but can be used as Cerebras fallback
-];
-
-const ALL_FALLBACK_MODELS = [...DEFAULT_TEXT_MODELS, ...CEREBRAS_MODELS];
-
-
 const BLOCKED_TEXT_MODELS = new Set([
   "llama-3.3-70b-versatile",
   "llama3-70b-8192",
   "llama-3.1-70b-versatile",
   "llama-3.1-8b-instant", // von Groq zugunsten gpt-oss-20b abgekündigt
   "qwen/qwen3-32b", // von Groq zugunsten gpt-oss-120b / qwen3.6-27b abgekündigt
-  "zai-glm-4.7", // Deprecated on Cerebras
 ]);
-
 
 // Modelle, die bei Funktionsaufrufen (`tools`) oder striktem JSON-Mode
 // (`response_format: json_object`) nicht zuverlässig genug sind, um für
@@ -79,8 +64,8 @@ export function getTextModels(): string[] {
       .map((s) => s.trim())
       .filter(Boolean);
   } else {
-    const primary = process.env.GROQ_TEXT_MODEL || ALL_FALLBACK_MODELS[0];
-    const rest = ALL_FALLBACK_MODELS.filter((m) => m !== primary);
+    const primary = process.env.GROQ_TEXT_MODEL || DEFAULT_TEXT_MODELS[0];
+    const rest = DEFAULT_TEXT_MODELS.filter((m) => m !== primary);
     models = [primary, ...rest];
   }
   // Llama-Versatile und ähnliche nie verwenden (TPD oft leer, unerwünscht)
@@ -95,7 +80,6 @@ export const VISION_MODEL =
   process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
 
 let client: Groq | null = null;
-let cerebrasClient: OpenAI | null = null;
 
 export function getGroqClient(): Groq {
   if (!process.env.GROQ_API_KEY) {
@@ -105,21 +89,6 @@ export function getGroqClient(): Groq {
   }
   if (!client) client = new Groq({ apiKey: process.env.GROQ_API_KEY });
   return client;
-}
-
-export function getCerebrasClient(): OpenAI {
-  if (!process.env.CEREBRAS_API_KEY) {
-    throw new Error(
-      "CEREBRAS_API_KEY ist nicht gesetzt. Bitte in .env.local bzw. als Fly.io Secret hinterlegen."
-    );
-  }
-  if (!cerebrasClient) {
-    cerebrasClient = new OpenAI({
-      apiKey: process.env.CEREBRAS_API_KEY,
-      baseURL: process.env.CEREBRAS_BASE_URL || "https://api.cerebras.ai/v1",
-    });
-  }
-  return cerebrasClient;
 }
 
 function isRetryableModelError(err: any): boolean {
@@ -148,23 +117,11 @@ function isRetryableModelError(err: any): boolean {
 
 type ChatParams = Omit<ChatCompletionCreateParamsNonStreaming, "model"> & { model?: string };
 
-interface CerebrasChatCompletion {
-  id: string;
-  choices: Array<{ message: { content: string | null; role: 'assistant' | 'user' | 'system' | 'tool' }; finish_reason: string; index: number }>;
-  created: number;
-  model: string;
-  object: 'chat.completion';
-  system_fingerprint: string;
-  usage: { completion_tokens: number; prompt_tokens: number; total_tokens: number };
-}
-
-
 /**
  * chat.completions.create mit automatischem Modell-Fallback bei Rate-Limit / Modellfehlern.
  */
-export async function createChatCompletion(params: ChatParams): Promise<ChatCompletion | CerebrasChatCompletion> {
+export async function createChatCompletion(params: ChatParams): Promise<ChatCompletion> {
   const groq = getGroqClient();
-  const cerebras = getCerebrasClient();
   let models = params.model
     ? [params.model, ...getTextModels().filter((m) => m !== params.model)]
     : getTextModels();
@@ -187,17 +144,10 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
     const model = models[i];
     try {
       const { model: _ignored, ...rest } = params;
-      if (model.startsWith("cerebras/")) {
-        return await cerebras.chat.completions.create({
-          ...rest,
-          model: model.replace("cerebras/", ""),
-        });
-      } else {
-        return await groq.chat.completions.create({
-          ...rest,
-          model,
-        });
-      }
+      return await groq.chat.completions.create({
+        ...rest,
+        model,
+      });
     } catch (err: any) {
       lastError = err;
       if (i < models.length - 1 && isRetryableModelError(err)) {
