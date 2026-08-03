@@ -433,6 +433,9 @@ function MietvertragCard(
     onBusy(true);
     try {
       let mieterId = gewaehlterMieter || undefined;
+      const kaltmieteNum = Number(sollMiete) || undefined;
+      const nkNum = Number(nk) || undefined;
+
       if (mieterModus === "neu") {
         const res = await fetch("/api/mieter", {
           method: "POST",
@@ -440,15 +443,30 @@ function MietvertragCard(
           body: JSON.stringify({
             wohnungId,
             name: mieterName || "Neuer Mieter",
-            mietbeginn,
-            mietende,
-            kaltmiete: Number(sollMiete) || undefined,
-            nebenkostenVorauszahlung: Number(nk) || undefined,
+            mietbeginn: mietbeginn || undefined,
+            mietende: mietende || undefined,
+            kaltmiete: kaltmieteNum,
+            nebenkostenVorauszahlung: nkNum,
           }),
         });
         const json = await res.json();
         mieterId = json.mieter?.id;
+      } else if (mieterId) {
+        // Bestehender Mieter: Stammdaten aus dem Mietvertrag mitziehen
+        // (vorher wurden nur bei "Neu" Miete/NK/Daten gesetzt → inkonsistent)
+        const patch: Record<string, unknown> = { wohnungId };
+        if (mieterName.trim()) patch.name = mieterName.trim();
+        if (mietbeginn) patch.mietbeginn = mietbeginn;
+        if (mietende) patch.mietende = mietende;
+        if (kaltmieteNum != null) patch.kaltmiete = kaltmieteNum;
+        if (nkNum != null) patch.nebenkostenVorauszahlung = nkNum;
+        await fetch(`/api/mieter/${mieterId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
       }
+
       await fetch("/api/mietvertraege", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -458,16 +476,22 @@ function MietvertragCard(
           dateiName: item.dateiName,
           storedFileName: item.storedFileName,
           mimeType: item.mimeType,
-          sollMiete: Number(sollMiete) || undefined,
-          nebenkostenVorauszahlung: Number(nk) || undefined,
+          sollMiete: kaltmieteNum,
+          nebenkostenVorauszahlung: nkNum,
           kaution: Number(kaution) || undefined,
-          mietbeginn,
-          mietende,
+          mietbeginn: mietbeginn || undefined,
+          mietende: mietende || undefined,
           extraktText: item.extraktText,
           status: "Aktiv",
         }),
       });
-      onErledigt({ status: "gespeichert", meldung: "Mietvertrag übernommen und abgelegt." });
+      onErledigt({
+        status: "gespeichert",
+        meldung:
+          mieterModus === "neu"
+            ? "Mietvertrag übernommen, neuer Mieter angelegt."
+            : "Mietvertrag übernommen, Mieter-Stammdaten aktualisiert.",
+      });
       onReload();
     } finally {
       onBusy(false);
@@ -557,7 +581,12 @@ function NachtragCard(
   const e = item.nachtrag!.extraktion;
   const v = item.nachtrag!.vorschlag;
   const [mietvertragId, setMietvertragId] = useState(v.mietvertragId || "");
-  const [modus, setModus] = useState<"automatisch" | "manuell">("manuell");
+  // Default: Stammdaten übernehmen, sobald ein Vertrag erkannt wurde und Werte da sind
+  // (vorher Default "manuell" → wirkte wie "mal aktualisiert, mal nicht")
+  const [modus, setModus] = useState<"automatisch" | "manuell">(() => {
+    const hatWerte = !!(e.sollMiete || e.nebenkostenVorauszahlung || e.mietbeginn || e.mietende || e.kaution);
+    return v.mietvertragId && hatWerte ? "automatisch" : "manuell";
+  });
   const [sollMiete, setSollMiete] = useState(e.sollMiete ? String(e.sollMiete) : "");
   const [nk, setNk] = useState(e.nebenkostenVorauszahlung ? String(e.nebenkostenVorauszahlung) : "");
   const [kaution, setKaution] = useState(e.kaution ? String(e.kaution) : "");
@@ -598,13 +627,29 @@ function NachtragCard(
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(patch),
         });
+
+        // Mieter-Stammdaten mitziehen (Mietvertrag allein reicht nicht für Abrechnung/Dashboard)
+        if (modus === "automatisch" && bestehend?.mieterId) {
+          const mieterPatch: Record<string, unknown> = {};
+          if (mietbeginn) mieterPatch.mietbeginn = mietbeginn;
+          if (mietende) mieterPatch.mietende = mietende;
+          if (sollMiete) mieterPatch.kaltmiete = Number(sollMiete);
+          if (nk) mieterPatch.nebenkostenVorauszahlung = Number(nk);
+          if (Object.keys(mieterPatch).length > 0) {
+            await fetch(`/api/mieter/${bestehend.mieterId}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(mieterPatch),
+            });
+          }
+        }
       }
 
       onErledigt({
         status: "gespeichert",
         meldung: mietvertragId
           ? modus === "automatisch"
-            ? "Nachtrag abgelegt, Stammdaten automatisch aktualisiert."
+            ? "Nachtrag abgelegt, Mietvertrag- und Mieter-Stammdaten aktualisiert."
             : "Nachtrag abgelegt. Stammdaten bitte manuell im Mietvertrag prüfen."
           : "Nachtrag ohne Zuordnung zu einem bestehenden Mietvertrag gespeichert.",
       });
