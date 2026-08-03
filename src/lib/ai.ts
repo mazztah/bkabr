@@ -255,21 +255,27 @@ export async function extractMietvertrag(params: {
   fileName: string;
 }): Promise<import("./types").MietvertragExtraktion> {
   const { text, fileName } = params;
-  const completion = await createChatCompletion({
-    max_completion_tokens: 1200,
-    temperature: 0,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: SYSTEM_MIETVERTRAG },
-      {
-        role: "user",
-        content: `Datei: ${fileName}.\n\nInhalt:\n${text}\n\nExtrahiere die JSON-Daten.`,
-      },
-    ],
-  });
-
-  const result = completion.choices[0]?.message?.content || "";
-  return extractJson(result);
+  const textSlice = text.slice(0, 8000);
+  return withJsonRetry(
+    async (strict) => {
+      const completion = await createChatCompletion({
+        max_completion_tokens: 1500,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_MIETVERTRAG },
+          {
+            role: "user",
+            content: strict
+              ? `Datei: ${fileName}.\n\nWICHTIG: Antworte NUR mit einem vollständigen, gültigen JSON-Objekt.\n\nInhalt (Auszug):\n${textSlice}\n\nExtrahiere die JSON-Daten.`
+              : `Datei: ${fileName}.\n\nInhalt:\n${textSlice}\n\nExtrahiere die JSON-Daten.`,
+          },
+        ],
+      });
+      return completion.choices[0]?.message?.content || "";
+    },
+    (raw) => extractJson(raw)
+  );
 }
 
 const SYSTEM_KONTOAUSZUG = `Du bist ein Experte für deutsche Bankauszüge/Kontoauszüge (PDF-Text oder CSV-Export). Analysiere den übergebenen Text und extrahiere AUSSCHLIESSLICH die Zahlungseingänge (Gutschriften, positive Beträge) – ignoriere Abbuchungen/Lastschriften/Belastungen.
@@ -279,34 +285,46 @@ Antworte AUSSCHLIESSLICH mit einem JSON-Objekt in exakt diesem Format:
     {
       "datum": "YYYY-MM-DD",
       "betrag": <Betrag als positive Zahl>,
-      "verwendungszweck": "Verwendungszweck/Buchungstext wie im Auszug",
+      "verwendungszweck": "Verwendungszweck/Buchungstext kurz",
       "absender": "Name des Auftraggebers/Einzahlers, falls erkennbar, sonst leerer String"
     }
   ]
 }
-Erfinde keine Transaktionen, die nicht im Text stehen. Falls kein Datum erkennbar: leerer String.`;
+WICHTIG: Maximal 40 Transaktionen. Bei mehr Einträgen die neuesten/wichtigsten priorisieren.
+Kurze Verwendungszwecke (max. ~80 Zeichen). Erfinde keine Transaktionen. Falls kein Datum: leerer String.`;
 
 export async function extractKontoauszug(params: {
   text: string;
   fileName: string;
 }): Promise<KontoauszugTransaktion[]> {
   const { text, fileName } = params;
-  const completion = await createChatCompletion({
-    max_completion_tokens: 3000,
-    temperature: 0,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: SYSTEM_KONTOAUSZUG },
-      {
-        role: "user",
-        content: `Datei: ${fileName}.\n\nInhalt:\n${text.slice(0, 12000)}\n\nExtrahiere die JSON-Daten.`,
-      },
-    ],
-  });
-
-  const result = completion.choices[0]?.message?.content || "";
-  const parsed = extractJson(result) as { transaktionen?: KontoauszugTransaktion[] };
-  return parsed.transaktionen || [];
+  // Lange Kontoauszüge + Free-Tier → abgeschnittenes JSON ("," / "]" Fehler).
+  // Input und Output strikt begrenzen.
+  const textSlice = text.slice(0, 6000);
+  return withJsonRetry(
+    async (strict) => {
+      const completion = await createChatCompletion({
+        max_completion_tokens: 2500,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_KONTOAUSZUG },
+          {
+            role: "user",
+            content: strict
+              ? `Datei: ${fileName}.\n\nWICHTIG: NUR vollständiges gültiges JSON, max. 40 Transaktionen, kurze Texte.\n\nInhalt (Auszug):\n${textSlice}\n\nExtrahiere die JSON-Daten.`
+              : `Datei: ${fileName}.\n\nInhalt:\n${textSlice}\n\nExtrahiere die JSON-Daten (max. 40 Zahlungseingänge).`,
+          },
+        ],
+      });
+      return completion.choices[0]?.message?.content || "";
+    },
+    (raw) => {
+      const parsed = extractJson(raw) as { transaktionen?: KontoauszugTransaktion[] };
+      const list = Array.isArray(parsed.transaktionen) ? parsed.transaktionen : [];
+      return list.slice(0, 40);
+    }
+  );
 }
 
 const SYSTEM_EIGENTUEMER = `Du bist ein Experte für deutsche Hausverwaltungs- und WEG-Dokumente. Analysiere den übergebenen Text eines eigentümerbezogenen Dokuments (z.B. Vollmacht, Eigentümerbeschluss, Grundbuchauszug, Verwaltervollmacht, Kontaktdaten-Schreiben) und extrahiere die relevanten Stammdaten.

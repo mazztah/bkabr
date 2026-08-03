@@ -346,5 +346,19 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
       throw err;
     }
   }
+
+  // Klarere Meldung, wenn das Tageskontingent (TPD) weg ist
+  const msg = String(lastError?.message || lastError || "");
+  if (/tokens per day|TPD|rate_limit_exceeded/i.test(msg)) {
+    const wait = msg.match(/try again in ([0-9m.\s]+s)/i)?.[1]?.trim();
+    const err: any = new Error(
+      wait
+        ? `Groq Free-Tier: Tages-Tokenlimit (200k TPD) erreicht. Bitte in ca. ${wait} erneut versuchen oder Dev-Tier upgraden.`
+        : "Groq Free-Tier: Tages-Tokenlimit erreicht. Bitte später erneut versuchen oder Dev-Tier upgraden."
+    );
+    err.status = 429;
+    err.cause = lastError;
+    throw err;
+  }
   throw lastError;
 }
