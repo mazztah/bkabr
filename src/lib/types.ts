@@ -172,6 +172,9 @@ export interface ExtractedData {
 // -------- Liegenschaftsverwaltung (Hausverwaltungs-Hierarchie) --------
 // Liegenschaft (Grundstück) > Gebäude > Wohnung/Einheit > Mieter
 
+/** aktiv = in Analyse/Prüfung; inaktiv = z.B. nach beendetem PM-Vertrag ausgeblendet */
+export type ObjektStatus = "aktiv" | "inaktiv";
+
 export interface Liegenschaft {
   id: string;
   nummer?: string;
@@ -183,6 +186,8 @@ export interface Liegenschaft {
   grundstuecksflaeche?: number;
   flurstueck?: string;
   notizen?: string;
+  /** Default aktiv. Bei beendetem PM-Vertrag → inaktiv (fällt aus Analysen heraus). */
+  status?: ObjektStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -196,6 +201,7 @@ export interface Gebaeude {
   anzahlEinheiten?: number;
   heizungsart?: string;
   notizen?: string;
+  status?: ObjektStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -212,6 +218,7 @@ export interface Wohnung {
   zimmer?: number;
   miteigentumsanteil?: number;
   notizen?: string;
+  status?: ObjektStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -247,6 +254,8 @@ export interface Mieter {
   kaltmiete?: number;
   nebenkostenVorauszahlung?: number;
   notizen?: string;
+  /** inaktiv = ausgezogen / nicht mehr in Analysen */
+  status?: ObjektStatus;
   sollIst?: SollIstEintrag[];
   mietkonto?: MietkontoBuchung[];
   createdAt: string;
@@ -796,6 +805,21 @@ export interface PruefKorrekturVorschlag {
   patch?: Record<string, string | number>;
 }
 
+/** Kontext für Anzeige in der Prüf-UI (Nummern, Objekt, Dokument-Link). */
+export interface PruefBefundKontext {
+  mieterNummer?: string;
+  mieterName?: string;
+  liegenschaftNummer?: string;
+  liegenschaftName?: string;
+  liegenschaftAdresse?: string;
+  wohnungBezeichnung?: string;
+  /** Direkter Link zur App-Seite (Mieter, Vertrag, Ablage, …). */
+  bearbeitenHref?: string;
+  /** Link zur Originaldatei (PDF/Bild) falls vorhanden. */
+  dokumentHref?: string;
+  dokumentLabel?: string;
+}
+
 export interface PruefBefund {
   id: string;
   modul: PruefModul;
@@ -805,6 +829,8 @@ export interface PruefBefund {
   betroffene: { art: string; id: string; label: string }[];
   /** Optionaler UI-Pfad, z.B. /ablage oder /mietvertraege – für „Zur Bearbeitung“. */
   linkHref?: string;
+  /** Strukturierter Anzeige-Kontext (Nummern, Liegenschaft, Dokument). */
+  kontext?: PruefBefundKontext;
   vorschlag?: PruefKorrekturVorschlag;
   status: "offen" | "uebernommen" | "abgelehnt";
 }

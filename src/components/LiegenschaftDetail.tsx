@@ -51,6 +51,18 @@ async function patchEntity(url: string, patch: Record<string, unknown>) {
   });
 }
 
+async function deleteEntity(
+  url: string,
+  confirmText: string
+): Promise<{ ok: boolean; message?: string }> {
+  if (!window.confirm(confirmText)) return { ok: false };
+  const res = await fetch(url, { method: "DELETE" });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, message: json.error || "Löschen fehlgeschlagen" };
+  return { ok: true, message: json.name ? `„${json.name}" gelöscht.` : "Gelöscht." };
+}
+
+
 function Field({
   label,
   value,
@@ -799,6 +811,118 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
           </div>
         )}
 
+        
+            {/* Löschen / Beenden – aktuelle Hierarchie-Ebene */}
+            <div className="col-span-full mt-6 rounded-lg border border-[var(--destructive)]/30 bg-[var(--destructive)]/5 p-4">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--destructive)]">
+                Löschen / Status
+              </p>
+              <p className="mb-3 text-xs text-muted-foreground">
+                Kaskade entfernt abhängige Einträge (z. B. Liegenschaft → Gebäude → Wohnungen → Mieter → Mietverträge).
+                Unwiderruflich.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {liegenschaft && (
+                  <>
+                    <button
+                      type="button"
+                      className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-muted"
+                      onClick={async () => {
+                        const neu = liegenschaft.status === "inaktiv" ? "aktiv" : "inaktiv";
+                        if (
+                          !window.confirm(
+                            neu === "inaktiv"
+                              ? `Liegenschaft „${liegenschaft.name}" auf inaktiv setzen? Sie fällt dann aus Analysen heraus.`
+                              : `Liegenschaft „${liegenschaft.name}" wieder aktivieren?`
+                          )
+                        )
+                          return;
+                        await patchEntity(`/api/liegenschaften/${liegenschaft.id}`, { status: neu });
+                        onChanged();
+                      }}
+                    >
+                      {liegenschaft.status === "inaktiv" ? "✓ Wieder aktivieren" : "⏸ Inaktiv setzen"}
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-md border border-[var(--destructive)]/50 px-3 py-1.5 text-xs text-[var(--destructive)] hover:bg-[var(--destructive)]/10"
+                      onClick={async () => {
+                        const r = await deleteEntity(
+                          `/api/liegenschaften/${liegenschaft.id}?cascade=1`,
+                          `GESAMTE Liegenschaft „${liegenschaft.name}" inkl. Gebäude, Wohnungen, Mieter, Mietverträge, PM-Verträge und Eigentümer endgültig löschen?`
+                        );
+                        if (r.ok) {
+                          onSelect(null);
+                          onChanged();
+                        } else if (r.message) alert(r.message);
+                      }}
+                    >
+                      🗑️ Liegenschaft kaskadiert löschen
+                    </button>
+                  </>
+                )}
+                {gebaeude && !liegenschaft && (
+                  <button
+                    type="button"
+                    className="rounded-md border border-[var(--destructive)]/50 px-3 py-1.5 text-xs text-[var(--destructive)] hover:bg-[var(--destructive)]/10"
+                    onClick={async () => {
+                      const r = await deleteEntity(
+                        `/api/gebaeude/${gebaeude.id}?cascade=1`,
+                        `Gebäude „${gebaeude.name}" inkl. Wohnungen und Mieter endgültig löschen?`
+                      );
+                      if (r.ok) {
+                        onSelect(null);
+                        onChanged();
+                      } else if (r.message) alert(r.message);
+                    }}
+                  >
+                    🗑️ Gebäude kaskadiert löschen
+                  </button>
+                )}
+                {wohnung && !gebaeude && !liegenschaft && (
+                  <button
+                    type="button"
+                    className="rounded-md border border-[var(--destructive)]/50 px-3 py-1.5 text-xs text-[var(--destructive)] hover:bg-[var(--destructive)]/10"
+                    onClick={async () => {
+                      const r = await deleteEntity(
+                        `/api/wohnungen/${wohnung.id}?cascade=1`,
+                        `Wohnung „${wohnung.bezeichnung}" inkl. Mieter und Mietverträge endgültig löschen?`
+                      );
+                      if (r.ok) {
+                        onSelect(null);
+                        onChanged();
+                      } else if (r.message) alert(r.message);
+                    }}
+                  >
+                    🗑️ Wohnung kaskadiert löschen
+                  </button>
+                )}
+                {mieter && (
+                  <button
+                    type="button"
+                    className="rounded-md border border-[var(--destructive)]/50 px-3 py-1.5 text-xs text-[var(--destructive)] hover:bg-[var(--destructive)]/10"
+                    onClick={async () => {
+                      const r = await deleteEntity(
+                        `/api/mieter/${mieter.id}?cascade=1`,
+                        `Mieter „${mieter.name}" inkl. verknüpfter Mietverträge endgültig löschen?`
+                      );
+                      if (r.ok) {
+                        onSelect(null);
+                        onChanged();
+                      } else if (r.message) alert(r.message);
+                    }}
+                  >
+                    🗑️ Mieter löschen
+                  </button>
+                )}
+              </div>
+              {liegenschaft?.status === "inaktiv" && (
+                <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+                  Status: inaktiv – wird in Plausibilitätsprüfung und Analysen übersprungen.
+                </p>
+              )}
+            </div>
+
         {tab === "Struktur" && (
           <StructureTab
             data={data}
@@ -1027,6 +1151,40 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
                       {pm.laufzeitBeginn && <span>Beginn: {pm.laufzeitBeginn}</span>}
                       {pm.kuendigungsfrist && <span>Kündigung: {pm.kuendigungsfrist}</span>}
                       <span>Status: {pm.status}</span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {pm.status !== "Beendet" && (
+                        <button
+                          type="button"
+                          className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
+                          onClick={async () => {
+                            if (
+                              !window.confirm(
+                                `PM-Vertrag beenden? Die Liegenschaft wird auf „inaktiv“ gesetzt und fällt aus Analysen heraus.`
+                              )
+                            )
+                              return;
+                            await patchEntity(`/api/pm-vertrag/${pm.id}`, { status: "Beendet" });
+                            onChanged();
+                          }}
+                        >
+                          ⏸ Vertrag beenden
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="rounded-md border border-[var(--destructive)]/40 px-2 py-1 text-xs text-[var(--destructive)] hover:bg-[var(--destructive)]/10"
+                        onClick={async () => {
+                          const r = await deleteEntity(
+                            `/api/pm-vertrag/${pm.id}`,
+                            `PM-Vertrag „${pm.verwalterName || pm.dateiName}" endgültig löschen?`
+                          );
+                          if (r.ok) onChanged();
+                          else if (r.message) alert(r.message);
+                        }}
+                      >
+                        🗑️ Löschen
+                      </button>
                     </div>
                   </div>
                 ))}

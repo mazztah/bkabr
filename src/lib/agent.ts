@@ -34,6 +34,14 @@ import {
   renderBrief,
 } from "./schriftverkehr";
 import { createChatCompletion } from "./groq-client";
+import { deleteStoredFile } from "./storage";
+import {
+  cascadeDeleteLiegenschaft,
+  cascadeDeleteGebaeude,
+  cascadeDeleteWohnung,
+  cascadeDeleteMieter,
+  beendePmVertrag,
+} from "./cascade-delete";
 
 const MAX_AGENT_STEPS = 20;
 
@@ -360,19 +368,24 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_ablage_zuordnung",
       description:
-        "Korrigiert die Zuordnung eines Ablage-Dokuments (z.B. Rechnung lag bei falschem Lieferanten/Objekt).",
+        "Ändert den Ablageort/die Zuordnung eines Dokuments. Suche per ablage_id oder datei_name; Ziel per ziel_id oder ziel_liegenschaft_query (Straße/Name).",
       parameters: {
         type: "object",
         properties: {
           ablage_id: { type: "string" },
+          datei_name: { type: "string", description: "Teilstring Dateiname, wenn ID unbekannt" },
           ziel_art: {
             type: "string",
-            description: "z.B. Liegenschaft, Rechnung, PM-Vertrag, Eigentümer, Kontoauszug",
+            description: "Standard: Liegenschaft. Auch PM-Vertrag, Eigentümer, …",
           },
           ziel_id: { type: "string" },
           ziel_label: { type: "string" },
+          ziel_liegenschaft_query: {
+            type: "string",
+            description: "Straße/Name der Ziel-Liegenschaft, wenn ziel_id unbekannt",
+          },
         },
-        required: ["ablage_id", "ziel_art", "ziel_id", "ziel_label"],
+        required: [],
       },
     },
   },
@@ -591,12 +604,101 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
         type: "object",
         properties: {
           mietvertrag_id: { type: "string", description: "ID des zu löschenden Mietvertrags" },
+          mietvertrag_query: {
+            type: "string",
+            description: "Alternativ Suche in Dateiname/Nummer, wenn ID unbekannt",
+          },
           user_confirmed: {
             type: "boolean",
             description: "Muss true sein, sonst wird nur nach Bestätigung gefragt",
           },
         },
-        required: ["mietvertrag_id"],
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_mieter",
+      description:
+        "Löscht einen Mieter-Stammdatensatz. Erfordert user_confirmed=true. Optional verknüpfte Mietverträge mitlöschen (delete_vertraege=true).",
+      parameters: {
+        type: "object",
+        properties: {
+          mieter_id: { type: "string" },
+          mieter_name: { type: "string", description: "Name suchen, wenn ID unbekannt" },
+          delete_vertraege: {
+            type: "boolean",
+            description: "Wenn true, auch Mietverträge dieses Mieters löschen",
+          },
+          user_confirmed: { type: "boolean" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_ablage_dokument",
+      description:
+        "Löscht ein Dokument aus der Ablage (und die gespeicherte Datei). Erfordert user_confirmed=true. Suche per ablage_id oder datei_name.",
+      parameters: {
+        type: "object",
+        properties: {
+          ablage_id: { type: "string" },
+          datei_name: { type: "string", description: "Teilstring des Dateinamens" },
+          user_confirmed: { type: "boolean" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_gebaeude",
+      description: "Löscht ein Gebäude kaskadiert (Wohnungen, Mieter, Mietverträge). user_confirmed=true erforderlich.",
+      parameters: {
+        type: "object",
+        properties: {
+          gebaeude_id: { type: "string" },
+          user_confirmed: { type: "boolean" },
+        },
+        required: ["gebaeude_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_wohnung",
+      description: "Löscht eine Wohnung kaskadiert (Mieter, Mietverträge). user_confirmed=true erforderlich.",
+      parameters: {
+        type: "object",
+        properties: {
+          wohnung_id: { type: "string" },
+          user_confirmed: { type: "boolean" },
+        },
+        required: ["wohnung_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "beende_pm_vertrag",
+      description:
+        "Beendet einen PM-Vertrag (Status Beendet) und setzt die zugehörige Liegenschaft auf inaktiv – sie fällt aus Analysen/Prüfung heraus. user_confirmed=true.",
+      parameters: {
+        type: "object",
+        properties: {
+          pm_vertrag_id: { type: "string" },
+          liegenschaft_query: { type: "string", description: "Falls ID unbekannt: Straße/Name" },
+          user_confirmed: { type: "boolean" },
+        },
+        required: [],
       },
     },
   },
@@ -1027,41 +1129,28 @@ async function executeTool(
       const id = String(args.liegenschaft_id || "");
       const lg = await liegenschaftenDb.get(id);
       if (!lg) return { error: "Liegenschaft nicht gefunden" };
-      const [gebaeude, pm, eigentuemer] = await Promise.all([
-        gebaeudeDb.list(),
-        pmVertraegeDb.list(),
-        eigentuemerDb.list(),
-      ]);
-      const deps = {
-        gebaeude: gebaeude.filter((g) => g.liegenschaftId === id).length,
-        pmVertraege: pm.filter((p) => p.liegenschaftId === id).length,
-        eigentuemer: eigentuemer.filter((e) => e.liegenschaftId === id).length,
-      };
-      const hasDeps = deps.gebaeude + deps.pmVertraege + deps.eigentuemer > 0;
+      const cascade = args.cascade !== false;
       if (!args.user_confirmed) {
         return {
           needsConfirmation: true,
-          frage: hasDeps
-            ? `Liegenschaft „${lg.name}" hat noch Abhängigkeiten (Gebäude: ${deps.gebaeude}, PM: ${deps.pmVertraege}, Eigentümer: ${deps.eigentuemer}). Wirklich löschen (force)? Besser merge_liegenschaften nutzen.`
+          frage: cascade
+            ? `Liegenschaft „${lg.name}" inkl. aller Gebäude, Wohnungen, Mieter, Mietverträge, PM-Verträge endgültig löschen?`
             : `Leere Liegenschaft „${lg.name}" löschen?`,
           liegenschaft_id: id,
-          abhaengigkeiten: deps,
+          cascade,
         };
       }
-      if (hasDeps && !args.force) {
-        return {
-          error: "Abhängigkeiten vorhanden – force=true und user_confirmed=true nötig oder zuerst mergen.",
-          abhaengigkeiten: deps,
-        };
+      if (cascade) {
+        const result = await cascadeDeleteLiegenschaft(id);
+        if (!result.ok) return { error: result.error };
+        return { ok: true, cascade: true, report: result.report, name: result.name };
       }
       await liegenschaftenDb.remove(id);
-      await logEvent("loeschung", `Liegenschaft „${lg.name}" vom Agent gelöscht.`, {
-        art: "Liegenschaft",
-        id,
-      });
-      return { ok: true, geloescht: lg.name };
+      await logEvent("loeschung", `Liegenschaft „${lg.name}" gelöscht.`, { art: "Liegenschaft", id });
+      return { ok: true, cascade: false, name: lg.name };
     }
 
+    
     case "merge_liegenschaften": {
       const quelleId = String(args.quelle_id || "");
       const zielId = String(args.ziel_id || "");
@@ -1187,26 +1276,70 @@ async function executeTool(
     }
 
     case "update_ablage_zuordnung": {
-      const id = String(args.ablage_id || "");
+      let id = args.ablage_id ? String(args.ablage_id) : "";
+      if (!id && args.datei_name) {
+        const q = String(args.datei_name).toLowerCase();
+        const list = await ablageDb.list();
+        const treffer = list.filter((d) => (d.dateiName || "").toLowerCase().includes(q));
+        if (treffer.length === 0) return { error: `Kein Ablage-Dokument „${args.datei_name}"` };
+        if (treffer.length > 1) {
+          return {
+            error: "Mehrere Dokumente – bitte ablage_id wählen",
+            treffer: treffer.map((d) => ({ id: d.id, dateiName: d.dateiName, status: d.status })),
+          };
+        }
+        id = treffer[0].id;
+      }
+      if (!id) return { error: "ablage_id oder datei_name erforderlich" };
       const doc = await ablageDb.get(id);
       if (!doc) return { error: "Ablage-Dokument nicht gefunden" };
+
+      let zielArt = args.ziel_art ? String(args.ziel_art) : "Liegenschaft";
+      let zielId = args.ziel_id ? String(args.ziel_id) : "";
+      let zielLabel = args.ziel_label ? String(args.ziel_label) : "";
+
+      if (!zielId && args.ziel_liegenschaft_query) {
+        const q = String(args.ziel_liegenschaft_query);
+        const lgs = await liegenschaftenDb.list();
+        const treffer = lgs.filter((l) => matchesQuery(q, l));
+        if (treffer.length === 0) return { error: `Keine Liegenschaft zu „${q}"` };
+        if (treffer.length > 1) {
+          return {
+            error: "Mehrere Liegenschaften – bitte ziel_id wählen",
+            treffer: treffer.map((l) => ({
+              id: l.id,
+              name: l.name,
+              nummer: l.nummer,
+              adresse: `${l.strasse} ${l.hausnummer}`,
+            })),
+          };
+        }
+        zielArt = "Liegenschaft";
+        zielId = treffer[0].id;
+        zielLabel = treffer[0].name;
+      }
+      if (!zielId || !zielLabel) {
+        return { error: "ziel_id+ziel_label oder ziel_liegenschaft_query erforderlich" };
+      }
+
       const alt = doc.zugeordnetAn?.label;
       const updated = await ablageDb.update(id, {
         zugeordnetAn: {
-          art: String(args.ziel_art) as any,
-          id: String(args.ziel_id),
-          label: String(args.ziel_label),
+          art: zielArt as any,
+          id: zielId,
+          label: zielLabel,
         },
         status: "zugeordnet",
       });
       await logEvent(
         "zuordnung",
-        `Ablage „${doc.dateiName}" vom Agent umgehängt: „${alt || "—"}" → „${args.ziel_label}".`,
+        `Ablage „${doc.dateiName}" vom Agent umgehängt: „${alt || "—"}" → „${zielLabel}".`,
         { art: "Ablage", id }
       );
       return {
         ok: true,
         dateiName: doc.dateiName,
+        alt: alt || null,
         neu: updated?.zugeordnetAn,
       };
     }
@@ -1948,7 +2081,25 @@ async function executeTool(
     }
 
     case "delete_mietvertrag": {
-      const id = String(args.mietvertrag_id || "");
+      let id = args.mietvertrag_id ? String(args.mietvertrag_id) : "";
+      if (!id && args.mietvertrag_query) {
+        const q = String(args.mietvertrag_query).toLowerCase();
+        const list = await mietvertraegeDb.list();
+        const treffer = list.filter(
+          (v) =>
+            (v.dateiName || "").toLowerCase().includes(q) ||
+            (v.nummer || "").toLowerCase().includes(q)
+        );
+        if (treffer.length === 0) return { error: `Kein Mietvertrag zu „${args.mietvertrag_query}"` };
+        if (treffer.length > 1) {
+          return {
+            error: "Mehrere Treffer – bitte mietvertrag_id wählen",
+            treffer: treffer.map((v) => ({ id: v.id, dateiName: v.dateiName, nummer: v.nummer })),
+          };
+        }
+        id = treffer[0].id;
+      }
+      if (!id) return { error: "mietvertrag_id oder mietvertrag_query erforderlich" };
       const mv = await mietvertraegeDb.get(id);
       if (!mv) return { error: `Mietvertrag ${id} nicht gefunden` };
       if (!args.user_confirmed) {
@@ -1971,6 +2122,152 @@ async function executeTool(
       };
     }
 
+    case "delete_mieter": {
+      let id = args.mieter_id ? String(args.mieter_id) : "";
+      if (!id && args.mieter_name) {
+        const q = String(args.mieter_name).toLowerCase();
+        const list = await mieterDb.list();
+        const treffer = list.filter((m) => m.name.toLowerCase().includes(q));
+        if (treffer.length === 0) return { error: `Kein Mieter „${args.mieter_name}"` };
+        if (treffer.length > 1) {
+          return {
+            error: "Mehrere Mieter – bitte mieter_id wählen",
+            treffer: treffer.map((m) => ({ id: m.id, name: m.name, nummer: m.nummer })),
+          };
+        }
+        id = treffer[0].id;
+      }
+      if (!id) return { error: "mieter_id oder mieter_name erforderlich" };
+      const m = await mieterDb.get(id);
+      if (!m) return { error: `Mieter ${id} nicht gefunden` };
+      if (!args.user_confirmed) {
+        return {
+          needsConfirmation: true,
+          frage: `Mieter „${m.name}"${m.nummer ? ` (Nr. ${m.nummer})` : ""} wirklich löschen${
+            args.delete_vertraege !== false ? " inklusive verknüpfter Mietverträge" : ""
+          }?`,
+          mieter_id: id,
+        };
+      }
+      const result = await cascadeDeleteMieter(id, args.delete_vertraege !== false);
+      if (!result.ok) return { error: result.error };
+      return { ok: true, report: result.report, name: result.name };
+    }
+
+    case "delete_ablage_dokument": {
+      let id = args.ablage_id ? String(args.ablage_id) : "";
+      if (!id && args.datei_name) {
+        const q = String(args.datei_name).toLowerCase();
+        const list = await ablageDb.list();
+        const treffer = list.filter((d) => (d.dateiName || "").toLowerCase().includes(q));
+        if (treffer.length === 0) return { error: `Kein Ablage-Dokument „${args.datei_name}"` };
+        if (treffer.length > 1) {
+          return {
+            error: "Mehrere Treffer – bitte ablage_id wählen",
+            treffer: treffer.map((d) => ({
+              id: d.id,
+              dateiName: d.dateiName,
+              status: d.status,
+              zugeordnetAn: d.zugeordnetAn?.label,
+            })),
+          };
+        }
+        id = treffer[0].id;
+      }
+      if (!id) return { error: "ablage_id oder datei_name erforderlich" };
+      const doc = await ablageDb.get(id);
+      if (!doc) return { error: `Ablage-Dokument ${id} nicht gefunden` };
+      if (!args.user_confirmed) {
+        return {
+          needsConfirmation: true,
+          frage: `Ablage-Dokument „${doc.dateiName}" wirklich endgültig löschen (Datei + Eintrag)?`,
+          ablage_id: id,
+        };
+      }
+      if (doc.storedFileName) {
+        try {
+          await deleteStoredFile(doc.storedFileName);
+        } catch {
+          /* ignore */
+        }
+      }
+      await ablageDb.remove(id);
+      await logEvent("loeschung", `Agent: Ablage „${doc.dateiName}" gelöscht.`, {
+        art: "Ablage",
+        id,
+      });
+      return { ok: true, geloescht: { id, dateiName: doc.dateiName } };
+    }
+
+
+    case "delete_gebaeude": {
+      const id = String(args.gebaeude_id || "");
+      const g = await gebaeudeDb.get(id);
+      if (!g) return { error: "Gebäude nicht gefunden" };
+      if (!args.user_confirmed) {
+        return {
+          needsConfirmation: true,
+          frage: `Gebäude „${g.name}" inkl. Wohnungen und Mieter löschen?`,
+          gebaeude_id: id,
+        };
+      }
+      const result = await cascadeDeleteGebaeude(id);
+      if (!result.ok) return { error: result.error };
+      return { ok: true, report: result.report, name: result.name };
+    }
+
+    case "delete_wohnung": {
+      const id = String(args.wohnung_id || "");
+      const w = await wohnungenDb.get(id);
+      if (!w) return { error: "Wohnung nicht gefunden" };
+      if (!args.user_confirmed) {
+        return {
+          needsConfirmation: true,
+          frage: `Wohnung „${w.bezeichnung}" inkl. Mieter und Mietverträge löschen?`,
+          wohnung_id: id,
+        };
+      }
+      const result = await cascadeDeleteWohnung(id);
+      if (!result.ok) return { error: result.error };
+      return { ok: true, report: result.report, name: result.name };
+    }
+
+    case "beende_pm_vertrag": {
+      let id = args.pm_vertrag_id ? String(args.pm_vertrag_id) : "";
+      if (!id && args.liegenschaft_query) {
+        const q = String(args.liegenschaft_query);
+        const [pms, lgs] = await Promise.all([pmVertraegeDb.list(), liegenschaftenDb.list()]);
+        const lgIds = new Set(lgs.filter((l) => matchesQuery(q, l)).map((l) => l.id));
+        const treffer = pms.filter((p) => lgIds.has(p.liegenschaftId) && p.status !== "Beendet");
+        if (treffer.length === 0) return { error: `Kein aktiver PM-Vertrag zu „${q}"` };
+        if (treffer.length > 1) {
+          return {
+            error: "Mehrere PM-Verträge – pm_vertrag_id wählen",
+            treffer: treffer.map((p) => ({
+              id: p.id,
+              verwalter: p.verwalterName,
+              dateiName: p.dateiName,
+              status: p.status,
+            })),
+          };
+        }
+        id = treffer[0].id;
+      }
+      if (!id) return { error: "pm_vertrag_id oder liegenschaft_query erforderlich" };
+      const pm = await pmVertraegeDb.get(id);
+      if (!pm) return { error: "PM-Vertrag nicht gefunden" };
+      if (!args.user_confirmed) {
+        return {
+          needsConfirmation: true,
+          frage: `PM-Vertrag „${pm.verwalterName || pm.dateiName}" beenden und Liegenschaft auf inaktiv setzen?`,
+          pm_vertrag_id: id,
+        };
+      }
+      const result = await beendePmVertrag(id);
+      if (!result.ok) return { error: result.error };
+      return { ok: true, ...result };
+    }
+
     default:
       return { error: `Unbekanntes Tool: ${name}` };
   }
@@ -1985,7 +2282,14 @@ Du hast Schreibrechte über Tools (Datenbank-Updates). Behaupte NIEMALS, du kön
 - sync_mieter_from_mietvertraege – übernimmt Kaltmiete, NK, Mietbeginn/Ende aus verknüpften Mietverträgen in die Mieter-Stammdaten. Parameter mieter_name oder liegenschaft_query. Bei „Stammdaten nachtragen/Mietbeginn nachpflegen“ SOFORT aufrufen.
 - update_mieter – setzt Stammdaten eines Mieters direkt (kaltmiete, mietbeginn, NK, …) per ID oder Name.
 - reassign_mietvertrag – Wohnung/Mieter eines Vertrags neu setzen + optional Stammdaten sync.
-- delete_mietvertrag – Mietvertrag löschen (nur mit user_confirmed=true; vorher list_mietvertraege).
+- delete_mietvertrag – Mietvertrag löschen (user_confirmed=true; ID oder Query).
+- delete_mieter – Mieter löschen (user_confirmed; optional delete_vertraege).
+- delete_ablage_dokument – Ablage-Datei löschen (user_confirmed; ID oder datei_name).
+- delete_liegenschaft – ganze Liegenschaft löschen (user_confirmed / force bei Abhängigkeiten).
+- update_ablage_zuordnung – Ablageort ändern (datei_name + ziel_liegenschaft_query möglich).
+- delete_gebaeude / delete_wohnung / delete_liegenschaft (cascade) – Hierarchie kaskadiert löschen.
+- beende_pm_vertrag – PM beenden → Liegenschaft inaktiv (raus aus Analysen).
+- Löschen immer erst mit needsConfirmation fragen, dann user_confirmed=true ausführen, wenn der Nutzer klar bestätigt („ja“, „lösche“, „endgültig“).
 - list_mietvertraege / list_ablage / list_unpassende_dokumente – Übersicht.
 - get_pruef_befunde / run_pruefung / execute_safe_cleanup – Prüfbefunde.
 

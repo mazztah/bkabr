@@ -237,19 +237,49 @@ export default function PruefungPage() {
                         <p className="text-sm font-medium">
                           {SCHWEREGRAD_ICON[b.schweregrad]} {b.titel}
                         </p>
-                        <p className="whitespace-pre-line text-xs text-muted-foreground">{b.beschreibung}</p>
-                        {b.linkHref && (
-                          <a
-                            href={b.linkHref}
-                            className="mt-1 inline-block text-xs font-medium text-primary hover:underline"
-                          >
-                            → Zur Bearbeitung ({b.linkHref})
-                          </a>
+                        {b.kontext && (b.kontext.mieterName || b.kontext.liegenschaftName) && (
+                          <p className="mt-0.5 text-xs font-medium text-foreground/80">
+                            {[
+                              b.kontext.mieterName
+                                ? `Mieter: ${b.kontext.mieterName}${b.kontext.mieterNummer ? ` (Nr. ${b.kontext.mieterNummer})` : ""}`
+                                : null,
+                              b.kontext.liegenschaftName
+                                ? `Liegenschaft: ${b.kontext.liegenschaftName}${b.kontext.liegenschaftNummer ? ` (Nr. ${b.kontext.liegenschaftNummer})` : ""}`
+                                : null,
+                              b.kontext.liegenschaftAdresse || null,
+                              b.kontext.wohnungBezeichnung
+                                ? `Wohnung: ${b.kontext.wohnungBezeichnung}`
+                                : null,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </p>
                         )}
+                        <p className="whitespace-pre-line text-xs text-muted-foreground">{b.beschreibung}</p>
+                        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                          {(b.linkHref || b.kontext?.bearbeitenHref) && (
+                            <a
+                              href={b.linkHref || b.kontext?.bearbeitenHref}
+                              className="inline-block text-xs font-medium text-primary hover:underline"
+                            >
+                              → Zur Bearbeitung
+                            </a>
+                          )}
+                          {b.kontext?.dokumentHref && (
+                            <a
+                              href={b.kontext.dokumentHref}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-block text-xs font-medium text-primary hover:underline"
+                            >
+                              📄 {b.kontext.dokumentLabel || "Dokument öffnen"}
+                            </a>
+                          )}
+                        </div>
                         {b.vorschlag && (
                           <p className="mt-0.5 text-xs text-primary">→ Vorschlag: {b.vorschlag.beschreibung}</p>
                         )}
-                        {!b.vorschlag && !b.linkHref && (
+                        {!b.vorschlag && !b.linkHref && !b.kontext?.dokumentHref && (
                           <p className="mt-0.5 text-xs italic text-muted-foreground">
                             Kein automatischer Korrekturvorschlag – bitte manuell prüfen oder Agent beauftragen.
                           </p>

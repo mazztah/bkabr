@@ -17,15 +17,32 @@ import { pruefeDokumentZuordnung } from "./ai";
 import {
   PRUEF_MODUL_REIHENFOLGE,
   PruefBefund,
+  PruefBefundKontext,
   PruefLauf,
   PruefModul,
   PruefStatus,
+  Mieter,
+  Mietvertrag,
+  Wohnung,
+  Gebaeude,
+  Liegenschaft,
+  AblageDokument,
 } from "./types";
 import { uid } from "./utils";
+import { isLiegenschaftAktiv } from "./cascade-delete";
 
 // Wie viele bereits zugeordnete Ablage-Dokumente pro Lauf per LLM stichprobenartig
 // gegengeprüft werden (Kosten-/Zeitbegrenzung).
 const LLM_STICHPROBE_LIMIT = 15;
+
+function fileHref(storedFileName?: string, mimeType?: string, dateiName?: string): string | undefined {
+  if (!storedFileName) return undefined;
+  const q = new URLSearchParams();
+  if (mimeType) q.set("mime", mimeType);
+  if (dateiName) q.set("name", dateiName);
+  const qs = q.toString();
+  return `/api/files/${storedFileName}${qs ? `?${qs}` : ""}`;
+}
 
 function neuerBefund(
   modul: PruefModul,
@@ -34,7 +51,8 @@ function neuerBefund(
   beschreibung: string,
   betroffene: PruefBefund["betroffene"],
   vorschlag?: PruefBefund["vorschlag"],
-  linkHref?: string
+  linkHref?: string,
+  kontext?: PruefBefundKontext
 ): PruefBefund {
   return {
     id: uid(),
@@ -44,9 +62,108 @@ function neuerBefund(
     beschreibung,
     betroffene,
     vorschlag,
-    linkHref,
+    linkHref: linkHref || kontext?.bearbeitenHref,
+    kontext,
     status: "offen",
   };
+}
+
+/** Baut Anzeige-Kontext (Nummern, Liegenschaft, Dokument-Link) für einen Mieter. */
+function kontextFuerMieter(
+  m: Mieter,
+  maps: {
+    wohnungById: Map<string, Wohnung>;
+    gebaeudeById: Map<string, Gebaeude>;
+    liegenschaftById: Map<string, Liegenschaft>;
+    mietvertraege: Mietvertrag[];
+  }
+): PruefBefundKontext {
+  const w = maps.wohnungById.get(m.wohnungId);
+  const g = w ? maps.gebaeudeById.get(w.gebaeudeId) : undefined;
+  const lg = g ? maps.liegenschaftById.get(g.liegenschaftId) : undefined;
+  const mv =
+    maps.mietvertraege.find((x) => x.mieterId === m.id) ||
+    maps.mietvertraege.find((x) => !x.mieterId && x.wohnungId === m.wohnungId);
+  const dokumentHref = fileHref(mv?.storedFileName, mv?.mimeType, mv?.dateiName);
+  return {
+    mieterNummer: m.nummer,
+    mieterName: m.name,
+    liegenschaftNummer: lg?.nummer,
+    liegenschaftName: lg?.name,
+    liegenschaftAdresse: lg
+      ? `${lg.strasse} ${lg.hausnummer}, ${lg.plz} ${lg.ort}`.trim()
+      : undefined,
+    wohnungBezeichnung: w?.bezeichnung,
+    bearbeitenHref: `/mieter?id=${m.id}`,
+    dokumentHref,
+    dokumentLabel: mv?.dateiName,
+  };
+}
+
+function kontextFuerMietvertrag(
+  mv: Mietvertrag,
+  maps: {
+    mieterById: Map<string, Mieter>;
+    wohnungById: Map<string, Wohnung>;
+    gebaeudeById: Map<string, Gebaeude>;
+    liegenschaftById: Map<string, Liegenschaft>;
+  }
+): PruefBefundKontext {
+  const m = mv.mieterId ? maps.mieterById.get(mv.mieterId) : undefined;
+  const w = mv.wohnungId ? maps.wohnungById.get(mv.wohnungId) : undefined;
+  const g = w ? maps.gebaeudeById.get(w.gebaeudeId) : undefined;
+  const lg = g ? maps.liegenschaftById.get(g.liegenschaftId) : undefined;
+  return {
+    mieterNummer: m?.nummer,
+    mieterName: m?.name,
+    liegenschaftNummer: lg?.nummer,
+    liegenschaftName: lg?.name,
+    liegenschaftAdresse: lg
+      ? `${lg.strasse} ${lg.hausnummer}, ${lg.plz} ${lg.ort}`.trim()
+      : undefined,
+    wohnungBezeichnung: w?.bezeichnung,
+    bearbeitenHref: `/mietvertraege?id=${mv.id}`,
+    dokumentHref: fileHref(mv.storedFileName, mv.mimeType, mv.dateiName),
+    dokumentLabel: mv.dateiName,
+  };
+}
+
+function kontextFuerAblage(
+  doc: AblageDokument,
+  maps: { liegenschaftById: Map<string, Liegenschaft> }
+): PruefBefundKontext {
+  let lg: Liegenschaft | undefined;
+  if (doc.zugeordnetAn?.art === "Liegenschaft" && doc.zugeordnetAn.id) {
+    lg = maps.liegenschaftById.get(doc.zugeordnetAn.id);
+  }
+  return {
+    liegenschaftNummer: lg?.nummer,
+    liegenschaftName: lg?.name || doc.zugeordnetAn?.label,
+    liegenschaftAdresse: lg
+      ? `${lg.strasse} ${lg.hausnummer}, ${lg.plz} ${lg.ort}`.trim()
+      : undefined,
+    bearbeitenHref: `/ablage`,
+    dokumentHref: fileHref(doc.storedFileName, doc.mimeType, doc.dateiName),
+    dokumentLabel: doc.dateiName,
+  };
+}
+
+function kontextZeile(k?: PruefBefundKontext): string {
+  if (!k) return "";
+  const teile: string[] = [];
+  if (k.mieterName || k.mieterNummer) {
+    teile.push(
+      `Mieter: ${k.mieterName || "–"}${k.mieterNummer ? ` (Nr. ${k.mieterNummer})` : ""}`
+    );
+  }
+  if (k.liegenschaftName || k.liegenschaftNummer) {
+    teile.push(
+      `Liegenschaft: ${k.liegenschaftName || "–"}${k.liegenschaftNummer ? ` (Nr. ${k.liegenschaftNummer})` : ""}`
+    );
+  }
+  if (k.liegenschaftAdresse) teile.push(k.liegenschaftAdresse);
+  if (k.wohnungBezeichnung) teile.push(`Wohnung: ${k.wohnungBezeichnung}`);
+  return teile.length ? teile.join(" · ") : "";
 }
 
 /**
@@ -76,6 +193,14 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
   const liegenschaftById = new Map(liegenschaften.map((l) => [l.id, l]));
   const gebaeudeById = new Map(gebaeude.map((g) => [g.id, g]));
   const wohnungById = new Map(wohnungen.map((w) => [w.id, w]));
+  const mieterById = new Map(mieter.map((m) => [m.id, m]));
+  const hierMaps = {
+    wohnungById,
+    gebaeudeById,
+    liegenschaftById,
+    mietvertraege,
+    mieterById,
+  };
 
   // ---- Gebäude: verwaiste Referenzen auf nicht (mehr) existierende Liegenschaft ----
   for (const g of gebaeude) {
@@ -95,6 +220,9 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
     // kein Sonderfall nötig, oben bereits pro Gebäude erfasst
   }
   for (const l of liegenschaften) {
+    // Inaktive Liegenschaften (z.B. nach beendetem PM-Vertrag) nicht beanstanden
+    if (!isLiegenschaftAktiv(l)) continue;
+
     const hatGebaeude = gebaeude.some((g) => g.liegenschaftId === l.id);
     if (!hatGebaeude) {
       befunde.push(
@@ -107,14 +235,16 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
         )
       );
     }
-    const hatPmVertrag = pmVertraege.some((p) => p.liegenschaftId === l.id);
+    const hatPmVertrag = pmVertraege.some(
+      (p) => p.liegenschaftId === l.id && p.status !== "Beendet"
+    );
     if (!hatPmVertrag) {
       befunde.push(
         neuerBefund(
           "pmVertraege",
           "hinweis",
           "Liegenschaft ohne PM-Vertrag",
-          `Für „${l.name}" ist noch kein PM-Vertrag hinterlegt.`,
+          `Für „${l.name}" ist noch kein aktiver PM-Vertrag hinterlegt.`,
           [{ art: "Liegenschaft", id: l.id, label: l.name }]
         )
       );
@@ -219,16 +349,19 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
 
   // ---- Mieter: verwaiste Referenzen + fehlende Stammdaten ----
   for (const m of mieter) {
+    const ktx = kontextFuerMieter(m, hierMaps);
+    const ktxLine = kontextZeile(ktx);
     if (!wohnungById.has(m.wohnungId)) {
       befunde.push(
         neuerBefund(
           "mieter",
           "fehler",
           "Mieter ohne gültige Wohnung",
-          `„${m.name}" ist keiner (mehr) existierenden Wohnung zugeordnet.`,
+          `„${m.name}" ist keiner (mehr) existierenden Wohnung zugeordnet.${ktxLine ? ` ${ktxLine}` : ""}`,
           [{ art: "Mieter", id: m.id, label: m.name }],
           undefined,
-          "/mieter"
+          ktx.bearbeitenHref,
+          ktx
         )
       );
       continue;
@@ -262,8 +395,8 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
     if (!mieterBeginn && vertragBeginn) nurImVertrag.push("Mietbeginn");
 
     if (fehlendKritisch.length > 0) {
-      // Diagnose in die Beschreibung, damit klar ist WAS geprüft wurde
       const diagTeile: string[] = [];
+      if (ktxLine) diagTeile.push(ktxLine);
       diagTeile.push(
         `Mieter-Felder: Kaltmiete=${m.kaltmiete ?? "–"}, Mietbeginn=${m.mietbeginn || "–"}, NK=${m.nebenkostenVorauszahlung ?? "–"}`
       );
@@ -288,7 +421,8 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
           `Bei „${m.name}" fehlen: ${fehlendKritisch.join(", ")}. ${diagTeile.join(" ")}`,
           [{ art: "Mieter", id: m.id, label: m.name }],
           undefined,
-          `/mieter`
+          ktx.bearbeitenHref,
+          ktx
         )
       );
     } else if (nurImVertrag.length > 0) {
@@ -302,7 +436,7 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
           "mieter",
           "hinweis",
           "Mieter-Stammdaten aus Mietvertrag übernehmbar",
-          `Bei „${m.name}" liegen ${nurImVertrag.join(", ")} im Mietvertrag vor, aber noch nicht in den Mieter-Stammdaten. Mit „Übernehmen“ werden sie synchronisiert.`,
+          `Bei „${m.name}" liegen ${nurImVertrag.join(", ")} im Mietvertrag vor, aber noch nicht in den Mieter-Stammdaten. Mit „Übernehmen“ werden sie synchronisiert.${ktxLine ? ` ${ktxLine}` : ""}`,
           [{ art: "Mieter", id: m.id, label: m.name }],
           {
             art: "stammdaten_korrigieren",
@@ -310,25 +444,25 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
             entitaet: { art: "mieter", id: m.id, label: m.name },
             patch,
           },
-          "/mieter"
+          ktx.bearbeitenHref,
+          ktx
         )
       );
     } else if (mieterNk == null && vertragNk == null) {
-      // Nur NK fehlt – weicher Hinweis, kein Alarm „unvollständig“
       befunde.push(
         neuerBefund(
           "mieter",
           "hinweis",
           "NK-Vorauszahlung nicht hinterlegt",
-          `Bei „${m.name}" sind Kaltmiete und Mietbeginn vorhanden, die NK-Vorauszahlung fehlt noch (optional).`,
+          `Bei „${m.name}" sind Kaltmiete und Mietbeginn vorhanden, die NK-Vorauszahlung fehlt noch (optional).${ktxLine ? ` ${ktxLine}` : ""}`,
           [{ art: "Mieter", id: m.id, label: m.name }],
           undefined,
-          "/mieter"
+          ktx.bearbeitenHref,
+          ktx
         )
       );
     }
 
-    // Vertrag vorhanden?
     const hatVertrag = linked.length > 0;
     if (!hatVertrag) {
       befunde.push(
@@ -336,10 +470,11 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
           "mietvertraege",
           "hinweis",
           "Mieter ohne hinterlegten Mietvertrag",
-          `Für „${m.name}" liegt kein Mietvertrags-Dokument vor – hochladen und zuordnen.`,
+          `Für „${m.name}" liegt kein Mietvertrags-Dokument vor – hochladen und zuordnen.${ktxLine ? ` ${ktxLine}` : ""}`,
           [{ art: "Mieter", id: m.id, label: m.name }],
           undefined,
-          "/mietvertraege"
+          "/mietvertraege",
+          { ...ktx, bearbeitenHref: "/mietvertraege", dokumentHref: undefined }
         )
       );
     }
@@ -347,36 +482,39 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
 
   // ---- Mietverträge: fehlende Zuordnung / Stammdaten ----
   for (const mv of mietvertraege) {
+    const ktxMv = kontextFuerMietvertrag(mv, hierMaps);
+    const ktxLineMv = kontextZeile(ktxMv);
     if (!mv.wohnungId || !wohnungById.has(mv.wohnungId)) {
       befunde.push(
         neuerBefund(
           "mietvertraege",
           "fehler",
           "Mietvertrag ohne gültige Wohnung",
-          `„${mv.dateiName}" ist keiner Wohnung zugeordnet.`,
+          `„${mv.dateiName}" ist keiner Wohnung zugeordnet.${ktxLineMv ? ` ${ktxLineMv}` : ""}`,
           [{ art: "Mietvertrag", id: mv.id, label: mv.dateiName }],
           undefined,
-          "/mietvertraege"
+          ktxMv.bearbeitenHref,
+          ktxMv
         )
       );
     }
     if (!mv.mieterId) {
-      // Wenn auf derselben Wohnung genau ein Mieter existiert, ist die Zuordnung
-      // implizit klar – kein harter Fehler, nur Hinweis.
       const mieterAufWohnung = mieter.filter((m) => m.wohnungId === mv.wohnungId);
       if (mieterAufWohnung.length === 1) {
+        const ktx1 = { ...ktxMv, mieterName: mieterAufWohnung[0].name, mieterNummer: mieterAufWohnung[0].nummer };
         befunde.push(
           neuerBefund(
             "mietvertraege",
             "hinweis",
             "Mietvertrag ohne explizite Mieter-ID",
-            `„${mv.dateiName}" hat keine Mieter-ID, aber genau einen Mieter auf der Wohnung („${mieterAufWohnung[0].name}"). Bitte zuordnen oder „Neu zuordnen“ nutzen.`,
+            `„${mv.dateiName}" hat keine Mieter-ID, aber genau einen Mieter auf der Wohnung („${mieterAufWohnung[0].name}"). Bitte zuordnen oder „Neu zuordnen“ nutzen.${kontextZeile(ktx1) ? ` ${kontextZeile(ktx1)}` : ""}`,
             [
               { art: "Mietvertrag", id: mv.id, label: mv.dateiName },
               { art: "Mieter", id: mieterAufWohnung[0].id, label: mieterAufWohnung[0].name },
             ],
             undefined,
-            "/mietvertraege"
+            ktx1.bearbeitenHref,
+            ktx1
           )
         );
       } else {
@@ -385,10 +523,11 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
             "mietvertraege",
             "warnung",
             "Mietvertrag ohne Mieter-Zuordnung",
-            `„${mv.dateiName}" hat keine Mieter-ID – bitte neu zuordnen.`,
+            `„${mv.dateiName}" hat keine Mieter-ID – bitte neu zuordnen.${ktxLineMv ? ` ${ktxLineMv}` : ""}`,
             [{ art: "Mietvertrag", id: mv.id, label: mv.dateiName }],
             undefined,
-            "/mietvertraege"
+            ktxMv.bearbeitenHref,
+            ktxMv
           )
         );
       }
@@ -398,10 +537,11 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
           "mietvertraege",
           "fehler",
           "Mietvertrag verweist auf fehlenden Mieter",
-          `„${mv.dateiName}" zeigt auf eine nicht existierende Mieter-ID.`,
+          `„${mv.dateiName}" zeigt auf eine nicht existierende Mieter-ID.${ktxLineMv ? ` ${ktxLineMv}` : ""}`,
           [{ art: "Mietvertrag", id: mv.id, label: mv.dateiName }],
           undefined,
-          "/mietvertraege"
+          ktxMv.bearbeitenHref,
+          ktxMv
         )
       );
     }
@@ -414,10 +554,11 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
           "mietvertraege",
           "hinweis",
           "Mietvertrag mit unvollständigen Stammdaten",
-          `Bei „${mv.dateiName}" fehlen: ${fehlMv.join(", ")}.`,
+          `Bei „${mv.dateiName}" fehlen: ${fehlMv.join(", ")}.${ktxLineMv ? ` ${ktxLineMv}` : ""}`,
           [{ art: "Mietvertrag", id: mv.id, label: mv.dateiName }],
           undefined,
-          "/mietvertraege"
+          ktxMv.bearbeitenHref,
+          ktxMv
         )
       );
     }
@@ -478,6 +619,7 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
   for (const a of offeneAblage) {
     const alterMs = jetzt - new Date(a.hochgeladenAm).getTime();
     if (alterMs > SIEBEN_TAGE_MS) {
+      const ktxA = kontextFuerAblage(a, { liegenschaftById });
       befunde.push(
         neuerBefund(
           "ablage",
@@ -486,7 +628,8 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
           `„${a.dateiName}" liegt seit ${Math.floor(alterMs / (24 * 60 * 60 * 1000))} Tagen unzugeordnet in der Ablage.`,
           [{ art: "Ablage", id: a.id, label: a.dateiName }],
           undefined,
-          "/ablage"
+          "/ablage",
+          ktxA
         )
       );
     }
@@ -579,14 +722,17 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
             };
           }
         }
+        const ktxDoc = kontextFuerAblage(doc, { liegenschaftById });
         befunde.push(
           neuerBefund(
             "ablage",
             "warnung",
             "Zuordnung wirkt unplausibel",
-            `„${doc.dateiName}" ist bei „${doc.zugeordnetAn!.label}" abgelegt – ${ergebnis.begruendung || "die KI hält das für nicht eindeutig plausibel."}`,
+            `„${doc.dateiName}" ist bei „${doc.zugeordnetAn!.label}" abgelegt – ${ergebnis.begruendung || "die KI hält das für nicht eindeutig plausibel."}${kontextZeile(ktxDoc) ? ` ${kontextZeile(ktxDoc)}` : ""}`,
             [{ art: "Ablage", id: doc.id, label: doc.dateiName }],
-            vorschlag
+            vorschlag,
+            "/ablage",
+            ktxDoc
           )
         );
       }
