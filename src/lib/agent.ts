@@ -452,7 +452,30 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
 
   {
     type: "function",
+    function: 
+  {
+    type: "function",
     function: {
+      name: "sync_mieter_from_mietvertraege",
+      description:
+        "Übernimmt aus vorhandenen Mietverträgen Mietbeginn, Mietende, Kaltmiete (sollMiete) und NK-Vorauszahlung in die Mieter-Stammdaten. Optional gefiltert nach Liegenschaft/Straße. Nur Felder setzen, die im Mietvertrag befüllt sind.",
+      parameters: {
+        type: "object",
+        properties: {
+          liegenschaft_query: {
+            type: "string",
+            description: "Optional: Straße/Name z.B. Spannhagengartenstraße 10",
+          },
+          nur_leere_felder: {
+            type: "boolean",
+            description: "Wenn true (Standard), nur leere Mieter-Felder überschreiben; wenn false, Vertragsdaten immer übernehmen",
+          },
+        },
+        required: [],
+      },
+    },
+  },
+{
       name: "list_unpassende_dokumente",
       description:
         "Listet Ablage-Dokumente die (a) keiner Liegenschaft zugeordnet sind, (b) Status neu/in_pruefung haben, oder (c) im letzten Prüflauf als unplausible Zuordnung markiert wurden. Ideal für 'zeig mir Dokumente die zu keiner Liegenschaft passen'.",
@@ -1376,7 +1399,99 @@ async function executeTool(
     }
 
 
-    case "list_unpassende_dokumente": {
+    
+    case "sync_mieter_from_mietvertraege": {
+      const q = args.liegenschaft_query ? String(args.liegenschaft_query) : "";
+      const nurLeere = args.nur_leere_felder !== false;
+      const [vertraege, mieter, wohnungen, gebaeude, liegenschaften] = await Promise.all([
+        mietvertraegeDb.list(),
+        mieterDb.list(),
+        wohnungenDb.list(),
+        gebaeudeDb.list(),
+        liegenschaftenDb.list(),
+      ]);
+
+      const wohnungById = new Map(wohnungen.map((w) => [w.id, w]));
+      const gebById = new Map(gebaeude.map((g) => [g.id, g]));
+      const lgById = new Map(liegenschaften.map((l) => [l.id, l]));
+
+      function mieterInQuery(mi: typeof mieter[0]): boolean {
+        if (!q) return true;
+        const w = wohnungById.get(mi.wohnungId);
+        const g = w ? gebById.get(w.gebaeudeId) : undefined;
+        const lg = g ? lgById.get(g.liegenschaftId) : undefined;
+        return matchesQuery(q, lg, mi.name);
+      }
+
+      const updates: {
+        mieterId: string;
+        mieterName: string;
+        fromVertrag: string;
+        patch: Record<string, string | number>;
+      }[] = [];
+      const skipped: string[] = [];
+
+      for (const mv of vertraege) {
+        if (mv.status === "Beendet") continue;
+        let target = mv.mieterId ? mieter.find((x) => x.id === mv.mieterId) : undefined;
+        if (!target && mv.wohnungId) {
+          // Prefer mieter on same Wohnung without data, or any on Wohnung
+          const candidates = mieter.filter((x) => x.wohnungId === mv.wohnungId);
+          target =
+            candidates.find((c) => !c.kaltmiete && !c.mietbeginn) ||
+            candidates[0];
+        }
+        if (!target) {
+          skipped.push(`${mv.dateiName}: kein Mieter verknüpft`);
+          continue;
+        }
+        if (!mieterInQuery(target)) continue;
+
+        const patch: Record<string, string | number> = {};
+        if (mv.mietbeginn && (!nurLeere || !target.mietbeginn)) patch.mietbeginn = mv.mietbeginn;
+        if (mv.mietende && (!nurLeere || !target.mietende)) patch.mietende = mv.mietende;
+        if (typeof mv.sollMiete === "number" && mv.sollMiete > 0 && (!nurLeere || !target.kaltmiete)) {
+          patch.kaltmiete = mv.sollMiete;
+        }
+        if (
+          typeof mv.nebenkostenVorauszahlung === "number" &&
+          mv.nebenkostenVorauszahlung >= 0 &&
+          (!nurLeere || target.nebenkostenVorauszahlung === undefined || target.nebenkostenVorauszahlung === null)
+        ) {
+          patch.nebenkostenVorauszahlung = mv.nebenkostenVorauszahlung;
+        }
+        if (Object.keys(patch).length === 0) {
+          skipped.push(`${target.name}: nichts zu übernehmen aus ${mv.dateiName}`);
+          continue;
+        }
+        await mieterDb.update(target.id, patch as any);
+        updates.push({
+          mieterId: target.id,
+          mieterName: target.name,
+          fromVertrag: mv.dateiName || mv.nummer || mv.id,
+          patch,
+        });
+      }
+
+      await logEvent(
+        "aenderung",
+        `Agent: ${updates.length} Mieter aus Mietverträgen aktualisiert (Mietbeginn/Kaltmiete/NK).`,
+        { art: "Mieter" }
+      );
+
+      return {
+        ok: true,
+        anzahl: updates.length,
+        aktualisiert: updates.map((u) => ({
+          mieter: u.mieterName,
+          vertrag: u.fromVertrag,
+          felder: u.patch,
+        })),
+        uebersprungen: skipped.slice(0, 20),
+      };
+    }
+
+case "list_unpassende_dokumente": {
       const [ablage, laeufe, liegenschaften] = await Promise.all([
         ablageDb.list(),
         pruefLaufDb.list(),
@@ -1749,13 +1864,25 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
     /\b(hausnummer|hausnr)\b/.test(m) &&
     /\b(falsch|korrigier|richtig|alle\s+haben|ueberall|überall)\b/.test(m);
 
+  // Mieter-Stammdaten aus Mietvertrag (Mietbeginn, Kaltmiete, NK)
+  const wantsMieterSync =
+    (/\b(mieter|stammdaten)\b/.test(m) &&
+      /\b(aktualis|sync|uebernehm|übernehm|pfleg|fuell|füll|mietbeginn|kaltmiete|mietzins|nebenkosten|nk)\w*/.test(
+        m
+      )) ||
+    (/\b(mietbeginn|kaltmiete|mietzins|nk[- ]?voraus)\b/.test(m) &&
+      /\b(setz|aktualis|uebernehm|übernehm|alle|mieter)\w*/.test(m)) ||
+    (/\b(mietvertrag|mietvertraege)\b/.test(m) &&
+      /\b(mieter|stammdaten|uebernehm|übernehm)\b/.test(m));
+
   if (
     !wantsCleanup &&
     !wantsDocs &&
     !wantsFlaeche &&
     !wantsDeleteLiegenschaften &&
     !wantsDeleteOhnePm &&
-    !wantsFixHausnummer
+    !wantsFixHausnummer &&
+    !wantsMieterSync
   ) {
     return null;
   }
@@ -1925,6 +2052,45 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
     }
   }
 
+
+  // Mieter aus Mietverträgen
+  if (wantsMieterSync) {
+    // Straße/Query aus Nachricht ziehen
+    let query = "";
+    const fuer = message.match(
+      /\b(?:in|fuer|für|der|die)\s+([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\s\d.-]{3,40})/i
+    );
+    if (fuer) query = fuer[1].replace(/[?.!,]+$/, "").trim();
+    if (!query) {
+      const str = message.match(
+        /([A-ZÄÖÜ][a-zäöüß]+(?:straße|strasse|str\.?|weg|platz)[^\s,]*(?:\s*\d+)?)/i
+      );
+      if (str) query = str[1];
+    }
+    const sync = (await executeTool("sync_mieter_from_mietvertraege", {
+      liegenschaft_query: query || undefined,
+      nur_leere_felder: true,
+    })) as any;
+    steps.push({
+      tool: "sync_mieter_from_mietvertraege",
+      args: { liegenschaft_query: query },
+      result: sync,
+    });
+    lines.push("");
+    lines.push(`**Mieter aus Mietverträgen aktualisiert (${sync?.anzahl || 0}):**`);
+    for (const u of sync?.aktualisiert || []) {
+      const felder = Object.entries(u.felder || {})
+        .map(([k, v]) => `${k}=${v}`)
+        .join(", ");
+      lines.push(`• ${u.mieter} ← ${u.vertrag}: ${felder}`);
+    }
+    if (!(sync?.anzahl > 0)) {
+      lines.push(
+        "• Keine übernehmbaren Werte gefunden (Mietverträge ohne sollMiete/mietbeginn oder Felder bereits gesetzt)."
+      );
+    }
+  }
+
   // 5) Restbefunde
   const befunde = (await executeTool("get_pruef_befunde", { nur_offen: true })) as any;
   steps.push({ tool: "get_pruef_befunde", args: { nur_offen: true }, result: befunde });
@@ -1999,6 +2165,15 @@ export function isAgentIntent(message: string): boolean {
   if (
     /\b(dokumente?|rechnungen?|ablage)\b/.test(m) &&
     /\b(keine[r]?\s+liegenschaft|unpassend|ohne\s+zuordnung)\b/.test(m)
+  ) {
+    return true;
+  }
+
+  // Mieter-Stammdaten aus Vertrag
+  if (
+    (/\b(mieter|stammdaten)\b/.test(m) &&
+      /\b(aktualis|sync|uebernehm|pfleg|mietbeginn|kaltmiete|mietzins|nebenkosten)\w*/.test(m)) ||
+    (/\b(mietbeginn|kaltmiete|mietzins)\b/.test(m) && /\b(alle|mieter|setz|aktualis)\w*/.test(m))
   ) {
     return true;
   }
