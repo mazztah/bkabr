@@ -174,6 +174,26 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
     }
   }
 
+  // Hilfsfunktion: Zahlen robust aus string/number lesen (JSON-DB kann Strings speichern)
+  const asPositiveNumber = (v: unknown): number | undefined => {
+    if (v == null || v === "") return undefined;
+    const n = typeof v === "number" ? v : Number(String(v).replace(",", "."));
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  };
+  const asNonNegNumber = (v: unknown): number | undefined => {
+    if (v == null || v === "") return undefined;
+    const n = typeof v === "number" ? v : Number(String(v).replace(",", "."));
+    return Number.isFinite(n) && n >= 0 ? n : undefined;
+  };
+  const hasText = (v: unknown): boolean =>
+    typeof v === "string" ? v.trim().length > 0 : v != null && String(v).trim().length > 0;
+
+  // Verträge pro Mieter bzw. Wohnung für Abgleich (auch wenn mieterId fehlt)
+  const vertraegeFuerMieter = (mieterId: string, wohnungId: string) =>
+    mietvertraege.filter(
+      (mv) => mv.mieterId === mieterId || (!mv.mieterId && mv.wohnungId === wohnungId)
+    );
+
   // ---- Mieter: verwaiste Referenzen + fehlende Stammdaten ----
   for (const m of mieter) {
     if (!wohnungById.has(m.wohnungId)) {
@@ -190,10 +210,42 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
       );
       continue;
     }
+
+    // Daten aus verknüpften Mietverträgen als Quelle heranziehen – verhindert
+    // Fehlmeldungen, wenn die Werte im Vertrag (nach Korrektur) stehen, aber
+    // noch nicht in die Mieter-Stammdaten übernommen wurden.
+    const linked = vertraegeFuerMieter(m.id, m.wohnungId);
+    const vertragKalt =
+      asPositiveNumber(m.kaltmiete) ??
+      linked.map((mv) => asPositiveNumber(mv.sollMiete)).find((n) => n != null);
+    const vertragNk =
+      asNonNegNumber(m.nebenkostenVorauszahlung) ??
+      linked
+        .map((mv) => asNonNegNumber(mv.nebenkostenVorauszahlung))
+        .find((n) => n != null) ??
+      linked
+        .map((mv) => {
+          const bk = asNonNegNumber(mv.bkVorauszahlung) ?? 0;
+          const hk = asNonNegNumber(mv.hkVorauszahlung) ?? 0;
+          return bk + hk > 0 ? bk + hk : undefined;
+        })
+        .find((n) => n != null);
+    const vertragBeginn =
+      (hasText(m.mietbeginn) ? String(m.mietbeginn) : undefined) ??
+      linked.map((mv) => (hasText(mv.mietbeginn) ? String(mv.mietbeginn) : undefined)).find(Boolean);
+
     const fehlend: string[] = [];
-    if (!m.kaltmiete || m.kaltmiete <= 0) fehlend.push("Kaltmiete");
-    if (m.nebenkostenVorauszahlung == null) fehlend.push("NK-Vorauszahlung");
-    if (!m.mietbeginn) fehlend.push("Mietbeginn");
+    if (vertragKalt == null) fehlend.push("Kaltmiete");
+    if (vertragNk == null) fehlend.push("NK-Vorauszahlung");
+    if (!vertragBeginn) fehlend.push("Mietbeginn");
+
+    // Werte stehen nur im Vertrag → Hinweis zum Sync, kein „fehlend“-Alarm
+    const nurImVertrag: string[] = [];
+    if (asPositiveNumber(m.kaltmiete) == null && vertragKalt != null) nurImVertrag.push("Kaltmiete");
+    if (asNonNegNumber(m.nebenkostenVorauszahlung) == null && vertragNk != null)
+      nurImVertrag.push("NK-Vorauszahlung");
+    if (!hasText(m.mietbeginn) && vertragBeginn) nurImVertrag.push("Mietbeginn");
+
     if (fehlend.length > 0) {
       befunde.push(
         neuerBefund(
@@ -206,8 +258,36 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
           "/mieter"
         )
       );
+    } else if (nurImVertrag.length > 0) {
+      const patch: Record<string, string | number> = {
+        ...(asPositiveNumber(m.kaltmiete) == null && vertragKalt != null
+          ? { kaltmiete: vertragKalt }
+          : {}),
+        ...(asNonNegNumber(m.nebenkostenVorauszahlung) == null && vertragNk != null
+          ? { nebenkostenVorauszahlung: vertragNk }
+          : {}),
+        ...(!hasText(m.mietbeginn) && vertragBeginn ? { mietbeginn: vertragBeginn } : {}),
+      };
+      befunde.push(
+        neuerBefund(
+          "mieter",
+          "hinweis",
+          "Mieter-Stammdaten aus Mietvertrag übernehmbar",
+          `Bei „${m.name}" liegen ${nurImVertrag.join(", ")} im Mietvertrag vor, aber noch nicht in den Mieter-Stammdaten. Mit „Übernehmen“ werden sie synchronisiert.`,
+          [{ art: "Mieter", id: m.id, label: m.name }],
+          {
+            art: "stammdaten_korrigieren",
+            beschreibung: `${nurImVertrag.join(", ")} aus Mietvertrag in Mieter-Stammdaten übernehmen.`,
+            entitaet: { art: "mieter", id: m.id, label: m.name },
+            patch,
+          },
+          "/mieter"
+        )
+      );
     }
-    const hatVertrag = mietvertraege.some((mv) => mv.mieterId === m.id);
+
+    // Vertrag vorhanden, wenn mieterId passt ODER (ohne mieterId) gleiche Wohnung
+    const hatVertrag = linked.length > 0;
     if (!hatVertrag) {
       befunde.push(
         neuerBefund(
@@ -239,17 +319,37 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
       );
     }
     if (!mv.mieterId) {
-      befunde.push(
-        neuerBefund(
-          "mietvertraege",
-          "warnung",
-          "Mietvertrag ohne Mieter-Zuordnung",
-          `„${mv.dateiName}" hat keine Mieter-ID – bitte neu zuordnen.`,
-          [{ art: "Mietvertrag", id: mv.id, label: mv.dateiName }],
-          undefined,
-          "/mietvertraege"
-        )
-      );
+      // Wenn auf derselben Wohnung genau ein Mieter existiert, ist die Zuordnung
+      // implizit klar – kein harter Fehler, nur Hinweis.
+      const mieterAufWohnung = mieter.filter((m) => m.wohnungId === mv.wohnungId);
+      if (mieterAufWohnung.length === 1) {
+        befunde.push(
+          neuerBefund(
+            "mietvertraege",
+            "hinweis",
+            "Mietvertrag ohne explizite Mieter-ID",
+            `„${mv.dateiName}" hat keine Mieter-ID, aber genau einen Mieter auf der Wohnung („${mieterAufWohnung[0].name}"). Bitte zuordnen oder „Neu zuordnen“ nutzen.`,
+            [
+              { art: "Mietvertrag", id: mv.id, label: mv.dateiName },
+              { art: "Mieter", id: mieterAufWohnung[0].id, label: mieterAufWohnung[0].name },
+            ],
+            undefined,
+            "/mietvertraege"
+          )
+        );
+      } else {
+        befunde.push(
+          neuerBefund(
+            "mietvertraege",
+            "warnung",
+            "Mietvertrag ohne Mieter-Zuordnung",
+            `„${mv.dateiName}" hat keine Mieter-ID – bitte neu zuordnen.`,
+            [{ art: "Mietvertrag", id: mv.id, label: mv.dateiName }],
+            undefined,
+            "/mietvertraege"
+          )
+        );
+      }
     } else if (!mieter.some((m) => m.id === mv.mieterId)) {
       befunde.push(
         neuerBefund(
@@ -264,8 +364,8 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
       );
     }
     const fehlMv: string[] = [];
-    if (!mv.sollMiete || mv.sollMiete <= 0) fehlMv.push("Kaltmiete");
-    if (!mv.mietbeginn) fehlMv.push("Mietbeginn");
+    if (asPositiveNumber(mv.sollMiete) == null) fehlMv.push("Kaltmiete");
+    if (!hasText(mv.mietbeginn)) fehlMv.push("Mietbeginn");
     if (fehlMv.length > 0) {
       befunde.push(
         neuerBefund(

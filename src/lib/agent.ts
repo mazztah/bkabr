@@ -550,6 +550,25 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "delete_mietvertrag",
+      description:
+        "Löscht einen Mietvertrag endgültig. Erfordert user_confirmed=true. Vor dem Löschen list_mietvertraege nutzen, um die ID zu finden. Der zugehörige Mieter bleibt erhalten.",
+      parameters: {
+        type: "object",
+        properties: {
+          mietvertrag_id: { type: "string", description: "ID des zu löschenden Mietvertrags" },
+          user_confirmed: {
+            type: "boolean",
+            description: "Muss true sein, sonst wird nur nach Bestätigung gefragt",
+          },
+        },
+        required: ["mietvertrag_id"],
+      },
+    },
+  },
 ];
 
 // -------- Kontext-Helfer --------
@@ -1739,6 +1758,30 @@ case "list_unpassende_dokumente": {
       };
     }
 
+    case "delete_mietvertrag": {
+      const id = String(args.mietvertrag_id || "");
+      const mv = await mietvertraegeDb.get(id);
+      if (!mv) return { error: `Mietvertrag ${id} nicht gefunden` };
+      if (!args.user_confirmed) {
+        return {
+          needsConfirmation: true,
+          frage: `Mietvertrag „${mv.dateiName}"${mv.nummer ? ` (${mv.nummer})` : ""} wirklich endgültig löschen? Der zugehörige Mieter bleibt erhalten.`,
+          mietvertrag_id: id,
+        };
+      }
+      const ok = await mietvertraegeDb.remove(id);
+      if (!ok) return { error: "Löschen fehlgeschlagen" };
+      await logEvent("loeschung", `Agent: Mietvertrag „${mv.dateiName}" gelöscht.`, {
+        art: "Mietvertrag",
+        id,
+      });
+      return {
+        ok: true,
+        geloescht: { id, dateiName: mv.dateiName, nummer: mv.nummer },
+        hinweis: "Mietvertrag gelöscht. Mieter-Stammdaten unverändert.",
+      };
+    }
+
     default:
       return { error: `Unbekanntes Tool: ${name}` };
   }
@@ -1752,6 +1795,7 @@ Du hast Schreibrechte über Tools (Datenbank-Updates). Behaupte NIEMALS, du kön
 ## Wichtige Tools (Stammdaten)
 - sync_mieter_from_mietvertraege – übernimmt Kaltmiete, NK, Mietbeginn/Ende aus verknüpften Mietverträgen in die Mieter-Stammdaten. Bei „Stammdaten nachtragen/aktualisieren/ergänzen“ SOFORT aufrufen.
 - reassign_mietvertrag – Wohnung/Mieter eines Vertrags neu setzen + optional Stammdaten sync.
+- delete_mietvertrag – Mietvertrag löschen (nur mit user_confirmed=true; vorher list_mietvertraege).
 - list_mietvertraege / list_ablage / list_unpassende_dokumente – Übersicht.
 - get_pruef_befunde / run_pruefung / execute_safe_cleanup – Prüfbefunde.
 

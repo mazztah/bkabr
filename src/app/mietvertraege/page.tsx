@@ -48,6 +48,7 @@ function MietvertraegePageInner() {
   const [reassignWohnung, setReassignWohnung] = useState("");
   const [reassignMieter, setReassignMieter] = useState("");
   const [reassignBusy, setReassignBusy] = useState(false);
+  const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null);
   // Editierbare Werte im Bestätigungs-Dialog – werden aus der Extraktion
   // vorbefüllt, können aber vor dem Speichern korrigiert werden (behebt
   // Fehlübernahmen z.B. bei der Sollmiete).
@@ -254,6 +255,30 @@ function MietvertraegePageInner() {
     }
   };
 
+  const deleteMietvertrag = async (mv: Mietvertrag) => {
+    const label = mv.dateiName || mv.nummer || mv.id;
+    if (
+      !window.confirm(
+        `Mietvertrag „${label}" wirklich endgültig löschen?\n\nDie zugehörige Datei bleibt ggf. auf dem Server; nur der Stammdateneintrag wird entfernt.`
+      )
+    ) {
+      return;
+    }
+    setDeleteBusyId(mv.id);
+    try {
+      const res = await fetch(`/api/mietvertraege/${mv.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        setError(json.error || "Löschen fehlgeschlagen");
+        return;
+      }
+      if (reassignId === mv.id) setReassignId(null);
+      refresh();
+    } finally {
+      setDeleteBusyId(null);
+    }
+  };
+
   return (
     <div className="h-full overflow-y-auto p-6">
       <div className="mb-6 flex items-center justify-between">
@@ -352,6 +377,14 @@ function MietvertraegePageInner() {
                     className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
                   >
                     🔗 Neu zuordnen
+                  </button>
+                  <button
+                    type="button"
+                    disabled={deleteBusyId === mv.id}
+                    onClick={() => deleteMietvertrag(mv)}
+                    className="rounded-md border border-[var(--destructive)]/40 px-2 py-1 text-xs text-[var(--destructive)] hover:bg-[var(--destructive)]/10 disabled:opacity-50"
+                  >
+                    {deleteBusyId === mv.id ? "Lösche…" : "🗑️ Löschen"}
                   </button>
                 </div>
 
