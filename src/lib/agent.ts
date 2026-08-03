@@ -449,10 +449,6 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
       },
     },
   },
-
-  {
-    type: "function",
-    function: 
   {
     type: "function",
     function: {
@@ -475,7 +471,9 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
       },
     },
   },
-{
+  {
+    type: "function",
+    function: {
       name: "list_unpassende_dokumente",
       description:
         "Listet Ablage-Dokumente die (a) keiner Liegenschaft zugeordnet sind, (b) Status neu/in_pruefung haben, oder (c) im letzten Prüflauf als unplausible Zuordnung markiert wurden. Ideal für 'zeig mir Dokumente die zu keiner Liegenschaft passen'.",
