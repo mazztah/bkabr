@@ -27,6 +27,7 @@ import {
   heuristicMietvertragFromText,
   matchLiegenschaft,
   matchMietvertragVorschlag,
+  mergeMietvertragExtraktion,
   parseAddress,
 } from "@/lib/matching";
 import { uid } from "@/lib/utils";
@@ -164,20 +165,10 @@ async function verarbeiteDatei(
           console.warn(`Mietvertrag-Extraktion LLM fehlgeschlagen (${file.name}):`, exErr?.message || exErr);
           extraktion = heuristicMietvertragFromText(ocr.text, file.name);
         }
-        // Leere LLM-Felder mit Heuristik auffüllen
-        const heur = heuristicMietvertragFromText(ocr.text, file.name);
-        extraktion = {
-          mieterName: extraktion.mieterName || heur.mieterName,
-          vermieterName: extraktion.vermieterName || heur.vermieterName,
-          mietbeginn: extraktion.mietbeginn || heur.mietbeginn,
-          mietende: extraktion.mietende || heur.mietende,
-          sollMiete: extraktion.sollMiete || heur.sollMiete,
-          nebenkostenVorauszahlung:
-            extraktion.nebenkostenVorauszahlung ?? heur.nebenkostenVorauszahlung,
-          kaution: extraktion.kaution || heur.kaution,
-          objektAdresse: extraktion.objektAdresse || heur.objektAdresse,
-          wohnungsbezeichnung: extraktion.wohnungsbezeichnung || heur.wohnungsbezeichnung,
-        };
+        extraktion = mergeMietvertragExtraktion(
+          extraktion,
+          heuristicMietvertragFromText(ocr.text, file.name)
+        );
 
         const [alleMieter, alleWohnungen, alleGebaeude, alleLg] = await Promise.all([
           mieterDb.list(),

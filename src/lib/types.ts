@@ -267,10 +267,17 @@ export interface Mietvertrag {
   mimeType: string;
   hochgeladenAm: string;
   sollMiete?: number;
+  /** Summe BK+HK oder pauschale NK-Vorauszahlung */
   nebenkostenVorauszahlung?: number;
+  bkVorauszahlung?: number;
+  hkVorauszahlung?: number;
+  warmmiete?: number;
   kaution?: number;
   mietbeginn?: string;
   mietende?: string;
+  /** Aus Vertrag: Wohnfläche m² (auch in Wohnung-Stammdaten übernommen) */
+  flaeche?: number;
+  zimmer?: number;
   status: MietvertragStatus;
   extraktText?: string;
   // Nachträge / Übergabeprotokolle, die zu diesem Mietvertrag hochgeladen wurden
@@ -282,13 +289,25 @@ export interface Mietvertrag {
 export interface MietvertragExtraktion {
   mieterName?: string;
   vermieterName?: string;
+  mieterEmail?: string;
+  mieterTelefon?: string;
   mietbeginn?: string;
   mietende?: string;
+  /** Kaltmiete / Nettomiete */
   sollMiete?: number;
+  /** Betriebskosten-Vorauszahlung (BK-VZ) */
+  bkVorauszahlung?: number;
+  /** Heizkosten-Vorauszahlung (HK-VZ) */
+  hkVorauszahlung?: number;
+  /** Summe BK+HK bzw. pauschale NK, falls nicht aufgeschlüsselt */
   nebenkostenVorauszahlung?: number;
+  /** Warmmiete / Gesamtmiete pro Monat */
+  warmmiete?: number;
   kaution?: number;
   objektAdresse?: string;
   wohnungsbezeichnung?: string;
+  flaeche?: number;
+  zimmer?: number;
 }
 
 export interface KontoauszugTransaktion {

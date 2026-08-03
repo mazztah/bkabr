@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { extractMietvertrag } from "@/lib/ai";
 import { extractTextFromFile } from "@/lib/document-ocr";
 import { gebaeudeDb, liegenschaftenDb, mieterDb, wohnungenDb } from "@/lib/db";
-import { heuristicMietvertragFromText, matchMietvertragVorschlag } from "@/lib/matching";
+import {
+  heuristicMietvertragFromText,
+  matchMietvertragVorschlag,
+  mergeMietvertragExtraktion,
+} from "@/lib/matching";
 import { storeFile } from "@/lib/storage";
 
 export const runtime = "nodejs";
@@ -29,18 +33,10 @@ export async function POST(req: NextRequest) {
     } catch {
       extraktion = heuristicMietvertragFromText(ocr.text, file.name);
     }
-    const heur = heuristicMietvertragFromText(ocr.text, file.name);
-    extraktion = {
-      mieterName: extraktion.mieterName || heur.mieterName,
-      vermieterName: extraktion.vermieterName || heur.vermieterName,
-      mietbeginn: extraktion.mietbeginn || heur.mietbeginn,
-      mietende: extraktion.mietende || heur.mietende,
-      sollMiete: extraktion.sollMiete || heur.sollMiete,
-      nebenkostenVorauszahlung: extraktion.nebenkostenVorauszahlung ?? heur.nebenkostenVorauszahlung,
-      kaution: extraktion.kaution || heur.kaution,
-      objektAdresse: extraktion.objektAdresse || heur.objektAdresse,
-      wohnungsbezeichnung: extraktion.wohnungsbezeichnung || heur.wohnungsbezeichnung,
-    };
+    extraktion = mergeMietvertragExtraktion(
+      extraktion,
+      heuristicMietvertragFromText(ocr.text, file.name)
+    );
 
     const tempId = crypto.randomUUID();
     const storedFileName = await storeFile(tempId, file.name, buffer);

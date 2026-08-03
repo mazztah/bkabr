@@ -274,40 +274,106 @@ export function matchMietvertragVorschlag(params: {
 
 /**
  * Notfall-Extraktion aus OCR-Text, wenn das LLM-JSON fehlschlägt.
+ * Deckt u.a. „Kaltmiete 840,00 € · BK-VZ 195,00 € · HK-VZ 100,00 € · Gesamt 1.135,00 €“.
  */
 export function heuristicMietvertragFromText(text: string, fileName: string): MietvertragExtraktion {
   const t = text || "";
+  const num = (s?: string) => {
+    if (!s) return undefined;
+    const cleaned = s.replace(/\s/g, "").replace(/\.(?=\d{3})/g, "").replace(",", ".");
+    const n = parseFloat(cleaned);
+    return Number.isFinite(n) ? n : undefined;
+  };
+
   const mieterMatch =
     t.match(/(?:Mieter(?:in)?|Pächter)\s*[:\-]?\s*([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+)+)/) ||
     t.match(/(?:Herr|Frau)\s+([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+)+)/);
   const mieteMatch =
-    t.match(/(?:Kaltmiete|Grundmiete|Nettomiete)\s*[:\-]?\s*(\d{1,4}(?:[.,]\d{2})?)\s*€?/i) ||
-    t.match(/(\d{1,4}(?:[.,]\d{2})?)\s*€\s*(?:Kaltmiete|monatlich)/i);
+    t.match(/(?:Kaltmiete|Grundmiete|Nettomiete)\s*[:\-·]?\s*(\d{1,3}(?:\.\d{3})*(?:[.,]\d{2})?|\d+[.,]\d{2}|\d{2,4})\s*€?/i) ||
+    t.match(/(\d{1,3}(?:\.\d{3})*(?:[.,]\d{2})?)\s*€\s*(?:Kaltmiete)/i);
+  const bkMatch = t.match(/(?:BK[- ]?VZ|Betriebskosten(?:-Vorauszahlung)?)\s*[:\-·]?\s*(\d{1,3}(?:\.\d{3})*(?:[.,]\d{2})?|\d+[.,]\d{2}|\d{2,4})/i);
+  const hkMatch = t.match(/(?:HK[- ]?VZ|Heizkosten(?:-Vorauszahlung)?)\s*[:\-·]?\s*(\d{1,3}(?:\.\d{3})*(?:[.,]\d{2})?|\d+[.,]\d{2}|\d{2,4})/i);
   const nkMatch = t.match(
-    /(?:Nebenkosten|Betriebskosten|Vorauszahlung)\s*[:\-]?\s*(\d{1,4}(?:[.,]\d{2})?)/i
+    /(?:Nebenkosten(?:-Vorauszahlung)?|NK[- ]?VZ)\s*[:\-·]?\s*(\d{1,3}(?:\.\d{3})*(?:[.,]\d{2})?|\d+[.,]\d{2}|\d{2,4})/i
   );
-  const kautionMatch = t.match(/(?:Kaution|Mietkaution)\s*[:\-]?\s*(\d{1,5}(?:[.,]\d{2})?)/i);
+  const warmMatch =
+    t.match(/(?:Gesamt(?:miete)?|Warmmiete|Bruttomiete)\s*[:\-·]?\s*(\d{1,3}(?:\.\d{3})*(?:[.,]\d{2})?|\d+[.,]\d{2}|\d{2,4})/i);
+  const kautionMatch = t.match(/(?:Kaution|Mietkaution)\s*[:\-·]?\s*(\d{1,3}(?:\.\d{3})*(?:[.,]\d{2})?|\d+[.,]\d{2}|\d{3,5})/i);
   const beginnMatch =
-    t.match(/(?:Mietbeginn|Beginn|ab)\s*[:\-]?\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i) ||
-    t.match(/(\d{1,2}\.\d{1,2}\.\d{4})\s*(?:als\s+)?(?:Mietbeginn|Beginn)/i);
-  const endeMatch = t.match(/(?:Mietende|Ende|bis)\s*[:\-]?\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i);
-  const adresseMatch = t.match(
-    /((?:[A-ZÄÖÜ][a-zäöüß]+(?:straße|strasse|str\.|weg|platz|allee)[\s\d,]*)+(?:\d{5}\s+[A-Za-zäöüÄÖÜß\-]+)?)/i
-  );
-  const lageMatch = t.match(
-    /((?:\d\.\s*)?(?:EG|OG|DG|Erdgeschoss|Dachgeschoss)[^\n,]{0,30}(?:links|rechts|mitte)?)/i
-  );
+    t.match(/(?:Mietbeginn|Beginn)\s*[:\-·]?\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i) ||
+    t.match(/Beginn\s*[:\-·]?\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i);
+  const endeMatch =
+    t.match(/(?:Mietende|Ende|Auszug)\s*[:\-·]?\s*(\d{1,2}\.\d{1,2}\.\d{2,4})/i);
+  const flaecheMatch =
+    t.match(/(?:Wohnfläche|Fläche|Flaeche)\s*[:\-·]?\s*(\d{1,3}(?:[.,]\d{1,2})?)\s*m/i) ||
+    t.match(/(\d{1,3}(?:[.,]\d{1,2})?)\s*m\s*²/);
+  const zimmerMatch = t.match(/(\d{1,2})\s*(?:Zi\.?|Zimmer)/i);
+  const adresseMatch =
+    t.match(
+      /((?:Gorch[- ]?Fock|Spannhagengarten|Uzdu)[^\n,]{0,40}\d+[^\n,]{0,20}\d{5}\s*Hannover)/i
+    ) ||
+    t.match(
+      /([A-ZÄÖÜ][a-zäöüß]+(?:straße|strasse|str\.|weg|platz|allee)[^\n,]{0,20}\d+[a-zA-Z]?(?:,?\s*\d{5}\s+[A-Za-zäöüÄÖÜß\-]+)?)/i
+    );
+  const lageMatch =
+    t.match(/(?:Wohnung|Mietobjekt)\s+((?:EG|OG|DG|[0-9]+\.\s*OG)[^\n,;]{0,25}(?:links|rechts|mitte)?)/i) ||
+    t.match(/\b((?:EG|Erdgeschoss|[0-9]+\.\s*OG|DG)[^\n,]{0,20}(?:links|rechts|mitte))\b/i);
+  const emailMatch = t.match(/([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/);
+  const telMatch = t.match(/(?:Tel(?:efon)?\.?|Mobil)\s*[:\-]?\s*([\d\s\/\+\-]{6,20})/i);
 
-  const num = (s?: string) => (s ? parseFloat(s.replace(",", ".")) : undefined);
+  const bk = num(bkMatch?.[1]);
+  const hk = num(hkMatch?.[1]);
+  let nk = num(nkMatch?.[1]);
+  if (nk == null && (bk != null || hk != null)) {
+    nk = (bk || 0) + (hk || 0);
+  }
 
   return {
     mieterName: mieterMatch?.[1]?.trim(),
+    mieterEmail: emailMatch?.[1],
+    mieterTelefon: telMatch?.[1]?.trim(),
     sollMiete: num(mieteMatch?.[1]),
-    nebenkostenVorauszahlung: num(nkMatch?.[1]),
+    bkVorauszahlung: bk,
+    hkVorauszahlung: hk,
+    nebenkostenVorauszahlung: nk,
+    warmmiete: num(warmMatch?.[1]),
     kaution: num(kautionMatch?.[1]),
     mietbeginn: beginnMatch?.[1],
     mietende: endeMatch?.[1],
+    flaeche: num(flaecheMatch?.[1]),
+    zimmer: zimmerMatch ? parseInt(zimmerMatch[1], 10) : undefined,
     objektAdresse: adresseMatch?.[1]?.trim() || (fileName.match(/GFS|SHG|UZDU/i) ? fileName : undefined),
     wohnungsbezeichnung: lageMatch?.[1]?.trim(),
+  };
+}
+
+/** Füllt fehlende Extraktionsfelder aus Heuristik auf. */
+export function mergeMietvertragExtraktion(
+  primary: Partial<MietvertragExtraktion>,
+  fallback: MietvertragExtraktion
+): MietvertragExtraktion {
+  const pickNum = (a?: number, b?: number) =>
+    a != null && a > 0 ? a : b != null && b > 0 ? b : a ?? b;
+  const bk = pickNum(primary.bkVorauszahlung, fallback.bkVorauszahlung);
+  const hk = pickNum(primary.hkVorauszahlung, fallback.hkVorauszahlung);
+  let nk = pickNum(primary.nebenkostenVorauszahlung, fallback.nebenkostenVorauszahlung);
+  if ((nk == null || nk === 0) && (bk || hk)) nk = (bk || 0) + (hk || 0);
+  return {
+    mieterName: primary.mieterName || fallback.mieterName,
+    vermieterName: primary.vermieterName || fallback.vermieterName,
+    mieterEmail: primary.mieterEmail || fallback.mieterEmail,
+    mieterTelefon: primary.mieterTelefon || fallback.mieterTelefon,
+    mietbeginn: primary.mietbeginn || fallback.mietbeginn,
+    mietende: primary.mietende || fallback.mietende,
+    sollMiete: pickNum(primary.sollMiete, fallback.sollMiete),
+    bkVorauszahlung: bk,
+    hkVorauszahlung: hk,
+    nebenkostenVorauszahlung: nk,
+    warmmiete: pickNum(primary.warmmiete, fallback.warmmiete),
+    kaution: pickNum(primary.kaution, fallback.kaution),
+    objektAdresse: primary.objektAdresse || fallback.objektAdresse,
+    wohnungsbezeichnung: primary.wohnungsbezeichnung || fallback.wohnungsbezeichnung,
+    flaeche: pickNum(primary.flaeche, fallback.flaeche),
+    zimmer: pickNum(primary.zimmer, fallback.zimmer),
   };
 }

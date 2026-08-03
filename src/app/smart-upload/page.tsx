@@ -415,16 +415,21 @@ function MietvertragCard(
   const [wohnungId, setWohnungId] = useState(v.wohnungId || "");
   const [mieterModus, setMieterModus] = useState<"vorhanden" | "neu">(v.mieterId ? "vorhanden" : "neu");
   const [gewaehlterMieter, setGewaehlterMieter] = useState(v.mieterId || "");
+  const numStr = (n?: number) => (n != null && n !== 0 ? String(n) : "");
   const [mieterName, setMieterName] = useState(e.mieterName || v.mieterName || "");
-  const [sollMiete, setSollMiete] = useState(e.sollMiete != null && e.sollMiete !== 0 ? String(e.sollMiete) : "");
-  const [nk, setNk] = useState(
-    e.nebenkostenVorauszahlung != null && e.nebenkostenVorauszahlung !== 0
-      ? String(e.nebenkostenVorauszahlung)
-      : ""
-  );
-  const [kaution, setKaution] = useState(e.kaution != null && e.kaution !== 0 ? String(e.kaution) : "");
+  const [mieterEmail, setMieterEmail] = useState(e.mieterEmail || "");
+  const [mieterTelefon, setMieterTelefon] = useState(e.mieterTelefon || "");
+  const [sollMiete, setSollMiete] = useState(numStr(e.sollMiete));
+  const [bkVz, setBkVz] = useState(numStr(e.bkVorauszahlung));
+  const [hkVz, setHkVz] = useState(numStr(e.hkVorauszahlung));
+  const [nk, setNk] = useState(numStr(e.nebenkostenVorauszahlung));
+  const [warmmiete, setWarmmiete] = useState(numStr(e.warmmiete));
+  const [kaution, setKaution] = useState(numStr(e.kaution));
   const [mietbeginn, setMietbeginn] = useState(e.mietbeginn || "");
   const [mietende, setMietende] = useState(e.mietende || "");
+  const [flaeche, setFlaeche] = useState(numStr(e.flaeche));
+  const [zimmer, setZimmer] = useState(numStr(e.zimmer));
+  const [wohnungsbez, setWohnungsbez] = useState(e.wohnungsbezeichnung || "");
 
   const wohnungLabel = (w: Wohnung) => {
     const g = gebaeude.find((x) => x.id === w.gebaeudeId);
@@ -454,7 +459,29 @@ function MietvertragCard(
     try {
       let mieterId = gewaehlterMieter || undefined;
       const kaltmieteNum = Number(sollMiete) || undefined;
-      const nkNum = Number(nk) || undefined;
+      const bkNum = Number(bkVz) || undefined;
+      const hkNum = Number(hkVz) || undefined;
+      let nkNum = Number(nk) || undefined;
+      if (nkNum == null && (bkNum != null || hkNum != null)) {
+        nkNum = (bkNum || 0) + (hkNum || 0);
+      }
+      const warmNum = Number(warmmiete) || undefined;
+      const kautionNum = Number(kaution) || undefined;
+      const flaecheNum = Number(flaeche) || undefined;
+      const zimmerNum = Number(zimmer) || undefined;
+
+      // Wohnungs-Stammdaten (Fläche, Zimmer, ggf. Bezeichnung)
+      const wohnungPatch: Record<string, unknown> = {};
+      if (flaecheNum != null) wohnungPatch.flaeche = flaecheNum;
+      if (zimmerNum != null) wohnungPatch.zimmer = zimmerNum;
+      if (wohnungsbez.trim()) wohnungPatch.bezeichnung = wohnungsbez.trim();
+      if (Object.keys(wohnungPatch).length > 0) {
+        await fetch(`/api/wohnungen/${wohnungId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(wohnungPatch),
+        });
+      }
 
       if (mieterModus === "neu") {
         const res = await fetch("/api/mieter", {
@@ -463,6 +490,8 @@ function MietvertragCard(
           body: JSON.stringify({
             wohnungId,
             name: mieterName || "Neuer Mieter",
+            email: mieterEmail || undefined,
+            telefon: mieterTelefon || undefined,
             mietbeginn: mietbeginn || undefined,
             mietende: mietende || undefined,
             kaltmiete: kaltmieteNum,
@@ -472,10 +501,10 @@ function MietvertragCard(
         const json = await res.json();
         mieterId = json.mieter?.id;
       } else if (mieterId) {
-        // Bestehender Mieter: Stammdaten aus dem Mietvertrag mitziehen
-        // (vorher wurden nur bei "Neu" Miete/NK/Daten gesetzt → inkonsistent)
         const patch: Record<string, unknown> = { wohnungId };
         if (mieterName.trim()) patch.name = mieterName.trim();
+        if (mieterEmail.trim()) patch.email = mieterEmail.trim();
+        if (mieterTelefon.trim()) patch.telefon = mieterTelefon.trim();
         if (mietbeginn) patch.mietbeginn = mietbeginn;
         if (mietende) patch.mietende = mietende;
         if (kaltmieteNum != null) patch.kaltmiete = kaltmieteNum;
@@ -498,9 +527,14 @@ function MietvertragCard(
           mimeType: item.mimeType,
           sollMiete: kaltmieteNum,
           nebenkostenVorauszahlung: nkNum,
-          kaution: Number(kaution) || undefined,
+          bkVorauszahlung: bkNum,
+          hkVorauszahlung: hkNum,
+          warmmiete: warmNum,
+          kaution: kautionNum,
           mietbeginn: mietbeginn || undefined,
           mietende: mietende || undefined,
+          flaeche: flaecheNum,
+          zimmer: zimmerNum,
           extraktText: item.extraktText,
           status: "Aktiv",
         }),
@@ -509,8 +543,8 @@ function MietvertragCard(
         status: "gespeichert",
         meldung:
           mieterModus === "neu"
-            ? "Mietvertrag übernommen, neuer Mieter angelegt."
-            : "Mietvertrag übernommen, Mieter-Stammdaten aktualisiert.",
+            ? "Mietvertrag + neuer Mieter + Wohnungsdaten übernommen."
+            : "Mietvertrag übernommen; Mieter- und Wohnungs-Stammdaten aktualisiert.",
       });
       onReload();
     } finally {
@@ -570,16 +604,37 @@ function MietvertragCard(
             </select>
           </label>
         )}
+        <Field label="E-Mail" value={mieterEmail} onChange={setMieterEmail} />
+        <Field label="Telefon" value={mieterTelefon} onChange={setMieterTelefon} />
+        <Field label="Wohnungsbezeichnung" value={wohnungsbez} onChange={setWohnungsbez} />
+        <Field label="Wohnfläche (m²)" value={flaeche} onChange={setFlaeche} type="number" />
+        <Field label="Zimmer" value={zimmer} onChange={setZimmer} type="number" />
         <Field label="Kaltmiete (€)" value={sollMiete} onChange={setSollMiete} type="number" />
-        <Field label="NK-Vorauszahlung (€)" value={nk} onChange={setNk} type="number" />
+        <Field label="BK-VZ (€)" value={bkVz} onChange={setBkVz} type="number" />
+        <Field label="HK-VZ (€)" value={hkVz} onChange={setHkVz} type="number" />
+        <Field label="NK gesamt (€)" value={nk} onChange={setNk} type="number" />
+        <Field label="Warmmiete (€)" value={warmmiete} onChange={setWarmmiete} type="number" />
         <Field label="Kaution (€)" value={kaution} onChange={setKaution} type="number" />
         <Field label="Mietbeginn" value={mietbeginn} onChange={setMietbeginn} />
-        <Field label="Mietende" value={mietende} onChange={setMietende} />
+        <Field label="Mietende / Auszug" value={mietende} onChange={setMietende} />
       </div>
       {(e.mieterName || e.objektAdresse || e.wohnungsbezeichnung || item.hinweisText) && (
         <p className="mt-2 text-xs text-muted-foreground">
           Erkannt:{" "}
-          {[e.mieterName, e.objektAdresse, e.wohnungsbezeichnung, item.hinweisText]
+          {[
+            e.mieterName,
+            e.objektAdresse,
+            e.wohnungsbezeichnung,
+            e.flaeche ? `${e.flaeche} m²` : null,
+            e.zimmer ? `${e.zimmer} Zi.` : null,
+            e.sollMiete ? `Kalt ${e.sollMiete}€` : null,
+            e.bkVorauszahlung ? `BK ${e.bkVorauszahlung}€` : null,
+            e.hkVorauszahlung ? `HK ${e.hkVorauszahlung}€` : null,
+            e.warmmiete ? `Warm ${e.warmmiete}€` : null,
+            e.kaution ? `Kaution ${e.kaution}€` : null,
+            e.mietbeginn && e.mietende ? `${e.mietbeginn}–${e.mietende}` : e.mietbeginn,
+            item.hinweisText,
+          ]
             .filter(Boolean)
             .join(" · ")}
         </p>

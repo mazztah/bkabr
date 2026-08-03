@@ -235,20 +235,27 @@ export async function analyzeDocument(params: {
   return extractJson(result) as ExtractedData;
 }
 
-const SYSTEM_MIETVERTRAG = `Du bist ein Experte für deutsche Mietverträge. Analysiere den übergebenen Text eines Mietvertrags (oder Nachtrags) und extrahiere die relevanten Stammdaten.
+const SYSTEM_MIETVERTRAG = `Du bist ein Experte für deutsche Mietverträge. Analysiere den Text und extrahiere ALLE erkennbaren Stammdaten für Mieter, Wohnung und Vertrag.
 Antworte AUSSCHLIESSLICH mit einem JSON-Objekt in exakt diesem Format:
 {
-  "mieterName": "Name des Mieters/der Mieter",
+  "mieterName": "vollständiger Name des Mieters/der Mieter",
   "vermieterName": "Name des Vermieters",
-  "mietbeginn": "Datum, z.B. 01.06.2025, sonst leerer String",
-  "mietende": "Datum falls befristet, sonst leerer String",
-  "sollMiete": <Kaltmiete in Euro, sonst 0>,
-  "nebenkostenVorauszahlung": <monatliche NK-Vorauszahlung in Euro, sonst 0>,
+  "mieterEmail": "E-Mail falls genannt, sonst leerer String",
+  "mieterTelefon": "Telefon falls genannt, sonst leerer String",
+  "mietbeginn": "Datum z.B. 01.01.2023, sonst leerer String",
+  "mietende": "Ende/Auszug z.B. 31.03.2026 falls befristet/genannt, sonst leerer String",
+  "sollMiete": <Kaltmiete/Nettomiete in Euro als Zahl, z.B. 840>,
+  "bkVorauszahlung": <Betriebskosten-Vorauszahlung BK-VZ in Euro, sonst 0>,
+  "hkVorauszahlung": <Heizkosten-Vorauszahlung HK-VZ in Euro, sonst 0>,
+  "nebenkostenVorauszahlung": <Summe BK+HK oder pauschale NK-VZ in Euro; wenn BK und HK einzeln da: Summe>,
+  "warmmiete": <Gesamtmiete/Warmmiete pro Monat falls genannt, sonst 0>,
   "kaution": <Kaution in Euro, sonst 0>,
-  "objektAdresse": "Adresse des Mietobjekts",
-  "wohnungsbezeichnung": "Lage/Bezeichnung der Wohnung, z.B. 2. OG rechts"
+  "objektAdresse": "Straße Hausnummer, PLZ Ort",
+  "wohnungsbezeichnung": "Lage z.B. EG links, 1. OG rechts",
+  "flaeche": <Wohnfläche in m² als Zahl, z.B. 72, sonst 0>,
+  "zimmer": <Zimmeranzahl als Zahl, z.B. 3, sonst 0>
 }
-Erfinde keine Fakten, die nicht im Dokument stehen. Falls ein Wert nicht erkennbar ist: leerer String bzw. 0.`;
+WICHTIG: Zahlen ohne Tausenderpunkt, Komma als Dezimaltrenner im Text → als Zahl (840,00 → 840). Erfinde nichts. Fehlende Werte: leerer String bzw. 0.`;
 
 export async function extractMietvertrag(params: {
   text: string;
