@@ -2430,7 +2430,7 @@ async function executeTool(
       }
       const result = await beendePmVertrag(id);
       if (!result.ok) return { error: result.error };
-      return { ok: true, ...result };
+      return { ...result, ok: true };
     }
 
     default:

@@ -602,27 +602,40 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
     try {
+      let completion: ChatCompletion;
       if (isCerebrasModel(model)) {
         const cerebrasId = stripCerebrasPrefix(model);
-        return await createCerebrasChatCompletion(cerebrasId, params);
-      }
-      if (isCloudflareModel(model)) {
+        completion = await createCerebrasChatCompletion(cerebrasId, params);
+      } else if (isCloudflareModel(model)) {
         const cfId = stripCloudflarePrefix(model);
-        return await createCloudflareChatCompletion(cfId, params);
+        completion = await createCloudflareChatCompletion(cfId, params);
+      } else {
+        if (!groq) {
+          const err: any = new Error(
+            "GROQ_API_KEY ist nicht gesetzt und kein Cerebras-/Cloudflare-Modell verfügbar."
+          );
+          err.status = 401;
+          throw err;
+        }
+        const budgeted = applyQwenTokenBudget(model, params);
+        const { model: _ignored, ...rest } = budgeted;
+        completion = await groq.chat.completions.create({
+          ...rest,
+          model,
+        });
       }
-      if (!groq) {
-        const err: any = new Error(
-          "GROQ_API_KEY ist nicht gesetzt und kein Cerebras-/Cloudflare-Modell verfügbar."
-        );
-        err.status = 401;
-        throw err;
+      // Sichtbares Erfolgs-Log, sobald NICHT das primäre Modell verwendet wurde –
+      // sonst bleibt bei einem Fallback (insb. Cerebras/Cloudflare) unklar, ob der
+      // Request überhaupt durchgekommen ist ("kein Feedback von der Cloudflare API").
+      if (i > 0) {
+        const provider = isCerebrasModel(model)
+          ? "cerebras"
+          : isCloudflareModel(model)
+            ? "cloudflare"
+            : "groq";
+        console.info(`[${provider}] Modell ${stripProviderPrefix(model)} erfolgreich (Fallback-Stufe ${i + 1}/${models.length}).`);
       }
-      const budgeted = applyQwenTokenBudget(model, params);
-      const { model: _ignored, ...rest } = budgeted;
-      return await groq.chat.completions.create({
-        ...rest,
-        model,
-      });
+      return completion;
     } catch (err: any) {
       lastError = err;
       const hasMore = i < models.length - 1;
