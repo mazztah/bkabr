@@ -120,7 +120,7 @@ export default function SchriftverkehrPage() {
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-          <aside className="w-full shrink-0 border-r border-border bg-card lg:h-full lg:w-80 lg:overflow-y-auto">
+          <aside className="w-full shrink-0 overflow-y-auto border-r border-border bg-card max-h-[46vh] lg:h-full lg:max-h-none lg:w-80">
             <div className="border-b border-border p-4">
               <h1 className="text-lg font-bold leading-tight">✉️ Schriftverkehr</h1>
               <p className="text-xs text-muted-foreground">

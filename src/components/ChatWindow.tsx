@@ -34,6 +34,8 @@ export default function ChatWindow() {
   const pathname = usePathname() || "/";
   const pageLabel = PAGE_LABELS[pathname] || pathname;
   const [input, setInput] = useState("");
+  const [minimized, setMinimized] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -50,8 +52,11 @@ export default function ChatWindow() {
   if (!chatOpen) {
     return (
       <button
-        onClick={toggleChat}
-        className="fixed bottom-5 right-5 z-[200] rounded-full bg-primary text-primary-foreground shadow-lg h-14 w-14 flex items-center justify-center text-2xl no-print hover:scale-105 transition-transform"
+        onClick={() => {
+          setMinimized(false);
+          toggleChat();
+        }}
+        className="fixed bottom-5 right-5 z-[200] rounded-full bg-primary text-primary-foreground shadow-lg h-14 w-14 flex items-center justify-center text-2xl no-print transition-transform hover:scale-105 active:scale-95"
         title="BetriebsKostenBot – überall verfügbar"
       >
         🤖
@@ -60,14 +65,45 @@ export default function ChatWindow() {
   }
 
   return (
-    <aside className="fixed bottom-5 right-5 z-[200] w-[calc(100vw-2.5rem)] max-w-sm h-[32rem] max-h-[75vh] rounded-2xl border border-border bg-card flex flex-col shadow-2xl no-print overflow-hidden">
-      <div className="p-4 border-b border-border font-semibold flex items-center justify-between shrink-0">
-        <span>🤖 BetriebsKostenBot</span>
-        <button onClick={toggleChat} className="text-muted-foreground hover:text-foreground text-sm">
+    <aside
+      className={`fixed bottom-5 right-5 z-[200] flex flex-col rounded-2xl border border-border bg-card shadow-2xl no-print overflow-hidden transition-[height,width] duration-200 ease-out ${
+        minimized
+          ? "h-14 w-[calc(100vw-2.5rem)] max-w-sm"
+          : expanded
+          ? "h-[85vh] max-h-[46rem] w-[calc(100vw-2.5rem)] max-w-lg"
+          : "h-[32rem] max-h-[75vh] w-[calc(100vw-2.5rem)] max-w-sm"
+      }`}
+    >
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border p-4 font-semibold">
+        <button
+          onClick={() => setMinimized((m) => !m)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          title={minimized ? "Aufklappen" : "Einklappen"}
+        >
+          <span className="shrink-0">🤖</span>
+          <span className="truncate">BetriebsKostenBot</span>
+          <span className="ml-auto shrink-0 text-xs text-muted-foreground">{minimized ? "▲" : "▼"}</span>
+        </button>
+        <button
+          onClick={() => setExpanded((e) => !e)}
+          className="shrink-0 hidden text-muted-foreground hover:text-foreground text-sm sm:inline"
+          title={expanded ? "Verkleinern" : "Vergrößern"}
+        >
+          {expanded ? "⤡" : "⤢"}
+        </button>
+        <button
+          onClick={() => {
+            setMinimized(false);
+            toggleChat();
+          }}
+          className="shrink-0 text-muted-foreground hover:text-foreground text-sm"
+          title="Schließen"
+        >
           ✕
         </button>
       </div>
 
+      {!minimized && (
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
         <div className="bg-muted p-3 rounded-xl text-sm">
           Du bist auf: <strong>{pageLabel}</strong>
@@ -96,7 +132,9 @@ export default function ChatWindow() {
           <div className="bg-muted p-3 rounded-xl text-sm mr-6 animate-pulse">Denke nach …</div>
         )}
       </div>
+      )}
 
+      {!minimized && (
       <div className="p-4 border-t border-border shrink-0">
         <div className="flex gap-2">
           <input
@@ -104,7 +142,8 @@ export default function ChatWindow() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSend()}
             placeholder="Frage den Bot …"
-            className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
+            autoFocus
+            className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm transition-colors focus:border-primary focus:outline-none"
           />
           <button
             onClick={handleSend}
@@ -115,6 +154,7 @@ export default function ChatWindow() {
           </button>
         </div>
       </div>
+      )}
     </aside>
   );
 }

@@ -36,7 +36,7 @@ export default function WohnungenPage() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden lg:flex-row">
-      <aside className="w-full shrink-0 border-r border-border bg-card lg:h-full lg:w-80 lg:overflow-y-auto">
+      <aside className="w-full shrink-0 overflow-y-auto border-r border-border bg-card max-h-[46vh] lg:h-full lg:max-h-none lg:w-80">
         <div className="flex items-center justify-between border-b border-border p-4">
           <div>
             <h1 className="text-lg font-bold leading-tight">🏢 Wohnungen</h1>

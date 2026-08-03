@@ -23,7 +23,7 @@ function LiegenschaftenPageInner() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden lg:flex-row">
-      <aside className="w-full shrink-0 border-r border-border bg-card lg:h-full lg:w-80 lg:overflow-y-auto">
+      <aside className="w-full shrink-0 overflow-y-auto border-r border-border bg-card max-h-[46vh] lg:h-full lg:max-h-none lg:w-80">
         <div className="border-b border-border p-4">
           <h1 className="text-lg font-bold leading-tight">Liegenschaften</h1>
           <p className="text-xs text-muted-foreground">

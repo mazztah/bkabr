@@ -56,10 +56,18 @@ export default function LogPanel({ compact = false }: { compact?: boolean }) {
     <div className="rounded-lg border border-border bg-card">
       <button
         onClick={() => setOffen((o) => !o)}
-        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
+        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/60"
       >
         <span className="text-sm font-semibold">🪵 System-Log</span>
-        <span className="text-xs text-muted-foreground">{offen ? "▲ einklappen" : "▼ aufklappen"}</span>
+        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+          <span
+            className="inline-block transition-transform duration-200"
+            style={{ transform: offen ? "rotate(0deg)" : "rotate(-90deg)" }}
+          >
+            ▼
+          </span>
+          {offen ? "einklappen" : "aufklappen"}
+        </span>
       </button>
       {offen && (
         <div className="border-t border-border p-3">

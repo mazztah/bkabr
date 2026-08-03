@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useStore } from "@/lib/store";
 import { formatCurrency } from "@/lib/utils";
 import Dropzone from "./Dropzone";
@@ -19,6 +19,7 @@ export default function Sidebar() {
   const { pendingLiegenschaften, confirmPendingLiegenschaft, dismissPendingLiegenschaft } =
     useStore();
   const pending = pendingLiegenschaften[0];
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   const jahre = useMemo(() => {
     const years = new Set<string>();
@@ -44,7 +45,7 @@ export default function Sidebar() {
   }, [abrechnungen, filters]);
 
   return (
-    <aside className="w-full lg:w-96 shrink-0 border-r border-border bg-card flex flex-col h-full">
+    <aside className="w-full lg:w-96 shrink-0 border-r border-border bg-card flex flex-col lg:h-full lg:overflow-hidden">
       <div className="p-5 border-b border-border">
         <div className="flex items-center justify-between mb-4">
           <div>
@@ -62,48 +63,59 @@ export default function Sidebar() {
         </button>
       </div>
 
-      <div className="p-4 border-b border-border space-y-2">
-        <input
-          value={filters.suche}
-          onChange={(e) => setFilters({ suche: e.target.value })}
-          placeholder="Suche (Adresse, Name) …"
-          className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm"
-        />
-        <div className="grid grid-cols-3 gap-2">
-          <select
-            value={filters.objektTyp}
-            onChange={(e) => setFilters({ objektTyp: e.target.value as any })}
-            className="rounded-md border border-border bg-background px-2 py-1.5 text-xs"
-          >
-            <option>Alle</option>
-            <option>Wohnung</option>
-            <option>Haus</option>
-            <option>Gewerbe</option>
-          </select>
-          <select
-            value={filters.status}
-            onChange={(e) => setFilters({ status: e.target.value as any })}
-            className="rounded-md border border-border bg-background px-2 py-1.5 text-xs"
-          >
-            <option>Alle</option>
-            <option>Rohdaten</option>
-            <option>Validierung</option>
-            <option>Fertig</option>
-          </select>
-          <select
-            value={filters.jahr}
-            onChange={(e) => setFilters({ jahr: e.target.value as any })}
-            className="rounded-md border border-border bg-background px-2 py-1.5 text-xs"
-          >
-            <option>Alle</option>
-            {jahre.map((j) => (
-              <option key={j}>{j}</option>
-            ))}
-          </select>
+      <div className="border-b border-border">
+        <button
+          onClick={() => setFiltersOpen((o) => !o)}
+          className="flex w-full items-center justify-between gap-2 px-4 py-2.5 text-left lg:hidden"
+        >
+          <span className="text-sm font-medium text-muted-foreground">🔎 Suche &amp; Filter</span>
+          <span className="text-xs text-muted-foreground">{filtersOpen ? "▲" : "▼"}</span>
+        </button>
+        <div
+          className={`space-y-2 p-4 ${filtersOpen ? "block" : "hidden"} lg:block lg:pt-4`}
+        >
+          <input
+            value={filters.suche}
+            onChange={(e) => setFilters({ suche: e.target.value })}
+            placeholder="Suche (Adresse, Name) …"
+            className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm transition-colors focus:border-primary focus:outline-none"
+          />
+          <div className="grid grid-cols-3 gap-2">
+            <select
+              value={filters.objektTyp}
+              onChange={(e) => setFilters({ objektTyp: e.target.value as any })}
+              className="rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+            >
+              <option>Alle</option>
+              <option>Wohnung</option>
+              <option>Haus</option>
+              <option>Gewerbe</option>
+            </select>
+            <select
+              value={filters.status}
+              onChange={(e) => setFilters({ status: e.target.value as any })}
+              className="rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+            >
+              <option>Alle</option>
+              <option>Rohdaten</option>
+              <option>Validierung</option>
+              <option>Fertig</option>
+            </select>
+            <select
+              value={filters.jahr}
+              onChange={(e) => setFilters({ jahr: e.target.value as any })}
+              className="rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+            >
+              <option>Alle</option>
+              {jahre.map((j) => (
+                <option key={j}>{j}</option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+      <div className="max-h-[46vh] overflow-y-auto p-4 space-y-3 lg:max-h-none lg:flex-1">
         {filtered.length === 0 && (
           <p className="text-sm text-muted-foreground text-center mt-8">
             Keine Abrechnungen gefunden.

@@ -84,6 +84,36 @@ body {
   background: var(--border);
   border-radius: 8px;
 }
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Subtle, consistent focus ring across native form controls. */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* Smooth height changes for collapsible panels (filters, log, chat, nav
+   groups) so expand/collapse feels dynamic instead of an abrupt jump. */
+.collapsible {
+  overflow: hidden;
+  transition: grid-template-rows 200ms ease-out;
+  display: grid;
+  grid-template-rows: 1fr;
+}
+.collapsible[data-collapsed="true"] {
+  grid-template-rows: 0fr;
+}
+.collapsible > * {
+  min-height: 0;
+}
 
 /* Mobile (Android/iOS): browsers auto-zoom into inputs with font-size < 16px
    on focus, which shifts/overlaps the fixed UI (top bar, chat, nav). Force
