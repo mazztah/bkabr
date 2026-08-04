@@ -78,6 +78,34 @@ export const KPI_ERKLAERUNGEN: Record<string, KpiErklaerung> = {
     interpretation: "Fehler sollten vor Fehlerbefunden vor Warnungen priorisiert bearbeitet werden.",
     folgekennzahlen: ["Business Health Score"],
   },
+  umsatzrendite: {
+    definition: "Klassische Profitabilitätskennzahl: welcher Anteil der Einnahmen bleibt als Gewinn.",
+    berechnung: "Umsatzrendite = Gewinn / Einnahmen",
+    interpretation:
+      "Sinkt die Umsatzrendite bei gleichbleibenden Einnahmen, steigen die Ausgaben überproportional — ein Blick in die Ausgabenkategorien lohnt sich.",
+    folgekennzahlen: ["Gewinn", "Cash Burn Reichweite"],
+  },
+  workingCapital: {
+    definition: "Kurzfristig verfügbares Kapital zur Deckung des laufenden Geschäftsbetriebs.",
+    berechnung: "Working Capital = Umlaufvermögen − Verbindlichkeiten (vereinfacht, ohne Fristigkeiten-Trennung)",
+    interpretation:
+      "Negatives Working Capital ist nicht zwingend kritisch, verdient aber Beobachtung, besonders in Kombination mit sinkendem Liquiditätsgrad I.",
+    folgekennzahlen: ["Liquiditätsgrad I", "Eigenkapitalquote"],
+  },
+  automatisierungsgrad: {
+    definition: "Anteil der Buchungen, die automatisch aus Rechnungen/Abrechnungen/Kontoauszügen erzeugt wurden statt manuell erfasst.",
+    berechnung: "Automatisierungsgrad = Buchungen mit belegTyp ≠ Manuell / alle Buchungen",
+    interpretation:
+      "Steigt dieser Wert über Zeit, sinkt der manuelle Erfassungsaufwand — ein direkter Effizienzindikator für die App selbst.",
+    folgekennzahlen: ["Business Health Score"],
+  },
+  cashBurnTageReichweite: {
+    definition: "Geschätzte Reichweite der liquiden Mittel bei aktuellem Ausgabentempo.",
+    berechnung: "Reichweite (Tage) = Liquide Mittel / durchschnittliche tägliche Ausgaben (letzte 30 Tage)",
+    interpretation:
+      "Ein sinkender Wert über mehrere Wochen ist ein Frühwarnsignal, unabhängig vom absoluten Kontostand.",
+    folgekennzahlen: ["Liquiditätsgrad I", "Working Capital"],
+  },
 };
 
 export default function KpiInfo({ kpiId, label }: { kpiId: string; label?: string }) {
