@@ -846,6 +846,44 @@ export interface PruefLauf {
   updatedAt: string;
 }
 
+// -------- Kalender (wiederkehrende Agent-Aufgaben) --------
+// Erlaubt dem Nutzer, dem Agent wiederkehrende Aufträge zu geben, z.B.
+// "alle 2 Stunden Mahnlauf" oder "täglich 23:40 Uhr E-Mail-Batch versenden".
+// Bewusst kein vollständiger Cron-Parser: drei einfache, für Nutzer ohne
+// Cron-Kenntnisse verständliche Wiederholungsarten decken die realen
+// Anwendungsfälle (Intervall / täglich / wöchentlich) ab.
+
+export type AgentScheduleRecurrence =
+  | { art: "intervall"; minuten: number }
+  | { art: "taeglich"; uhrzeit: string /* "HH:MM" */ }
+  | { art: "woechentlich"; wochentag: number /* 0=So..6=Sa */; uhrzeit: string };
+
+export type AgentScheduleLaufStatus = "erfolg" | "fehler";
+
+export interface AgentScheduleLauf {
+  zeitpunkt: string;
+  status: AgentScheduleLaufStatus;
+  ergebnis: string;
+}
+
+export interface AgentSchedule {
+  id: string;
+  nummer?: string;
+  name: string;
+  /** Auftrag/Prompt, der dem Agenten bei Fälligkeit als Nachricht übergeben wird. */
+  prompt: string;
+  recurrence: AgentScheduleRecurrence;
+  aktiv: boolean;
+  liegenschaftId?: string;
+  liegenschaftName?: string;
+  nextRunAt: string;
+  lastRunAt?: string;
+  /** Letzte 20 Ausführungen, neueste zuerst. */
+  historie: AgentScheduleLauf[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 // -------- Schriftverkehr (gespeicherte Anschreiben / Mahnungen) --------
 
 export type SchriftverkehrStatus = "Entwurf" | "Versandbereit" | "Versendet" | "Archiviert";

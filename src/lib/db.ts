@@ -3,6 +3,8 @@ import path from "path";
 import {
   AblageDokument,
   Abrechnung,
+  AgentSchedule,
+  AgentScheduleLauf,
   Eigentuemer,
   Gebaeude,
   Kontoauszug,
@@ -36,6 +38,7 @@ interface DbShape {
   ablage: AblageDokument[];
   systemLog: SystemLogEintrag[];
   pruefLaeufe: PruefLauf[];
+  agentSchedules: AgentSchedule[];
   counters: Record<string, number>;
 }
 
@@ -61,6 +64,7 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     ablage: db.ablage || [],
     systemLog: db.systemLog || [],
     pruefLaeufe: db.pruefLaeufe || [],
+    agentSchedules: db.agentSchedules || [],
     counters: db.counters || {},
   };
 }
@@ -230,6 +234,44 @@ export const schriftverkehrDb = makeCrud<SchriftverkehrDokument>("schriftverkehr
 export const kontoauszuegeDb = makeCrud<Kontoauszug>("kontoauszuege", "KA");
 export const ablageDb = makeCrud<AblageDokument>("ablage", "AB");
 export const pruefLaufDb = makeCrud<PruefLauf>("pruefLaeufe", "PL");
+export const agentSchedulesDb = makeCrud<AgentSchedule>("agentSchedules", "KA-AG");
+
+// -------- Kalender / Agent-Scheduler --------
+
+/** Alle aktiven Aufgaben, deren nextRunAt in der Vergangenheit liegt (fällig). */
+export async function dueAgentSchedules(now: Date = new Date()): Promise<AgentSchedule[]> {
+  const db = await readDb();
+  return db.agentSchedules.filter(
+    (s) => s.aktiv && new Date(s.nextRunAt).getTime() <= now.getTime()
+  );
+}
+
+/**
+ * Trägt das Ergebnis eines Laufs ein (Historie, letzte 20) und setzt den
+ * nächsten Fälligkeitszeitpunkt. `nextRunAt` wird vom Aufrufer übergeben,
+ * da die Wiederholungslogik (schedule.ts) hier bewusst nicht importiert
+ * wird, um db.ts frei von Domänenlogik zu halten.
+ */
+export async function recordAgentScheduleRun(
+  id: string,
+  lauf: AgentScheduleLauf,
+  nextRunAt: string
+): Promise<AgentSchedule | undefined> {
+  const db = await readDb();
+  const idx = db.agentSchedules.findIndex((s) => s.id === id);
+  if (idx === -1) return undefined;
+  const current = db.agentSchedules[idx];
+  const updated: AgentSchedule = {
+    ...current,
+    lastRunAt: lauf.zeitpunkt,
+    nextRunAt,
+    historie: [lauf, ...(current.historie || [])].slice(0, 20),
+    updatedAt: new Date().toISOString(),
+  };
+  db.agentSchedules[idx] = updated;
+  await writeDb(db);
+  return updated;
+}
 
 // -------- System-Log --------
 // Bewusst einfach gehalten (kein makeCrud): Einträge werden nur angehängt und
