@@ -1049,6 +1049,18 @@ export interface DashboardKennzahlen {
    * wachsender Datenbasis in späteren Durchgängen verfeinert.
    */
   businessHealthScore: number;
+  /** Gewinn / Einnahmen — klassische Umsatzrendite, null wenn keine Einnahmen erfasst */
+  umsatzrendite: number | null;
+  /** Umlaufvermögen-Konten − Verbindlichkeiten-Konten (vereinfacht, keine Fristigkeiten-Trennung) */
+  workingCapital: number | null;
+  /** Anteil der Buchungen mit automatischer Herkunft (belegTyp != Manuell), null wenn keine Buchungen */
+  automatisierungsgrad: number | null;
+  /**
+   * Liquide Mittel / durchschnittliche tägliche Ausgaben der letzten 30 Tage
+   * = geschätzte Reichweite in Tagen. Null wenn keine Ausgaben im Zeitraum
+   * anfielen (Division durch 0 vermieden) oder keine liquiden Mittel erfasst.
+   */
+  cashBurnTageReichweite: number | null;
 }
 
 export interface DashboardUebersicht {
@@ -1059,4 +1071,34 @@ export interface DashboardUebersicht {
   kennzahlen: DashboardKennzahlen;
   /** letzte Systemereignisse für den Aktivitäts-Feed */
   aktivitaet: SystemLogEintrag[];
+}
+
+// -------- Dashboard: Verlaufsdaten für Sparklines/Trendcharts --------
+// Ausschließlich aus real vorhandenen, zeitgestempelten Daten abgeleitet
+// (Buchungen, Prüfläufe, Systemprotokoll) — keine interpolierten oder
+// künstlich erzeugten Punkte.
+
+export interface DashboardBuchungsVerlaufPunkt {
+  /** Tagesgranularität, ISO-Datum (YYYY-MM-DD) */
+  datum: string;
+  einnahmen: number;
+  ausgaben: number;
+  /** kumulierter Gewinn bis einschließlich diesem Tag */
+  gewinnKumuliert: number;
+}
+
+export interface DashboardPruefVerlaufPunkt {
+  datum: string;
+  offeneBefunde: number;
+}
+
+export interface DashboardAktivitaetVerlaufPunkt {
+  datum: string;
+  anzahl: number;
+}
+
+export interface DashboardVerlauf {
+  buchungen: DashboardBuchungsVerlaufPunkt[];
+  pruefung: DashboardPruefVerlaufPunkt[];
+  aktivitaet: DashboardAktivitaetVerlaufPunkt[];
 }

@@ -7,7 +7,11 @@ import {
   AgentScheduleLauf,
   Buchung,
   BuchhaltungsUebersicht,
+  DashboardAktivitaetVerlaufPunkt,
+  DashboardBuchungsVerlaufPunkt,
+  DashboardPruefVerlaufPunkt,
   DashboardUebersicht,
+  DashboardVerlauf,
   Eigentuemer,
   Gebaeude,
   Konto,
@@ -488,14 +492,89 @@ export async function getDashboardUebersicht(): Promise<DashboardUebersicht> {
     (gewinnmargeScore + bilanzScore + pruefScore + belegungScore) / 4
   );
 
+  // -- Weitere abgeleitete Kennzahlen (alle aus real vorhandenen Daten) --
+  const umsatzrendite = buchhaltung.einnahmen > 0 ? buchhaltung.gewinn / buchhaltung.einnahmen : null;
+
+  const umlaufvermoegen = db.konten
+    .filter((k) => k.art === "Aktiva" && k.kategorie === "Umlaufvermögen")
+    .reduce((s, k) => s + k.saldo, 0);
+  const workingCapital = db.konten.length > 0 ? umlaufvermoegen - verbindlichkeiten : null;
+
+  const automatisierteBuchungen = db.buchungen.filter((b) => b.belegTyp && b.belegTyp !== "Manuell").length;
+  const automatisierungsgrad =
+    db.buchungen.length > 0 ? automatisierteBuchungen / db.buchungen.length : null;
+
+  const dreissigTageMs = 30 * 24 * 60 * 60 * 1000;
+  const seit = Date.now() - dreissigTageMs;
+  const ausgaben30Tage = db.buchungen
+    .filter((b) => b.typ === "Ausgabe" && new Date(b.datum).getTime() >= seit)
+    .reduce((s, b) => s + b.betrag, 0);
+  const taeglicherBurn = ausgaben30Tage / 30;
+  const cashBurnTageReichweite =
+    taeglicherBurn > 0 && liquideMittel > 0 ? Math.round(liquideMittel / taeglicherBurn) : null;
+
   const kennzahlen = {
     liquiditaetsgradI,
     eigenkapitalquote,
     cashflow,
     businessHealthScore,
+    umsatzrendite,
+    workingCapital,
+    automatisierungsgrad,
+    cashBurnTageReichweite,
   };
 
   const aktivitaet = db.systemLog.slice(0, 12);
 
   return { buchhaltung, objekte, abrechnungen, pruefung, kennzahlen, aktivitaet };
+}
+
+/**
+ * Liefert Verlaufsreihen für Sparklines/Trendcharts — ausschließlich aus
+ * bereits vorhandenen, zeitgestempelten Daten aggregiert (keine Interpolation,
+ * keine synthetischen Punkte). Ist die zugrunde liegende Liste leer, ist auch
+ * das Ergebnis leer; die UI zeigt dann ehrlich "keine Verlaufsdaten" statt
+ * einer Kurve zu erfinden.
+ */
+export async function getDashboardVerlauf(): Promise<DashboardVerlauf> {
+  const db = await readDb();
+
+  // -- Buchungen: Einnahmen/Ausgaben je Tag + kumulierter Gewinn --
+  const tageMap = new Map<string, { einnahmen: number; ausgaben: number }>();
+  for (const b of db.buchungen) {
+    const tag = b.datum.slice(0, 10);
+    const eintrag = tageMap.get(tag) || { einnahmen: 0, ausgaben: 0 };
+    if (b.typ === "Einnahme") eintrag.einnahmen += b.betrag;
+    else eintrag.ausgaben += b.betrag;
+    tageMap.set(tag, eintrag);
+  }
+  const tage = [...tageMap.keys()].sort();
+  let kumuliert = 0;
+  const buchungenVerlauf: DashboardBuchungsVerlaufPunkt[] = tage.map((datum) => {
+    const { einnahmen, ausgaben } = tageMap.get(datum)!;
+    kumuliert += einnahmen - ausgaben;
+    return { datum, einnahmen, ausgaben, gewinnKumuliert: kumuliert };
+  });
+
+  // -- Prüfläufe: offene Befunde je Lauf, chronologisch --
+  const pruefVerlauf: DashboardPruefVerlaufPunkt[] = [...db.pruefLaeufe]
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+    .map((lauf) => ({
+      datum: (lauf.abgeschlossenAm || lauf.gestartetAm).slice(0, 10),
+      offeneBefunde: lauf.befunde.filter((bf) => bf.status === "offen").length,
+    }));
+
+  // -- Systemprotokoll: Ereignisse je Tag, letzte 30 Tage --
+  const grenzeMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const aktivitaetTageMap = new Map<string, number>();
+  for (const e of db.systemLog) {
+    if (new Date(e.zeitpunkt).getTime() < grenzeMs) continue;
+    const tag = e.zeitpunkt.slice(0, 10);
+    aktivitaetTageMap.set(tag, (aktivitaetTageMap.get(tag) || 0) + 1);
+  }
+  const aktivitaet: DashboardAktivitaetVerlaufPunkt[] = [...aktivitaetTageMap.keys()]
+    .sort()
+    .map((datum) => ({ datum, anzahl: aktivitaetTageMap.get(datum)! }));
+
+  return { buchungen: buchungenVerlauf, pruefung: pruefVerlauf, aktivitaet };
 }
