@@ -5,8 +5,9 @@ import Link from "next/link";
 import { cn, formatCurrency, formatDate, formatPercent } from "@/lib/utils";
 import { DashboardUebersicht, DashboardVerlauf, SYSTEM_LOG_TYP_ICON } from "@/lib/types";
 import ProgressRing from "@/components/ProgressRing";
-import KpiInfo from "@/components/KpiInfo";
+import KpiInfo, { KPI_KATALOG } from "@/components/KpiInfo";
 import Sparkline from "@/components/Sparkline";
+import CategoryBars from "@/components/CategoryBars";
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardUebersicht | null>(null);
@@ -42,6 +43,8 @@ export default function DashboardPage() {
           <HeroArea data={data} />
           <BusinessCockpit data={data} />
           {verlauf && <TrendCharts verlauf={verlauf} />}
+          <CategoryBreakdown data={data} />
+          <KpiExplorer data={data} />
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             <ActivityFeed data={data} />
             <RoadmapCard />
@@ -276,6 +279,126 @@ function TrendCard({
         {summary && <div className="shrink-0 text-sm font-bold tabular-nums">{summary}</div>}
       </div>
       <Sparkline values={values} width={220} height={44} />
+    </div>
+  );
+}
+
+function CategoryBreakdown({ data }: { data: DashboardUebersicht }) {
+  const { einnahmenNachKategorie, ausgabenNachKategorie } = data.buchhaltung;
+  const hatDaten =
+    Object.keys(einnahmenNachKategorie).length > 0 || Object.keys(ausgabenNachKategorie).length > 0;
+
+  if (!hatDaten) return null;
+
+  return (
+    <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="rounded-lg border border-border bg-card p-4">
+        <h2 className="mb-3 text-sm font-semibold">Einnahmen nach Kategorie</h2>
+        <CategoryBars data={einnahmenNachKategorie} color="var(--success)" />
+      </div>
+      <div className="rounded-lg border border-border bg-card p-4">
+        <h2 className="mb-3 text-sm font-semibold">Ausgaben nach Kategorie</h2>
+        <CategoryBars data={ausgabenNachKategorie} color="var(--destructive)" />
+      </div>
+    </div>
+  );
+}
+
+function formatKpiValue(id: string, data: DashboardUebersicht): string {
+  const k = data.kennzahlen;
+  const pct = (v: number | null) => (v === null ? "—" : formatPercent(v));
+  switch (id) {
+    case "umsatz":
+      return formatCurrency(k.umsatz);
+    case "gewinn":
+      return formatCurrency(data.buchhaltung.gewinn);
+    case "ebitda":
+      return formatCurrency(k.ebitda);
+    case "ebit":
+      return formatCurrency(k.ebit);
+    case "liquiditaetsgradI":
+      return pct(k.liquiditaetsgradI);
+    case "liquiditaetsgradII":
+      return pct(k.liquiditaetsgradII);
+    case "liquiditaetsgradIII":
+      return pct(k.liquiditaetsgradIII);
+    case "eigenkapitalquote":
+      return pct(k.eigenkapitalquote);
+    case "workingCapital":
+      return k.workingCapital === null ? "—" : formatCurrency(k.workingCapital);
+    case "businessHealthScore":
+      return `${k.businessHealthScore} / 100`;
+    case "korrespondenzAutomatisierungsgrad":
+      return pct(k.korrespondenzAutomatisierungsgrad);
+    case "kiKonfidenzScore":
+      return pct(k.kiKonfidenzScore);
+    case "gesamtAutomatisierungsgrad":
+      return pct(k.gesamtAutomatisierungsgrad);
+    case "processingSpeedStunden":
+      return k.processingSpeedStunden === null ? "—" : `${k.processingSpeedStunden.toFixed(1)} Std.`;
+    case "riskExposureIndex":
+      return `${Math.round(k.riskExposureIndex)} / 100`;
+    case "cashBurnTageReichweite":
+      return k.cashBurnTageReichweite === null ? "—" : `${k.cashBurnTageReichweite} Tage`;
+    case "dataQualityScore":
+      return k.dataQualityScore === null ? "—" : `${Math.round(k.dataQualityScore)} / 100`;
+    default:
+      return "—";
+  }
+}
+
+function KpiExplorer({ data }: { data: DashboardUebersicht }) {
+  const klassisch = KPI_KATALOG.filter((k) => k.kategorie === "klassisch");
+  const modern = KPI_KATALOG.filter((k) => k.kategorie === "modern");
+
+  return (
+    <div className="mb-6 rounded-lg border border-border bg-card">
+      <div className="border-b border-border p-3">
+        <h2 className="text-sm font-semibold">📖 Kennzahlen-Explorer</h2>
+        <p className="text-xs text-muted-foreground">
+          Alle 10 klassischen + 15 modernen Kennzahlen aus dem Konzept — live berechnete mit Wert,
+          geplante ehrlich mit Durchgang/Voraussetzung markiert.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 divide-y divide-border lg:grid-cols-2 lg:divide-x lg:divide-y-0">
+        <KpiExplorerSpalte titel="Klassisch" eintraege={klassisch} data={data} />
+        <KpiExplorerSpalte titel="Modern" eintraege={modern} data={data} />
+      </div>
+    </div>
+  );
+}
+
+function KpiExplorerSpalte({
+  titel,
+  eintraege,
+  data,
+}: {
+  titel: string;
+  eintraege: typeof KPI_KATALOG;
+  data: DashboardUebersicht;
+}) {
+  return (
+    <div className="p-3">
+      <div className="mb-2 text-xs font-semibold text-muted-foreground">
+        {titel} ({eintraege.length})
+      </div>
+      <div className="space-y-1">
+        {eintraege.map((kpi, i) => (
+          <div key={`${kpi.id}-${i}`} className="flex items-center justify-between gap-2 py-1 text-sm">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate">{kpi.label}</span>
+              <KpiInfo kpiId={kpi.id} label={kpi.label} />
+            </div>
+            {kpi.geplantAb ? (
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                geplant · {kpi.geplantAb}
+              </span>
+            ) : (
+              <span className="shrink-0 font-semibold tabular-nums">{formatKpiValue(kpi.id, data)}</span>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

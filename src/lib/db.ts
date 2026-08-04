@@ -513,6 +513,74 @@ export async function getDashboardUebersicht(): Promise<DashboardUebersicht> {
   const cashBurnTageReichweite =
     taeglicherBurn > 0 && liquideMittel > 0 ? Math.round(liquideMittel / taeglicherBurn) : null;
 
+  // -- Durchgang 4: verbleibende klassische Kennzahlen --
+  const umsatz = buchhaltung.einnahmen;
+  const zinsenAusgaben = buchhaltung.ausgabenNachKategorie["Zinsen"] || 0;
+  const steuernAusgaben = buchhaltung.ausgabenNachKategorie["Steuern"] || 0;
+  const abschreibungenAusgaben = buchhaltung.ausgabenNachKategorie["Abschreibungen"] || 0;
+  const ebit = buchhaltung.gewinn + zinsenAusgaben + steuernAusgaben;
+  const ebitda = ebit + abschreibungenAusgaben;
+
+  const liquiditaetsgradII =
+    verbindlichkeiten > 0 ? (liquideMittel + umlaufvermoegen) / verbindlichkeiten : null;
+  // Ohne Vorräte/Warenlager in diesem Geschäftsmodell rechnerisch identisch mit Grad II.
+  const liquiditaetsgradIII = liquiditaetsgradII;
+
+  // -- Durchgang 4: zusätzliche moderne Kennzahlen --
+  const schriftverkehrGesamt = db.schriftverkehr.length;
+  const schriftverkehrAgent = db.schriftverkehr.filter((s) => s.quelle === "agent").length;
+  const korrespondenzAutomatisierungsgrad =
+    schriftverkehrGesamt > 0 ? schriftverkehrAgent / schriftverkehrGesamt : null;
+
+  const automatisierungsWerte = [automatisierungsgrad, korrespondenzAutomatisierungsgrad].filter(
+    (v): v is number => v !== null
+  );
+  const gesamtAutomatisierungsgrad =
+    automatisierungsWerte.length > 0
+      ? automatisierungsWerte.reduce((s, v) => s + v, 0) / automatisierungsWerte.length
+      : null;
+
+  const konfidenzWerte = db.ablage
+    .map((a) => a.konfidenz)
+    .filter((k): k is number => typeof k === "number");
+  const kiKonfidenzScore =
+    konfidenzWerte.length > 0 ? konfidenzWerte.reduce((s, k) => s + k, 0) / konfidenzWerte.length : null;
+
+  const zugeordneteDokumente = db.ablage.filter((a) => a.status === "zugeordnet");
+  const bearbeitungsdauernStunden = zugeordneteDokumente.map(
+    (a) => (new Date(a.updatedAt).getTime() - new Date(a.hochgeladenAm).getTime()) / (1000 * 60 * 60)
+  );
+  const processingSpeedStunden =
+    bearbeitungsdauernStunden.length > 0
+      ? bearbeitungsdauernStunden.reduce((s, h) => s + Math.max(0, h), 0) / bearbeitungsdauernStunden.length
+      : null;
+
+  const stammdatenGesamt =
+    db.liegenschaften.length +
+    db.gebaeude.length +
+    db.wohnungen.length +
+    db.mieter.length +
+    db.mietvertraege.length +
+    db.abrechnungen.length +
+    db.ablage.length;
+  const dataQualityScore =
+    stammdatenGesamt > 0
+      ? Math.max(
+          0,
+          100 - Math.min(100, ((pruefung.fehler * 10 + pruefung.warnungen * 4 + pruefung.hinweise) / stammdatenGesamt) * 100)
+        )
+      : null;
+
+  const riskExposureIndex = Math.max(
+    0,
+    Math.min(
+      100,
+      pruefung.fehler * 15 +
+        pruefung.warnungen * 5 +
+        (liquiditaetsgradI !== null && liquiditaetsgradI < 1 ? (1 - liquiditaetsgradI) * 30 : 0)
+    )
+  );
+
   const kennzahlen = {
     liquiditaetsgradI,
     eigenkapitalquote,
@@ -522,6 +590,17 @@ export async function getDashboardUebersicht(): Promise<DashboardUebersicht> {
     workingCapital,
     automatisierungsgrad,
     cashBurnTageReichweite,
+    umsatz,
+    ebit,
+    ebitda,
+    liquiditaetsgradII,
+    liquiditaetsgradIII,
+    korrespondenzAutomatisierungsgrad,
+    gesamtAutomatisierungsgrad,
+    kiKonfidenzScore,
+    processingSpeedStunden,
+    dataQualityScore,
+    riskExposureIndex,
   };
 
   const aktivitaet = db.systemLog.slice(0, 12);

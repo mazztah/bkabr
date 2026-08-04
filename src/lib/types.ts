@@ -910,6 +910,7 @@ export const AUSGABE_KATEGORIEN = [
   "Versicherung",
   "Zinsen",
   "Steuern",
+  "Abschreibungen",
   "Dienstleister",
   "Betriebskosten",
   "Sonstige Ausgaben",
@@ -1061,6 +1062,35 @@ export interface DashboardKennzahlen {
    * anfielen (Division durch 0 vermieden) oder keine liquiden Mittel erfasst.
    */
   cashBurnTageReichweite: number | null;
+
+  // -- Durchgang 4: verbleibende klassische Kennzahlen --
+  /** Alias auf Einnahmen — klassische Bezeichnung */
+  umsatz: number;
+  /** Gewinn + Zinsaufwand + Steueraufwand */
+  ebit: number;
+  /** EBIT + Abschreibungen */
+  ebitda: number;
+  /** (Liquide Mittel + Umlaufvermögen) / Verbindlichkeiten */
+  liquiditaetsgradII: number | null;
+  /**
+   * In diesem Geschäftsmodell (keine Vorräte) rechnerisch identisch mit
+   * Liquiditätsgrad II — wird dennoch ausgewiesen, da klassisch erwartet.
+   */
+  liquiditaetsgradIII: number | null;
+
+  // -- Durchgang 4: zusätzliche moderne Kennzahlen --
+  /** Anteil der Schriftverkehr-Dokumente mit quelle = agent */
+  korrespondenzAutomatisierungsgrad: number | null;
+  /** Gleich gewichteter Schnitt aus Buchhaltungs- und Korrespondenz-Automatisierung */
+  gesamtAutomatisierungsgrad: number | null;
+  /** Durchschnittliche KI-Konfidenz (0–1) aller klassifizierten Ablage-Dokumente */
+  kiKonfidenzScore: number | null;
+  /** Durchschnittliche Stunden von Upload bis Zuordnung eines Ablage-Dokuments */
+  processingSpeedStunden: number | null;
+  /** 100 − gewichtete Fehlerdichte aus dem letzten Prüflauf relativ zur Anzahl Stammdaten */
+  dataQualityScore: number | null;
+  /** 0–100, höher = riskanter: aus offenen Fehlern/Warnungen + niedriger Liquidität */
+  riskExposureIndex: number;
 }
 
 export interface DashboardUebersicht {

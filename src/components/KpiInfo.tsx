@@ -106,7 +106,160 @@ export const KPI_ERKLAERUNGEN: Record<string, KpiErklaerung> = {
       "Ein sinkender Wert über mehrere Wochen ist ein Frühwarnsignal, unabhängig vom absoluten Kontostand.",
     folgekennzahlen: ["Liquiditätsgrad I", "Working Capital"],
   },
+  umsatz: {
+    definition: "Klassische Bezeichnung für die Gesamteinnahmen im Betrachtungszeitraum.",
+    berechnung: "Umsatz = Σ Einnahmen",
+    interpretation: "Wachstum allein sagt wenig — erst im Verhältnis zur Umsatzrendite wird er aussagekräftig.",
+    folgekennzahlen: ["Umsatzrendite", "Gewinn"],
+  },
+  ebit: {
+    definition: "Ergebnis vor Zinsen und Steuern — operative Ertragskraft ohne Finanzierungs-/Steuereffekte.",
+    berechnung: "EBIT = Gewinn + Zinsaufwand + Steueraufwand",
+    interpretation: "Erlaubt den Vergleich der operativen Leistung unabhängig von Finanzierungsstruktur.",
+    folgekennzahlen: ["EBITDA", "Umsatzrendite"],
+  },
+  ebitda: {
+    definition: "Ergebnis vor Zinsen, Steuern und Abschreibungen.",
+    berechnung: "EBITDA = EBIT + Abschreibungen",
+    interpretation:
+      "Steigt EBITDA und sinkt gleichzeitig der Cashflow, deutet das häufig auf wachsende Forderungsbestände oder Investitionen hin.",
+    folgekennzahlen: ["EBIT", "Cashflow"],
+  },
+  liquiditaetsgradII: {
+    definition: "Liquidität zweiten Grades: liquide Mittel plus kurzfristige Forderungen im Verhältnis zu Verbindlichkeiten.",
+    berechnung: "Liquiditätsgrad II = (Liquide Mittel + Umlaufvermögen) / Verbindlichkeiten",
+    interpretation: "Werte um 100–120 % gelten klassisch als solide.",
+    folgekennzahlen: ["Liquiditätsgrad I", "Liquiditätsgrad III"],
+  },
+  liquiditaetsgradIII: {
+    definition: "Liquidität dritten Grades: gesamtes Umlaufvermögen im Verhältnis zu Verbindlichkeiten.",
+    berechnung: "Liquiditätsgrad III = Umlaufvermögen gesamt / Verbindlichkeiten",
+    interpretation:
+      "In diesem Geschäftsmodell ohne Warenlager/Vorräte rechnerisch identisch mit Liquiditätsgrad II — wird dennoch separat ausgewiesen, da klassisch erwartet.",
+    folgekennzahlen: ["Liquiditätsgrad II"],
+  },
+  korrespondenzAutomatisierungsgrad: {
+    definition: "Anteil der Schriftverkehr-Dokumente, die automatisch vom Agenten erzeugt wurden.",
+    berechnung: "Korrespondenz-Automatisierungsgrad = Schriftverkehr mit quelle=agent / alle Schriftverkehr-Dokumente",
+    interpretation: "Hoher Wert spart manuelle Formulierungsarbeit bei Mahnungen, Anschreiben etc.",
+    folgekennzahlen: ["Automatisierungsgrad (gesamt)"],
+  },
+  gesamtAutomatisierungsgrad: {
+    definition: "Übergreifender Automatisierungsgrad der Plattform.",
+    berechnung: "Gleich gewichteter Schnitt aus Buchhaltungs- und Korrespondenz-Automatisierungsgrad",
+    interpretation: "Wächst mit jeder neuen Automatisierung (z.B. automatische Rechnungsbuchung, Agent-Anschreiben).",
+    folgekennzahlen: ["Business Health Score"],
+  },
+  kiKonfidenzScore: {
+    definition: "Durchschnittliche Konfidenz der KI-Klassifikation über alle Ablage-Dokumente.",
+    berechnung: "KI-Konfidenz-Score = Ø konfidenz-Wert (0–1) aller klassifizierten Dokumente",
+    interpretation: "Sinkt der Wert, lohnt eine Stichprobenprüfung — evtl. neue Dokumenttypen, die das Modell nicht kennt.",
+    folgekennzahlen: ["Data Quality Score"],
+  },
+  processingSpeedStunden: {
+    definition: "Durchschnittliche Zeit von Dokument-Upload bis erfolgreicher Zuordnung.",
+    berechnung: "Ø Stunden zwischen hochgeladenAm und updatedAt, für Dokumente mit status=zugeordnet",
+    interpretation: "Niedriger ist besser. Steigende Werte deuten auf einen Rückstau in der Dokumentenverarbeitung hin.",
+    folgekennzahlen: ["Automatisierungsgrad (gesamt)"],
+  },
+  dataQualityScore: {
+    definition: "Datenqualität der Stammdaten, gemessen an offenen Prüfbefunden im Verhältnis zur Datenmenge.",
+    berechnung:
+      "100 − gewichtete Fehlerdichte (Fehler ×10, Warnungen ×4, Hinweise ×1) / Anzahl Stammdaten-Datensätze × 100",
+    interpretation: "Niedrige Werte bei wenigen Datensätzen sind normal — die Kennzahl wird mit wachsender Datenbasis stabiler.",
+    folgekennzahlen: ["Business Health Score", "Risk Exposure Index"],
+  },
+  riskExposureIndex: {
+    definition: "Zusammengesetztes Risikomaß aus offenen Prüfbefunden und Liquiditätslage.",
+    berechnung: "0–100, höher = riskanter: Fehler ×15 + Warnungen ×5 + Liquiditätsdefizit-Anteil ×30",
+    interpretation: "Anders als der Business Health Score fokussiert dieser Index bewusst nur auf Risiko, nicht auf Gesamtleistung.",
+    folgekennzahlen: ["Data Quality Score", "Liquiditätsgrad I"],
+  },
+
+  // -- Geplante Kennzahlen ohne Datenquelle (noch nicht live) --
+  aiProductivityScore: {
+    definition: "Verhältnis von durch KI erledigten Aufgaben zu deren Token-/Kostenaufwand.",
+    berechnung: "Noch nicht implementiert — benötigt Token-Tracking aus dem AI Cost Observatory.",
+    interpretation: "Wird verfügbar, sobald Modellaufrufe mit Kosten und Ergebnisqualität verknüpft sind.",
+  },
+  forecastAccuracy: {
+    definition: "Wie genau frühere Prognosen (z.B. Liquiditätsverlauf) tatsächlich eingetroffen sind.",
+    berechnung: "Noch nicht implementiert — benötigt ein Forecast-Modul mit historischen Prognosen zum Abgleich.",
+    interpretation: "Erst mit mehreren Prognosezyklen aussagekräftig.",
+  },
+  costPredictionAccuracy: {
+    definition: "Treffgenauigkeit geschätzter KI-Kosten gegenüber tatsächlich abgerechneten Kosten.",
+    berechnung: "Noch nicht implementiert — benötigt das AI Cost Observatory.",
+    interpretation: "Hilft, Kostenschätzungen für neue Modell-Integrationen realistischer zu machen.",
+  },
+  employeeTimeSaved: {
+    definition: "Geschätzte eingesparte Bearbeitungszeit durch Automatisierung.",
+    berechnung: "Noch nicht implementiert — benötigt eine Referenzzeit pro manuellem Vorgang (Zeiterfassung).",
+    interpretation: "Aktuell nicht eingeplant, da keine Zeiterfassungsdaten vorliegen.",
+  },
+  tenantSatisfactionIndex: {
+    definition: "Zufriedenheit der Mieter, z.B. aus Rückmeldungen oder Reaktionszeiten.",
+    berechnung: "Noch nicht implementiert — benötigt eine Mieterbefragung oder Ticket-/Beschwerde-Tracking.",
+    interpretation: "Aktuell nicht eingeplant, da keine entsprechende Datenquelle existiert.",
+  },
+  maintenancePredictionScore: {
+    definition: "Vorhersage anstehender Instandhaltungskosten je Objekt.",
+    berechnung: "Noch nicht implementiert — Teil der geplanten Predictive Intelligence (Durchgang 7).",
+    interpretation: "Wird auf Basis historischer Instandhaltungsbuchungen je Liegenschaft berechnet werden.",
+  },
+  aiRecommendationAcceptanceRate: {
+    definition: "Anteil der vom LLM-Agenten vorgeschlagenen Maßnahmen, die der Nutzer übernommen hat.",
+    berechnung: "Noch nicht implementiert — benötigt das LLM Control Center mit Annehmen/Ablehnen-Aktionen (Durchgang 5).",
+    interpretation: "Ein Frühindikator dafür, wie vertrauenswürdig die Agenten-Empfehlungen tatsächlich sind.",
+  },
 };
+
+export type KpiKategorie = "klassisch" | "modern";
+
+export interface KpiKatalogEintrag {
+  id: string;
+  label: string;
+  kategorie: KpiKategorie;
+  /** null = bereits live mit echten Daten berechnet */
+  geplantAb?: string;
+}
+
+/**
+ * Vollständiger Katalog aller 25 anvisierten Kennzahlen (10 klassisch + 15
+ * modern) aus dem ursprünglichen Konzept. "geplantAb" markiert Kennzahlen,
+ * für die noch keine Datenquelle existiert (z.B. LLM-Tokentracking,
+ * Mieterbefragung, Wartungs-ML) — bewusst transparent statt mit
+ * Platzhalterwerten gefüllt.
+ */
+export const KPI_KATALOG: KpiKatalogEintrag[] = [
+  // -- 10 klassische Kennzahlen --
+  { id: "umsatz", label: "Umsatz", kategorie: "klassisch" },
+  { id: "gewinn", label: "Gewinn", kategorie: "klassisch" },
+  { id: "ebitda", label: "EBITDA", kategorie: "klassisch" },
+  { id: "ebit", label: "EBIT", kategorie: "klassisch" },
+  { id: "liquiditaetsgradI", label: "Liquiditätsgrad I", kategorie: "klassisch" },
+  { id: "liquiditaetsgradII", label: "Liquiditätsgrad II", kategorie: "klassisch" },
+  { id: "liquiditaetsgradIII", label: "Liquiditätsgrad III", kategorie: "klassisch" },
+  { id: "eigenkapitalquote", label: "Eigenkapitalquote", kategorie: "klassisch" },
+  { id: "gewinn", label: "Cashflow", kategorie: "klassisch" },
+  { id: "workingCapital", label: "Working Capital", kategorie: "klassisch" },
+  // -- 15 moderne Kennzahlen --
+  { id: "businessHealthScore", label: "Business Health Score", kategorie: "modern" },
+  { id: "aiProductivityScore", label: "AI Productivity Score", kategorie: "modern", geplantAb: "Durchgang 6 (AI Cost Observatory)" },
+  { id: "korrespondenzAutomatisierungsgrad", label: "Document Automation Rate", kategorie: "modern" },
+  { id: "kiKonfidenzScore", label: "KI Confidence Score", kategorie: "modern" },
+  { id: "forecastAccuracy", label: "Forecast Accuracy", kategorie: "modern", geplantAb: "Durchgang 7 (Predictive Intelligence)" },
+  { id: "costPredictionAccuracy", label: "Cost Prediction Accuracy", kategorie: "modern", geplantAb: "Durchgang 6 (AI Cost Observatory)" },
+  { id: "gesamtAutomatisierungsgrad", label: "Automation Rate", kategorie: "modern" },
+  { id: "employeeTimeSaved", label: "Employee Time Saved", kategorie: "modern", geplantAb: "benötigt Zeiterfassung (noch nicht eingeplant)" },
+  { id: "processingSpeedStunden", label: "Processing Speed Index", kategorie: "modern" },
+  { id: "tenantSatisfactionIndex", label: "Tenant Satisfaction Index", kategorie: "modern", geplantAb: "benötigt Mieterbefragung (noch nicht eingeplant)" },
+  { id: "riskExposureIndex", label: "Risk Exposure Index", kategorie: "modern" },
+  { id: "maintenancePredictionScore", label: "Maintenance Prediction Score", kategorie: "modern", geplantAb: "Durchgang 7 (Predictive Intelligence)" },
+  { id: "cashBurnTageReichweite", label: "Cash Burn Velocity", kategorie: "modern" },
+  { id: "dataQualityScore", label: "Data Quality Score", kategorie: "modern" },
+  { id: "aiRecommendationAcceptanceRate", label: "AI Recommendation Acceptance Rate", kategorie: "modern", geplantAb: "Durchgang 5 (LLM Control Center)" },
+];
 
 export default function KpiInfo({ kpiId, label }: { kpiId: string; label?: string }) {
   const [open, setOpen] = useState(false);
