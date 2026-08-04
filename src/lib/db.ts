@@ -5,8 +5,12 @@ import {
   Abrechnung,
   AgentSchedule,
   AgentScheduleLauf,
+  Buchung,
+  BuchhaltungsUebersicht,
+  DashboardUebersicht,
   Eigentuemer,
   Gebaeude,
+  Konto,
   Kontoauszug,
   Liegenschaft,
   Mieter,
@@ -39,6 +43,8 @@ interface DbShape {
   systemLog: SystemLogEintrag[];
   pruefLaeufe: PruefLauf[];
   agentSchedules: AgentSchedule[];
+  buchungen: Buchung[];
+  konten: Konto[];
   counters: Record<string, number>;
 }
 
@@ -65,6 +71,8 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     systemLog: db.systemLog || [],
     pruefLaeufe: db.pruefLaeufe || [],
     agentSchedules: db.agentSchedules || [],
+    buchungen: db.buchungen || [],
+    konten: db.konten || [],
     counters: db.counters || {},
   };
 }
@@ -235,6 +243,100 @@ export const kontoauszuegeDb = makeCrud<Kontoauszug>("kontoauszuege", "KA");
 export const ablageDb = makeCrud<AblageDokument>("ablage", "AB");
 export const pruefLaufDb = makeCrud<PruefLauf>("pruefLaeufe", "PL");
 export const agentSchedulesDb = makeCrud<AgentSchedule>("agentSchedules", "KA-AG");
+export const buchungenDb = makeCrud<Buchung>("buchungen", "BU");
+export const kontenDb = makeCrud<Konto>("konten", "KT");
+
+// -------- Buchhaltung: Aggregation für Dashboard/KPI-Engine --------
+
+/**
+ * Berechnet Einnahmen/Ausgaben/Gewinn (optional im Zeitraum) sowie die
+ * aktuelle Bilanz aus den Konten. Bewusst zustandslos (kein Caching) –
+ * bei wachsendem Buchungsvolumen wäre hier ein Kandidat für einen
+ * inkrementellen Aggregations-Layer, aktuell aber unproblematisch.
+ */
+export async function getBuchhaltungsUebersicht(params?: {
+  von?: string;
+  bis?: string;
+}): Promise<BuchhaltungsUebersicht> {
+  const db = await readDb();
+  let buchungen = db.buchungen;
+  if (params?.von) buchungen = buchungen.filter((b) => b.datum >= params.von!);
+  if (params?.bis) buchungen = buchungen.filter((b) => b.datum <= params.bis!);
+
+  const einnahmenNachKategorie: Record<string, number> = {};
+  const ausgabenNachKategorie: Record<string, number> = {};
+  let einnahmen = 0;
+  let ausgaben = 0;
+
+  for (const b of buchungen) {
+    if (b.typ === "Einnahme") {
+      einnahmen += b.betrag;
+      einnahmenNachKategorie[b.kategorie] = (einnahmenNachKategorie[b.kategorie] || 0) + b.betrag;
+    } else {
+      ausgaben += b.betrag;
+      ausgabenNachKategorie[b.kategorie] = (ausgabenNachKategorie[b.kategorie] || 0) + b.betrag;
+    }
+  }
+
+  const aktiva = db.konten.filter((k) => k.art === "Aktiva");
+  const passiva = db.konten.filter((k) => k.art === "Passiva");
+  const summeAktiva = aktiva.reduce((s, k) => s + k.saldo, 0);
+  const summePassiva = passiva.reduce((s, k) => s + k.saldo, 0);
+
+  return {
+    einnahmen,
+    ausgaben,
+    gewinn: einnahmen - ausgaben,
+    einnahmenNachKategorie,
+    ausgabenNachKategorie,
+    bilanz: {
+      aktiva,
+      passiva,
+      summeAktiva,
+      summePassiva,
+      imGleichgewicht: Math.abs(summeAktiva - summePassiva) < 0.01,
+    },
+    buchungenAnzahl: buchungen.length,
+  };
+}
+
+/**
+ * Legt einen einfachen Standard-Kontenrahmen an (nur wenn noch keine Konten
+ * existieren) – Einstiegshilfe, damit die Bilanz nicht leer bleibt, bevor der
+ * Nutzer eigene Konten pflegt. Salden starten bei 0 und müssen manuell bzw.
+ * später automatisiert befüllt werden.
+ */
+export async function seedStandardKontenrahmen(): Promise<Konto[]> {
+  const db = await readDb();
+  if (db.konten.length > 0) return db.konten;
+
+  const now = new Date().toISOString();
+  const defaults: Array<Pick<Konto, "name" | "art" | "kategorie">> = [
+    { name: "Bankguthaben", art: "Aktiva", kategorie: "Liquide Mittel" },
+    { name: "Forderungen aus Mietverhältnissen", art: "Aktiva", kategorie: "Umlaufvermögen" },
+    { name: "Immobilien / Anlagevermögen", art: "Aktiva", kategorie: "Anlagevermögen" },
+    { name: "Eigenkapital", art: "Passiva", kategorie: "Eigenkapital" },
+    {
+      name: "Verbindlichkeiten aus Lieferungen und Leistungen",
+      art: "Passiva",
+      kategorie: "Verbindlichkeiten",
+    },
+    { name: "Rückstellungen für Instandhaltung", art: "Passiva", kategorie: "Rückstellungen" },
+  ];
+
+  const created: Konto[] = [];
+  for (const d of defaults) {
+    const konto = await kontenDb.create({
+      id: uid(),
+      saldo: 0,
+      createdAt: now,
+      updatedAt: now,
+      ...d,
+    } as Konto);
+    created.push(konto);
+  }
+  return created;
+}
 
 // -------- Kalender / Agent-Scheduler --------
 
@@ -305,4 +407,95 @@ export async function listLog(params?: { limit?: number; suche?: string }): Prom
     );
   }
   return items.slice(0, params?.limit ?? 200);
+}
+
+// -------- Dashboard: aggregierte Business-Übersicht --------
+
+/**
+ * Aggregiert alle für das Dashboard relevanten Kennzahlen aus den bestehenden
+ * Sammlungen. Bewusst eine einzige Funktion (statt vieler Einzel-Fetches im
+ * Client), damit Formeln (z.B. Business Health Score) an einer Stelle
+ * dokumentiert sind und nicht mehrfach im UI-Code landen.
+ */
+export async function getDashboardUebersicht(): Promise<DashboardUebersicht> {
+  const db = await readDb();
+  const buchhaltung = await getBuchhaltungsUebersicht();
+
+  // -- Objekte / Belegung --
+  const mieterAktiv = db.mieter.filter((m) => (m.status || "aktiv") === "aktiv").length;
+  const belegungsquote = db.wohnungen.length > 0 ? mieterAktiv / db.wohnungen.length : null;
+
+  const objekte = {
+    liegenschaften: db.liegenschaften.length,
+    gebaeude: db.gebaeude.length,
+    wohnungen: db.wohnungen.length,
+    mieterAktiv,
+    belegungsquote,
+  };
+
+  // -- Abrechnungen nach Status --
+  const abrechnungen = {
+    gesamt: db.abrechnungen.length,
+    rohdaten: db.abrechnungen.filter((a) => a.status === "Rohdaten").length,
+    validierung: db.abrechnungen.filter((a) => a.status === "Validierung").length,
+    fertig: db.abrechnungen.filter((a) => a.status === "Fertig").length,
+  };
+
+  // -- Letzte Plausibilitätsprüfung --
+  const letzterPruefLauf = [...db.pruefLaeufe].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  )[0];
+  const offeneBefunde = letzterPruefLauf?.befunde.filter((b) => b.status === "offen") || [];
+  const pruefung = {
+    letzterLaufAm: letzterPruefLauf?.abgeschlossenAm || letzterPruefLauf?.gestartetAm,
+    offeneBefunde: offeneBefunde.length,
+    fehler: offeneBefunde.filter((b) => b.schweregrad === "fehler").length,
+    warnungen: offeneBefunde.filter((b) => b.schweregrad === "warnung").length,
+    hinweise: offeneBefunde.filter((b) => b.schweregrad === "hinweis").length,
+  };
+
+  // -- Abgeleitete Kennzahlen --
+  const liquideMittel = db.konten
+    .filter((k) => k.art === "Aktiva" && k.kategorie === "Liquide Mittel")
+    .reduce((s, k) => s + k.saldo, 0);
+  const verbindlichkeiten = db.konten
+    .filter((k) => k.art === "Passiva" && k.kategorie === "Verbindlichkeiten")
+    .reduce((s, k) => s + k.saldo, 0);
+  const eigenkapital = db.konten
+    .filter((k) => k.art === "Passiva" && k.kategorie === "Eigenkapital")
+    .reduce((s, k) => s + k.saldo, 0);
+
+  const liquiditaetsgradI = verbindlichkeiten > 0 ? liquideMittel / verbindlichkeiten : null;
+  const eigenkapitalquote =
+    buchhaltung.bilanz.summeAktiva > 0 ? eigenkapital / buchhaltung.bilanz.summeAktiva : null;
+  const cashflow = buchhaltung.gewinn;
+
+  // Business Health Score (0–100): gleich gewichteter Mittelwert aus vier
+  // Teil-Scores. Jeder Teil-Score fällt auf 50 (neutral) zurück, wenn die
+  // zugrunde liegenden Daten noch fehlen, statt eine falsche Präzision
+  // vorzutäuschen.
+  const gewinnmargeScore =
+    buchhaltung.einnahmen > 0
+      ? Math.max(0, Math.min(100, (buchhaltung.gewinn / buchhaltung.einnahmen) * 200))
+      : 50;
+  const bilanzScore = db.konten.length === 0 ? 50 : buchhaltung.bilanz.imGleichgewicht ? 100 : 40;
+  const pruefScore = !letzterPruefLauf
+    ? 50
+    : Math.max(0, 100 - pruefung.fehler * 20 - pruefung.warnungen * 8 - pruefung.hinweise * 2);
+  const belegungScore = belegungsquote === null ? 50 : belegungsquote * 100;
+
+  const businessHealthScore = Math.round(
+    (gewinnmargeScore + bilanzScore + pruefScore + belegungScore) / 4
+  );
+
+  const kennzahlen = {
+    liquiditaetsgradI,
+    eigenkapitalquote,
+    cashflow,
+    businessHealthScore,
+  };
+
+  const aktivitaet = db.systemLog.slice(0, 12);
+
+  return { buchhaltung, objekte, abrechnungen, pruefung, kennzahlen, aktivitaet };
 }

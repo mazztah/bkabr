@@ -6,7 +6,7 @@ export async function register() {
   // Import, damit dieses Modul (und seine Abhängigkeiten wie agent.ts) nicht
   // in den Edge-/Build-Pfad gezogen wird, falls instrumentation.ts dort
   // ebenfalls ausgewertet würde.
-  const { startAgentScheduler } = await import("./lib/scheduler");
+  const { startAgentScheduler } = await import("./scheduler");
   startAgentScheduler();
 
   // tesseract.js nutzt intern Node worker_threads. Wirft der Worker-Thread

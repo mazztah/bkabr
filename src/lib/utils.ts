@@ -8,6 +8,14 @@ export function formatCurrency(value: number): string {
   );
 }
 
+export function formatPercent(value: number, digits = 1): string {
+  return new Intl.NumberFormat("de-DE", {
+    style: "percent",
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(value || 0);
+}
+
 export function formatDate(date: string): string {
   try {
     return new Date(date).toLocaleDateString("de-DE", {

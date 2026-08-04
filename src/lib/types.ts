@@ -886,6 +886,97 @@ export interface AgentSchedule {
 
 // -------- Schriftverkehr (gespeicherte Anschreiben / Mahnungen) --------
 
+// -------- Buchhaltung (Einnahmen/Ausgaben-Journal & Bilanz) --------
+// Durchgang 1 der Dashboard-Initiative: ein eigenständiges, einfaches Journal
+// (Kassenbuch-Prinzip: jede Buchung ist Einnahme ODER Ausgabe) plus ein
+// schlanker Kontenrahmen für eine Aktiva/Passiva-Bilanz. Bewusst kein volles
+// doppisches Buchungssystem (Soll/Haben je Konto) – das wäre für den
+// aktuellen Bedarf (Kennzahlen, Dashboard) unnötig komplex. Buchungen können
+// künftig automatisch aus Rechnungen/Abrechnungen/Kontoauszügen erzeugt
+// werden (belegTyp/belegId), aktuell auch manuell erfassbar.
+
+export type BuchungsTyp = "Einnahme" | "Ausgabe";
+
+export const EINNAHME_KATEGORIEN = [
+  "Miete",
+  "Nebenkostenvorauszahlung",
+  "Nebenkostennachzahlung",
+  "Sonstige Einnahmen",
+] as const;
+
+export const AUSGABE_KATEGORIEN = [
+  "Instandhaltung",
+  "Verwaltung",
+  "Versicherung",
+  "Zinsen",
+  "Steuern",
+  "Dienstleister",
+  "Betriebskosten",
+  "Sonstige Ausgaben",
+] as const;
+
+export type BuchungsKategorie =
+  | (typeof EINNAHME_KATEGORIEN)[number]
+  | (typeof AUSGABE_KATEGORIEN)[number];
+
+export interface Buchung {
+  id: string;
+  nummer?: string;
+  /** ISO-Datum des wirtschaftlichen Vorfalls (nicht der Erfassung) */
+  datum: string;
+  typ: BuchungsTyp;
+  kategorie: string;
+  /** immer positiv – das Vorzeichen ergibt sich aus `typ` */
+  betrag: number;
+  beschreibung?: string;
+  liegenschaftId?: string;
+  /** Herkunft der Buchung, für spätere Automatisierung (Rechnung → Buchung etc.) */
+  belegTyp?: "Rechnung" | "Abrechnung" | "Kontoauszug" | "Manuell";
+  belegId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type KontoArt = "Aktiva" | "Passiva";
+
+export type KontoKategorie =
+  | "Anlagevermögen"
+  | "Umlaufvermögen"
+  | "Liquide Mittel"
+  | "Eigenkapital"
+  | "Verbindlichkeiten"
+  | "Rückstellungen";
+
+/** Bilanzkonto – aktuell mit manuell gepflegtem Saldo (kein Buchungsautomatismus je Konto). */
+export interface Konto {
+  id: string;
+  nummer?: string;
+  name: string;
+  art: KontoArt;
+  kategorie: KontoKategorie;
+  saldo: number;
+  notizen?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Aggregierte Sicht für Dashboard/KPI-Engine – wird serverseitig aus Buchungen + Konten berechnet. */
+export interface BuchhaltungsUebersicht {
+  einnahmen: number;
+  ausgaben: number;
+  gewinn: number;
+  einnahmenNachKategorie: Record<string, number>;
+  ausgabenNachKategorie: Record<string, number>;
+  bilanz: {
+    aktiva: Konto[];
+    passiva: Konto[];
+    summeAktiva: number;
+    summePassiva: number;
+    imGleichgewicht: boolean;
+  };
+  buchungenAnzahl: number;
+}
+
 export type SchriftverkehrStatus = "Entwurf" | "Versandbereit" | "Versendet" | "Archiviert";
 
 export interface SchriftverkehrDokument {
@@ -912,4 +1003,60 @@ export interface SchriftverkehrDokument {
   finalisiertAm?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// -------- Dashboard: aggregierte Business-Übersicht --------
+// Fasst die serverseitig berechneten Kennzahlen für das Business-Command-Center
+// zusammen. Bewusst als eigener Typ (statt einzelner Fetches im Client), damit
+// die Berechnungslogik (u.a. Health-Score-Formel) zentral in db.ts liegt und
+// dokumentiert bleibt.
+
+export interface DashboardObjektUebersicht {
+  liegenschaften: number;
+  gebaeude: number;
+  wohnungen: number;
+  mieterAktiv: number;
+  /** aktive Mieter / Wohnungen, 0..1 (null wenn keine Wohnungen vorhanden) */
+  belegungsquote: number | null;
+}
+
+export interface DashboardAbrechnungsUebersicht {
+  gesamt: number;
+  rohdaten: number;
+  validierung: number;
+  fertig: number;
+}
+
+export interface DashboardPruefUebersicht {
+  letzterLaufAm?: string;
+  offeneBefunde: number;
+  fehler: number;
+  warnungen: number;
+  hinweise: number;
+}
+
+export interface DashboardKennzahlen {
+  /** liquide Mittel / Verbindlichkeiten (vereinfacht, keine Fristigkeiten-Trennung) */
+  liquiditaetsgradI: number | null;
+  /** Summe Eigenkapital-Konten / Bilanzsumme Aktiva */
+  eigenkapitalquote: number | null;
+  /** aktuell = Gewinn aus dem Journal (vereinfachtes Näherungsmaß, kein echter Cashflow) */
+  cashflow: number;
+  /**
+   * Zusammengesetzter 0–100-Score aus Gewinnmarge, Bilanzgleichgewicht,
+   * offenen Prüfbefunden und Belegungsquote. Bewusst transparent und simpel
+   * gehalten (keine "Black Box") – Formel und Gewichtung werden mit
+   * wachsender Datenbasis in späteren Durchgängen verfeinert.
+   */
+  businessHealthScore: number;
+}
+
+export interface DashboardUebersicht {
+  buchhaltung: BuchhaltungsUebersicht;
+  objekte: DashboardObjektUebersicht;
+  abrechnungen: DashboardAbrechnungsUebersicht;
+  pruefung: DashboardPruefUebersicht;
+  kennzahlen: DashboardKennzahlen;
+  /** letzte Systemereignisse für den Aktivitäts-Feed */
+  aktivitaet: SystemLogEintrag[];
 }
