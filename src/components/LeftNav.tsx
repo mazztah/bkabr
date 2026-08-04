@@ -31,6 +31,8 @@ import {
   PieChart,
   TrendingUp,
   CalendarClock,
+  Calculator,
+  LayoutDashboard,
   ChevronDown,
   X,
   type LucideIcon,
@@ -50,6 +52,10 @@ interface NavGroup {
 }
 
 const GROUPS: NavGroup[] = [
+  {
+    title: "Übersicht",
+    items: [{ href: "/dashboard", label: "Dashboard", icon: LayoutDashboard }],
+  },
   {
     title: "Struktur",
     items: [
@@ -76,6 +82,7 @@ const GROUPS: NavGroup[] = [
   {
     title: "Kaufmännisch",
     items: [
+      { href: "/buchhaltung", label: "Buchhaltung", icon: Calculator },
       { href: "/", label: "Abrechnungen", icon: Receipt },
       { href: "/kontoauszuege", label: "Kontoauszüge", icon: CreditCard },
       { href: "/vorauszahlungen", label: "Vorauszahlungen", icon: Wallet },
