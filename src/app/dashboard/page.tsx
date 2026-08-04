@@ -3,21 +3,25 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { cn, formatCurrency, formatDate, formatPercent } from "@/lib/utils";
-import { DashboardUebersicht, SYSTEM_LOG_TYP_ICON } from "@/lib/types";
+import { DashboardUebersicht, DashboardVerlauf, SYSTEM_LOG_TYP_ICON } from "@/lib/types";
 import ProgressRing from "@/components/ProgressRing";
 import KpiInfo from "@/components/KpiInfo";
+import Sparkline from "@/components/Sparkline";
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardUebersicht | null>(null);
+  const [verlauf, setVerlauf] = useState<DashboardVerlauf | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/dashboard/uebersicht")
-      .then((r) => r.json())
-      .then((d) => {
-        setData(d.uebersicht || null);
-        setLoading(false);
-      });
+    Promise.all([
+      fetch("/api/dashboard/uebersicht").then((r) => r.json()),
+      fetch("/api/dashboard/verlauf").then((r) => r.json()),
+    ]).then(([u, v]) => {
+      setData(u.uebersicht || null);
+      setVerlauf(v.verlauf || null);
+      setLoading(false);
+    });
   }, []);
 
   return (
@@ -37,6 +41,7 @@ export default function DashboardPage() {
         <>
           <HeroArea data={data} />
           <BusinessCockpit data={data} />
+          {verlauf && <TrendCharts verlauf={verlauf} />}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             <ActivityFeed data={data} />
             <RoadmapCard />
@@ -135,6 +140,38 @@ function BusinessCockpit({ data }: { data: DashboardUebersicht }) {
       href: "/buchhaltung",
     },
     {
+      label: "Umsatzrendite",
+      kpiId: "umsatzrendite",
+      value: kennzahlen.umsatzrendite === null ? "—" : formatPercent(kennzahlen.umsatzrendite),
+      href: "/buchhaltung",
+      tone: kennzahlen.umsatzrendite !== null ? (kennzahlen.umsatzrendite >= 0 ? "success" : "destructive") : undefined,
+    },
+    {
+      label: "Working Capital",
+      kpiId: "workingCapital",
+      value: kennzahlen.workingCapital === null ? "—" : formatCurrency(kennzahlen.workingCapital),
+      href: "/buchhaltung",
+      tone: kennzahlen.workingCapital !== null ? (kennzahlen.workingCapital >= 0 ? "success" : "destructive") : undefined,
+    },
+    {
+      label: "Automatisierungsgrad Buchhaltung",
+      kpiId: "automatisierungsgrad",
+      value: kennzahlen.automatisierungsgrad === null ? "—" : formatPercent(kennzahlen.automatisierungsgrad),
+      href: "/buchhaltung",
+    },
+    {
+      label: "Cash-Burn-Reichweite",
+      kpiId: "cashBurnTageReichweite",
+      value: kennzahlen.cashBurnTageReichweite === null ? "—" : `${kennzahlen.cashBurnTageReichweite} Tage`,
+      href: "/buchhaltung",
+      tone:
+        kennzahlen.cashBurnTageReichweite !== null
+          ? kennzahlen.cashBurnTageReichweite < 30
+            ? "destructive"
+            : "success"
+          : undefined,
+    },
+    {
       label: "Liegenschaften / Gebäude / Wohnungen",
       value: `${objekte.liegenschaften} / ${objekte.gebaeude} / ${objekte.wohnungen}`,
       href: "/liegenschaften",
@@ -182,6 +219,63 @@ function BusinessCockpit({ data }: { data: DashboardUebersicht }) {
           <div key={t.label}>{content}</div>
         );
       })}
+    </div>
+  );
+}
+
+function TrendCharts({ verlauf }: { verlauf: DashboardVerlauf }) {
+  const gewinnWerte = verlauf.buchungen.map((p) => p.gewinnKumuliert);
+  const pruefWerte = verlauf.pruefung.map((p) => p.offeneBefunde);
+  const aktivitaetWerte = verlauf.aktivitaet.map((p) => p.anzahl);
+
+  const letzterGewinn = verlauf.buchungen[verlauf.buchungen.length - 1]?.gewinnKumuliert;
+  const letzterPruefwert = verlauf.pruefung[verlauf.pruefung.length - 1]?.offeneBefunde;
+
+  return (
+    <div className="mb-6 grid grid-cols-1 gap-3 lg:grid-cols-3">
+      <TrendCard
+        title="Gewinn (kumuliert)"
+        subtitle="aus allen Buchungstagen im Journal"
+        values={gewinnWerte}
+        summary={letzterGewinn !== undefined ? formatCurrency(letzterGewinn) : undefined}
+      />
+      <TrendCard
+        title="Offene Prüfbefunde je Lauf"
+        subtitle="Verlauf über bisherige Plausibilitätsprüfungen"
+        values={pruefWerte}
+        summary={letzterPruefwert !== undefined ? `${letzterPruefwert} offen` : undefined}
+      />
+      <TrendCard
+        title="Systemaktivität"
+        subtitle="Ereignisse pro Tag, letzte 30 Tage"
+        values={aktivitaetWerte}
+        summary={aktivitaetWerte.length > 0 ? `Ø ${(aktivitaetWerte.reduce((s, v) => s + v, 0) / aktivitaetWerte.length).toFixed(1)}/Tag` : undefined}
+      />
+    </div>
+  );
+}
+
+function TrendCard({
+  title,
+  subtitle,
+  values,
+  summary,
+}: {
+  title: string;
+  subtitle: string;
+  values: number[];
+  summary?: string;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div>
+          <div className="text-xs font-semibold">{title}</div>
+          <div className="text-[10px] text-muted-foreground">{subtitle}</div>
+        </div>
+        {summary && <div className="shrink-0 text-sm font-bold tabular-nums">{summary}</div>}
+      </div>
+      <Sparkline values={values} width={220} height={44} />
     </div>
   );
 }
