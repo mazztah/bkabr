@@ -1132,3 +1132,21 @@ export interface DashboardVerlauf {
   pruefung: DashboardPruefVerlaufPunkt[];
   aktivitaet: DashboardAktivitaetVerlaufPunkt[];
 }
+
+// -------- Dashboard: regelbasierte Agent-Hinweise (Durchgang 5) --------
+// Bewusst deterministisch/regelbasiert statt LLM-generiert: Aussagen über
+// Liquidität, Risiko, Prüfbefunde etc. sind hier nachvollziehbar aus den
+// echten Kennzahlen abgeleitet. Ein LLM-gestützter Interpretationslayer
+// (freitextliche Einordnung, Rückfragen) kommt on-demand über den ohnehin
+// vorhandenen Chat-Agenten hinzu — nicht als zusätzliche, unbelegte
+// "KI-Meinung" auf dem Dashboard selbst.
+
+export type AgentHinweisSchweregrad = "info" | "warnung" | "kritisch";
+
+export interface AgentHinweis {
+  id: string;
+  schweregrad: AgentHinweisSchweregrad;
+  text: string;
+  /** Welche Kennzahl/Kachel den Hinweis ausgelöst hat, für Deep-Link/Hover */
+  kpiId?: string;
+}

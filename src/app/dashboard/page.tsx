@@ -8,6 +8,7 @@ import ProgressRing from "@/components/ProgressRing";
 import KpiInfo, { KPI_KATALOG } from "@/components/KpiInfo";
 import Sparkline from "@/components/Sparkline";
 import CategoryBars from "@/components/CategoryBars";
+import LlmControlCenter from "@/components/dashboard/LlmControlCenter";
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardUebersicht | null>(null);
@@ -41,6 +42,7 @@ export default function DashboardPage() {
       ) : (
         <>
           <HeroArea data={data} />
+          <LlmControlCenter />
           <BusinessCockpit data={data} />
           {verlauf && <TrendCharts verlauf={verlauf} />}
           <CategoryBreakdown data={data} />
@@ -409,8 +411,8 @@ function ActivityFeed({ data }: { data: DashboardUebersicht }) {
       <div className="border-b border-border p-3">
         <h2 className="text-sm font-semibold">📋 Aktivitäts-Protokoll</h2>
         <p className="text-xs text-muted-foreground">
-          Letzte Systemereignisse — Vorstufe des geplanten Kontext-Recorders für den LLM-Agenten
-          (Durchgang 5).
+          Letzte Systemereignisse — der Kontext, den der LLM Dashboard Agent oben für seine Hinweise
+          und im Chat als Gesprächskontext heranzieht.
         </p>
       </div>
       {data.aktivitaet.length === 0 ? (
@@ -434,7 +436,6 @@ function ActivityFeed({ data }: { data: DashboardUebersicht }) {
 
 function RoadmapCard() {
   const kommend = [
-    { titel: "LLM Control Center", durchgang: 5, beschreibung: "Chat, Kontext-Recorder, Daily-Loop-Routinen" },
     { titel: "AI Cost Observatory", durchgang: 6, beschreibung: "Token-/Kosten-Tracking je Modell, Free-Tier-Empfehlungen" },
     { titel: "Predictive Intelligence", durchgang: 7, beschreibung: "Forecasts, Anomalieerkennung, Frühwarnungen" },
   ];

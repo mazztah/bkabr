@@ -7,6 +7,7 @@ import {
   AgentScheduleLauf,
   Buchung,
   BuchhaltungsUebersicht,
+  AgentHinweis,
   DashboardAktivitaetVerlaufPunkt,
   DashboardBuchungsVerlaufPunkt,
   DashboardPruefVerlaufPunkt,
@@ -656,4 +657,87 @@ export async function getDashboardVerlauf(): Promise<DashboardVerlauf> {
     .map((datum) => ({ datum, anzahl: aktivitaetTageMap.get(datum)! }));
 
   return { buchungen: buchungenVerlauf, pruefung: pruefVerlauf, aktivitaet };
+}
+
+/**
+ * Regelbasierte Empfehlungen des "LLM Dashboard Agent" (Durchgang 5).
+ * Bewusst deterministisch statt eines LLM-Aufrufs pro Seitenaufruf — jede
+ * Regel ist nachvollziehbar an eine echte Kennzahl gekoppelt. Ein Nutzer,
+ * der Rückfragen oder freitextliche Einordnung möchte, nutzt dafür den
+ * ohnehin vorhandenen Chat-Agenten (der bereits vollen Datenzugriff hat).
+ */
+export async function getAgentHinweise(): Promise<AgentHinweis[]> {
+  const uebersicht = await getDashboardUebersicht();
+  const verlauf = await getDashboardVerlauf();
+  const hinweise: AgentHinweis[] = [];
+
+  if (uebersicht.pruefung.fehler > 0) {
+    hinweise.push({
+      id: uid(),
+      schweregrad: "kritisch",
+      text: `${uebersicht.pruefung.fehler} Fehlerbefund(e) aus der letzten Plausibilitätsprüfung sind noch offen.`,
+      kpiId: "offeneBefunde",
+    });
+  }
+
+  if (uebersicht.buchhaltung.bilanz.aktiva.length + uebersicht.buchhaltung.bilanz.passiva.length > 0 && !uebersicht.buchhaltung.bilanz.imGleichgewicht) {
+    hinweise.push({
+      id: uid(),
+      schweregrad: "warnung",
+      text: "Aktiva und Passiva sind aktuell nicht im Gleichgewicht — die Bilanz sollte geprüft werden.",
+      kpiId: "bilanzsumme",
+    });
+  }
+
+  if (uebersicht.kennzahlen.cashBurnTageReichweite !== null && uebersicht.kennzahlen.cashBurnTageReichweite < 60) {
+    hinweise.push({
+      id: uid(),
+      schweregrad: uebersicht.kennzahlen.cashBurnTageReichweite < 30 ? "kritisch" : "warnung",
+      text: `Bei aktuellem Ausgabentempo reichen die liquiden Mittel noch rund ${uebersicht.kennzahlen.cashBurnTageReichweite} Tage.`,
+      kpiId: "cashBurnTageReichweite",
+    });
+  }
+
+  // Trend: sinkt der kumulierte Gewinn an den letzten mind. 3 Buchungstagen in Folge?
+  const punkte = verlauf.buchungen;
+  if (punkte.length >= 3) {
+    const letzte = punkte.slice(-3);
+    const sinktDurchgehend = letzte.every((p, i) => i === 0 || p.gewinnKumuliert < letzte[i - 1].gewinnKumuliert);
+    if (sinktDurchgehend) {
+      hinweise.push({
+        id: uid(),
+        schweregrad: "warnung",
+        text: `Der kumulierte Gewinn sinkt seit ${letzte.length} aufeinanderfolgenden Buchungstagen.`,
+        kpiId: "gewinn",
+      });
+    }
+  }
+
+  if (uebersicht.kennzahlen.riskExposureIndex > 50) {
+    hinweise.push({
+      id: uid(),
+      schweregrad: "warnung",
+      text: `Der Risk Exposure Index liegt bei ${Math.round(uebersicht.kennzahlen.riskExposureIndex)}/100 — überdurchschnittliches Risiko aus Prüfbefunden und/oder Liquidität.`,
+      kpiId: "riskExposureIndex",
+    });
+  }
+
+  if (uebersicht.objekte.belegungsquote !== null && uebersicht.objekte.belegungsquote < 0.8) {
+    hinweise.push({
+      id: uid(),
+      schweregrad: "info",
+      text: `Die Belegungsquote liegt bei ${Math.round(uebersicht.objekte.belegungsquote * 100)} % — ungenutztes Ertragspotenzial in leerstehenden Wohnungen.`,
+      kpiId: "belegungsquote",
+    });
+  }
+
+  if (hinweise.length === 0) {
+    hinweise.push({
+      id: uid(),
+      schweregrad: "info",
+      text: "Aktuell keine Auffälligkeiten anhand der hinterlegten Regeln erkannt.",
+    });
+  }
+
+  return hinweise;
 }
