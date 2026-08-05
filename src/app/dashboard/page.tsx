@@ -9,6 +9,8 @@ import KpiInfo, { KPI_KATALOG } from "@/components/KpiInfo";
 import Sparkline from "@/components/Sparkline";
 import CategoryBars from "@/components/CategoryBars";
 import LlmControlCenter from "@/components/dashboard/LlmControlCenter";
+import AiObservatory from "@/components/dashboard/AiObservatory";
+import NewsWidget from "@/components/dashboard/NewsWidget";
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardUebersicht | null>(null);
@@ -41,8 +43,14 @@ export default function DashboardPage() {
         <p className="text-sm text-muted-foreground">Lade Kennzahlen…</p>
       ) : (
         <>
-          <HeroArea data={data} />
+          <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-stretch">
+            <div className="flex-1">
+              <HeroArea data={data} />
+            </div>
+            <NewsWidget />
+          </div>
           <LlmControlCenter />
+          <AiObservatory />
           <BusinessCockpit data={data} />
           {verlauf && <TrendCharts verlauf={verlauf} />}
           <CategoryBreakdown data={data} />
@@ -61,7 +69,7 @@ function HeroArea({ data }: { data: DashboardUebersicht }) {
   const { kennzahlen, objekte } = data;
 
   return (
-    <div className="mb-6 grid grid-cols-2 gap-3 rounded-xl border border-border bg-card p-5 sm:grid-cols-4">
+    <div className="grid h-full grid-cols-2 gap-3 rounded-xl border border-border bg-card p-5 sm:grid-cols-4">
       <div className="flex items-center gap-3">
         <ProgressRing percent={kennzahlen.businessHealthScore} size={52} />
         <div>
@@ -436,7 +444,6 @@ function ActivityFeed({ data }: { data: DashboardUebersicht }) {
 
 function RoadmapCard() {
   const kommend = [
-    { titel: "AI Cost Observatory", durchgang: 6, beschreibung: "Token-/Kosten-Tracking je Modell, Free-Tier-Empfehlungen" },
     { titel: "Predictive Intelligence", durchgang: 7, beschreibung: "Forecasts, Anomalieerkennung, Frühwarnungen" },
   ];
 

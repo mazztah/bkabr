@@ -1074,7 +1074,32 @@ export interface SchriftverkehrDokument {
   updatedAt: string;
 }
 
-// -------- Dashboard: aggregierte Business-Übersicht --------
+// -------- News-Widget (RSS-Feed-Aggregator, Durchgang 8a) --------
+
+export type NewsKategorie = "Allgemein" | "KI & Tech" | "Immobilien";
+export type NewsRegion = "Inland" | "Ausland";
+
+export interface NewsQuelle {
+  id: string;
+  label: string;
+  url: string;
+  kategorie: NewsKategorie;
+  region: NewsRegion;
+  /** Hinweis auf Nutzungseinschränkungen der Quelle, falls vorhanden (z.B. nur privater Gebrauch) */
+  lizenzHinweis?: string;
+}
+
+export interface NewsArtikel {
+  quelle: string;
+  quelleLabel: string;
+  kategorie: NewsKategorie;
+  region: NewsRegion;
+  titel: string;
+  link: string;
+  bildUrl?: string;
+  veroeffentlichtAm?: string;
+  beschreibung?: string;
+}
 // Fasst die serverseitig berechneten Kennzahlen für das Business-Command-Center
 // zusammen. Bewusst als eigener Typ (statt einzelner Fetches im Client), damit
 // die Berechnungslogik (u.a. Health-Score-Formel) zentral in db.ts liegt und
