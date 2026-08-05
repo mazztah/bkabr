@@ -10,6 +10,11 @@ import {
 } from "./types";
 import {
   ablageDb,
+  abrechnungskreiseDb,
+  berechneAbrechnungskreisSplit,
+  buchungenDb,
+  buchungErstellen,
+  buchungStornieren,
   deleteAbrechnung,
   gebaeudeDb,
   liegenschaftenDb,
@@ -737,6 +742,129 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
           user_confirmed: { type: "boolean" },
         },
         required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_wohnungen",
+      description:
+        "Listet Wohnungen (Einheiten) auf, optional gefiltert nach liegenschaft_id oder Freitext-Suche in der Bezeichnung (z.B. 'EG' für Erdgeschoss). Liefert je Wohnung id, bezeichnung, flaeche, miteigentumsanteil — Grundlage, um wohnung_ids für create_abrechnungskreis zu ermitteln.",
+      parameters: {
+        type: "object",
+        properties: {
+          liegenschaft_id: { type: "string" },
+          bezeichnung_enthaelt: { type: "string", description: "Freitext-Filter, z.B. 'EG', '1. OG'" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_abrechnungskreise",
+      description:
+        "Listet alle verfügbaren Abrechnungskreise (Umlage-Vorlagen für die Kostenverteilung auf Mieter) auf, inkl. Standardkatalog ('Alle Mieter nach Wohnfläche' etc.). Vor jeder Buchung mit Kostenumlage aufrufen, um die passende kreis_id zu finden.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_abrechnungskreis",
+      description:
+        "Legt einen individuellen Abrechnungskreis an, wenn kein Standardkreis passt (z.B. 'nur Erdgeschoss', 'nur Gewerbeeinheiten'). Wohnungen müssen explizit als wohnung_ids übergeben werden — vorher mit list_wohnungen o.ä. ermitteln (z.B. Bezeichnung enthält 'EG').",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          beschreibung: { type: "string" },
+          umlageschluessel: {
+            type: "string",
+            enum: ["Wohnflaeche", "Miteigentumsanteil", "Gleich"],
+            description: "Wohnflaeche = m²-proportional, Miteigentumsanteil = MEA-proportional, Gleich = Kopfteile",
+          },
+          liegenschaft_id: { type: "string" },
+          wohnung_ids: {
+            type: "array",
+            items: { type: "string" },
+            description: "Explizite Liste betroffener Wohnungen. Leer/weglassen = alle Wohnungen der Liegenschaft.",
+          },
+        },
+        required: ["name", "umlageschluessel"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "vorschau_abrechnungskreis_split",
+      description:
+        "Zeigt, wie ein Betrag gemäß einem Abrechnungskreis auf Wohnungen/Mieter aufgeteilt würde — OHNE zu buchen. Vor buchung_erstellen mit abrechnungskreis_id immer erst hiermit die Aufteilung prüfen/dem Nutzer zeigen.",
+      parameters: {
+        type: "object",
+        properties: {
+          abrechnungskreis_id: { type: "string" },
+          liegenschaft_id: { type: "string" },
+          betrag: { type: "number" },
+        },
+        required: ["abrechnungskreis_id", "liegenschaft_id", "betrag"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "buchung_erstellen",
+      description:
+        "Erstellt eine Einnahme- oder Ausgabebuchung in der Buchhaltung. WICHTIG – keine Buchung ohne Beleg: entweder beleg_dokument_id (vorhandenes Dokument aus der Ablage, z.B. Kaufvertrag/Rechnung) oder beleg_freitext (Referenz, falls noch kein Dokument digitalisiert ist) ist Pflicht, sonst wird abgelehnt. Bei Kaufpreisen/größeren Beträgen oder wenn eine Umlage auf Mieter involviert ist: erst mit user_confirmed=false den Vorschlag inkl. Split-Vorschau zurückgeben und die Bestätigung des Nutzers einholen, bevor tatsächlich gebucht wird.",
+      parameters: {
+        type: "object",
+        properties: {
+          typ: { type: "string", enum: ["Einnahme", "Ausgabe"] },
+          kategorie: {
+            type: "string",
+            description:
+              "z.B. Miete, Nebenkostenvorauszahlung, Instandhaltung, Verwaltung, Versicherung, Zinsen, Steuern, Abschreibungen, Dienstleister, Betriebskosten, Sonstige Ausgaben/Einnahmen",
+          },
+          betrag: { type: "number" },
+          datum: { type: "string", description: "ISO-Datum, Standard = heute" },
+          beschreibung: { type: "string" },
+          liegenschaft_id: { type: "string" },
+          beleg_dokument_id: { type: "string", description: "ID eines vorhandenen Ablage-Dokuments als Beleg" },
+          beleg_freitext: {
+            type: "string",
+            description: "Freitext-Belegreferenz, falls (noch) kein digitalisiertes Dokument vorliegt",
+          },
+          rechnungsnummer: { type: "string" },
+          rechnungsdatum: { type: "string" },
+          lieferant: { type: "string", description: "Auftragnehmer/Verkäufer, z.B. bei einem Kaufvertrag der Verkäufer" },
+          abrechnungskreis_id: {
+            type: "string",
+            description: "Falls die Kosten auf Mieter umgelegt werden sollen (vorher via list_abrechnungskreise ermitteln)",
+          },
+          user_confirmed: { type: "boolean" },
+        },
+        required: ["typ", "kategorie", "betrag"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "buchung_stornieren",
+      description:
+        "Storniert eine bestehende Buchung durch eine Gegenbuchung — die Originalbuchung wird NICHT gelöscht, sondern bleibt nachvollziehbar erhalten und als storniert markiert. user_confirmed=true erforderlich, sonst wird nur ein Bestätigungsvorschlag zurückgegeben.",
+      parameters: {
+        type: "object",
+        properties: {
+          buchung_id: { type: "string" },
+          grund: { type: "string" },
+          user_confirmed: { type: "boolean" },
+        },
+        required: ["buchung_id"],
       },
     },
   },
@@ -2433,6 +2561,158 @@ async function executeTool(
       return { ...result, ok: true };
     }
 
+    case "list_wohnungen": {
+      const [wohnungenListe, gebaeudeListe] = await Promise.all([wohnungenDb.list(), gebaeudeDb.list()]);
+      let gebIds: Set<string> | null = null;
+      if (args.liegenschaft_id) {
+        gebIds = new Set(
+          gebaeudeListe.filter((g) => g.liegenschaftId === String(args.liegenschaft_id)).map((g) => g.id)
+        );
+      }
+      let result = wohnungenListe.filter((w) => !gebIds || gebIds.has(w.gebaeudeId));
+      if (args.bezeichnung_enthaelt) {
+        const q = String(args.bezeichnung_enthaelt).toLowerCase();
+        result = result.filter((w) => (w.bezeichnung || "").toLowerCase().includes(q));
+      }
+      return {
+        wohnungen: result.map((w) => ({
+          id: w.id,
+          bezeichnung: w.bezeichnung,
+          nummer: w.nummer,
+          flaeche: w.flaeche,
+          miteigentumsanteil: w.miteigentumsanteil,
+          gebaeudeId: w.gebaeudeId,
+        })),
+      };
+    }
+
+    case "list_abrechnungskreise": {
+      const kreise = await abrechnungskreiseDb.list();
+      return {
+        kreise: kreise.map((k) => ({
+          id: k.id,
+          name: k.name,
+          beschreibung: k.beschreibung,
+          umlageschluessel: k.umlageschluessel,
+          liegenschaftId: k.liegenschaftId,
+          istStandard: k.istStandard,
+        })),
+      };
+    }
+
+    case "create_abrechnungskreis": {
+      if (!args.name || !args.umlageschluessel) {
+        return { error: "name und umlageschluessel sind erforderlich" };
+      }
+      const now = new Date().toISOString();
+      const kreis = await abrechnungskreiseDb.create({
+        id: uuidv4(),
+        name: String(args.name),
+        beschreibung: args.beschreibung ? String(args.beschreibung) : undefined,
+        umlageschluessel: args.umlageschluessel as "Wohnflaeche" | "Miteigentumsanteil" | "Gleich",
+        liegenschaftId: args.liegenschaft_id ? String(args.liegenschaft_id) : undefined,
+        wohnungIds: Array.isArray(args.wohnung_ids) ? args.wohnung_ids.map(String) : undefined,
+        istStandard: false,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await logEvent("anlage", `Abrechnungskreis „${kreis.name}" vom Agent angelegt.`, {
+        art: "Abrechnungskreis",
+        id: kreis.id,
+      });
+      return { ok: true, kreis: { id: kreis.id, name: kreis.name, umlageschluessel: kreis.umlageschluessel } };
+    }
+
+    case "vorschau_abrechnungskreis_split": {
+      if (!args.abrechnungskreis_id || !args.liegenschaft_id || typeof args.betrag !== "number") {
+        return { error: "abrechnungskreis_id, liegenschaft_id und betrag sind erforderlich" };
+      }
+      const split = await berechneAbrechnungskreisSplit(
+        String(args.abrechnungskreis_id),
+        String(args.liegenschaft_id),
+        Number(args.betrag)
+      );
+      return {
+        positionen: split.positionen,
+        summeVerteilt: split.summeVerteilt,
+        nichtZugeordneteWohnungen: split.nichtZugeordneteWohnungen,
+      };
+    }
+
+    case "buchung_erstellen": {
+      if (!args.beleg_dokument_id && !args.beleg_freitext) {
+        return {
+          error:
+            "Keine Buchung ohne Beleg: bitte beleg_dokument_id (vorhandenes Ablage-Dokument) oder beleg_freitext (Referenz) angeben.",
+        };
+      }
+      if (!args.user_confirmed) {
+        let splitVorschau: Awaited<ReturnType<typeof berechneAbrechnungskreisSplit>> | undefined;
+        if (args.abrechnungskreis_id && args.liegenschaft_id) {
+          splitVorschau = await berechneAbrechnungskreisSplit(
+            String(args.abrechnungskreis_id),
+            String(args.liegenschaft_id),
+            Number(args.betrag)
+          );
+        }
+        return {
+          needsConfirmation: true,
+          frage: `Soll folgende Buchung angelegt werden: ${args.typ} „${args.kategorie}\" über ${Number(args.betrag).toFixed(2)} €${
+            splitVorschau ? `, umgelegt auf ${splitVorschau.positionen.length} Mieter` : ""
+          }?`,
+          vorschau: {
+            typ: args.typ,
+            kategorie: args.kategorie,
+            betrag: args.betrag,
+            beleg_dokument_id: args.beleg_dokument_id,
+            beleg_freitext: args.beleg_freitext,
+            splitVorschau,
+          },
+        };
+      }
+      const result = await buchungErstellen({
+        typ: args.typ as "Einnahme" | "Ausgabe",
+        kategorie: String(args.kategorie),
+        betrag: Number(args.betrag),
+        datum: args.datum ? String(args.datum) : undefined,
+        beschreibung: args.beschreibung ? String(args.beschreibung) : undefined,
+        liegenschaftId: args.liegenschaft_id ? String(args.liegenschaft_id) : undefined,
+        belegId: args.beleg_dokument_id ? String(args.beleg_dokument_id) : undefined,
+        belegFreitext: args.beleg_freitext ? String(args.beleg_freitext) : undefined,
+        rechnungsdaten:
+          args.rechnungsnummer || args.rechnungsdatum || args.lieferant
+            ? {
+                rechnungsnummer: args.rechnungsnummer ? String(args.rechnungsnummer) : undefined,
+                rechnungsdatum: args.rechnungsdatum ? String(args.rechnungsdatum) : undefined,
+                lieferant: args.lieferant ? String(args.lieferant) : undefined,
+              }
+            : undefined,
+        abrechnungskreisId: args.abrechnungskreis_id ? String(args.abrechnungskreis_id) : undefined,
+      });
+      if (!result.ok) return { error: result.fehler };
+      return {
+        ok: true,
+        buchung: { id: result.buchung.id, nummer: result.buchung.nummer, betrag: result.buchung.betrag },
+        split: result.split,
+      };
+    }
+
+    case "buchung_stornieren": {
+      const id = String(args.buchung_id || "");
+      const original = await buchungenDb.get(id);
+      if (!original) return { error: "Buchung nicht gefunden" };
+      if (!args.user_confirmed) {
+        return {
+          needsConfirmation: true,
+          frage: `Buchung „${original.kategorie}\" über ${original.betrag.toFixed(2)} € vom ${original.datum.slice(0, 10)} wirklich stornieren?`,
+          buchung_id: id,
+        };
+      }
+      const result = await buchungStornieren(id, args.grund ? String(args.grund) : undefined);
+      if (!result.ok) return { error: result.fehler };
+      return { ok: true, storno: { id: result.storno.id, nummer: result.storno.nummer, betrag: result.storno.betrag } };
+    }
+
     default:
       return { error: `Unbekanntes Tool: ${name}` };
   }
@@ -2458,6 +2738,7 @@ Du hast Schreibrechte über Tools (Datenbank-Updates). Behaupte NIEMALS, du kön
 - beende_pm_vertrag – PM beenden → Liegenschaft inaktiv (raus aus Analysen).
 - Löschen immer erst mit needsConfirmation fragen, dann user_confirmed=true ausführen, wenn der Nutzer klar bestätigt („ja“, „lösche“, „endgültig“, „ja bitte“, „mach das“). Bestätigung aus dem Chat-Verlauf erkennen und Tool erneut mit user_confirmed=true aufrufen – nicht erneut nur fragen.
 - list_mietvertraege / list_ablage / list_unpassende_dokumente / list_abrechnungen – Übersicht.
+- list_wohnungen – Wohnungen inkl. Fläche/MEA auflisten, filterbar nach Liegenschaft und Bezeichnung (z.B. „EG“).
 - get_pruef_befunde / run_pruefung / execute_safe_cleanup – Prüfbefunde.
 
 ## Module der Plausibilitätsprüfung
@@ -2473,6 +2754,13 @@ system · liegenschaften · gebaeude · wohnungen · mieter · mietvertraege · 
 
 ## Schriftverkehr
 find_mieter / get_mietrueckstaende / create_brief – Mahnungen nur bei positivem Rückstand.
+
+## Buchhaltung (Buchen & Stornieren)
+- Keine Buchung ohne Beleg: buchung_erstellen verlangt zwingend beleg_dokument_id (vorhandenes Ablage-Dokument, z.B. Kaufvertrag/Rechnung) ODER beleg_freitext (Referenz, wenn noch kein Dokument digitalisiert ist). Fehlen beide, danach fragen statt zu buchen.
+- Soll eine Kaufpreis-/Rechnungsbuchung nur bestimmte Mieter betreffen (z.B. „nur die Mieter im EG“): erst list_abrechnungskreise aufrufen. Passt ein Standardkreis nicht (z.B. weil nur ein Teil des Gebäudes betroffen ist), mit list_wohnungen/list_mietvertraege die passenden Wohnungen ermitteln und mit create_abrechnungskreis einen individuellen Kreis mit expliziten wohnung_ids anlegen.
+- Vor jeder Buchung mit abrechnungskreis_id IMMER erst vorschau_abrechnungskreis_split aufrufen und die resultierende Aufteilung (Mieter/Beträge) dem Nutzer zusammengefasst zeigen, bevor gebucht wird.
+- buchung_erstellen und buchung_stornieren: erst mit user_confirmed=false den Vorschlag inkl. Beleg und – falls vorhanden – Split-Vorschau zurückgeben; erst nach klarer Bestätigung des Nutzers („ja“, „buche das“, „bestätigt“) mit user_confirmed=true tatsächlich ausführen. Bei sehr hohen Beträgen (z.B. Kaufpreisen) besonders explizit nachfragen.
+- Stornieren löscht NIE die Originalbuchung, sondern erzeugt eine Gegenbuchung – das bei Rückfragen auch so erklären.
 
 ## Regeln
 - Tools nutzen, nicht ablehnen. Keine erfundenen Beträge.

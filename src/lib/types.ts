@@ -932,10 +932,78 @@ export interface Buchung {
   beschreibung?: string;
   liegenschaftId?: string;
   /** Herkunft der Buchung, für spätere Automatisierung (Rechnung → Buchung etc.) */
-  belegTyp?: "Rechnung" | "Abrechnung" | "Kontoauszug" | "Manuell";
+  belegTyp?: "Rechnung" | "Abrechnung" | "Kontoauszug" | "Kaufvertrag" | "Manuell";
   belegId?: string;
+  /** Freitext-Referenz, falls (noch) kein digitalisiertes Beleg-Dokument existiert (z.B. "Kaufvertrag vom 12.03., Notar Müller, Urk.-Nr. 44/2026") */
+  belegFreitext?: string;
+  rechnungsdaten?: BuchungsRechnungsdaten;
+  /** gewählter Abrechnungskreis, falls die Kosten auf Mieter umgelegt wurden */
+  abrechnungskreisId?: string;
+  aufteilung?: BuchungsAufteilungsPosition[];
+  /** true = diese Buchung wurde durch eine Gegenbuchung storniert */
+  storniert?: boolean;
+  /** ID der Gegenbuchung, falls storniert */
+  storniertDurchBuchungId?: string;
+  /** true = diese Buchung IST die Gegenbuchung einer Stornierung */
+  istStornoBuchung?: boolean;
+  storniertVonBuchungId?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Rechnungsstammdaten, analog zu RECHNUNGS_MERKMALE aus der Plausibilitätsprüfung. */
+export interface BuchungsRechnungsdaten {
+  rechnungsnummer?: string;
+  rechnungsdatum?: string;
+  /** Lieferant/Auftragnehmer bzw. bei Kaufverträgen der Verkäufer */
+  lieferant?: string;
+  leistungsart?: string;
+}
+
+export type Umlageschluessel = "Wohnflaeche" | "Miteigentumsanteil" | "Gleich";
+
+export const UMLAGESCHLUESSEL_LABEL: Record<Umlageschluessel, string> = {
+  Wohnflaeche: "Wohnfläche (m²)",
+  Miteigentumsanteil: "Miteigentumsanteil (MEA)",
+  Gleich: "Gleich verteilt (Kopfteile)",
+};
+
+/**
+ * Wiederverwendbare Umlage-Vorlage. Ohne `wohnungIds` gilt sie für ALLE
+ * Wohnungen der jeweiligen Liegenschaft zum Buchungszeitpunkt (aufgelöst bei
+ * der Buchung, nicht vorab gespeichert – Wohnungsbestand kann sich ändern).
+ * Mit `wohnungIds` ist sie auf eine konkrete Teilmenge eingeschränkt (z.B.
+ * "nur Erdgeschoss") und damit an eine Liegenschaft gebunden.
+ */
+export interface Abrechnungskreis {
+  id: string;
+  nummer?: string;
+  name: string;
+  beschreibung?: string;
+  umlageschluessel: Umlageschluessel;
+  liegenschaftId?: string;
+  wohnungIds?: string[];
+  /** true = Teil des mitgelieferten Standardkatalogs */
+  istStandard: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BuchungsAufteilungsPosition {
+  wohnungId: string;
+  wohnungBezeichnung: string;
+  mieterId?: string;
+  mieterName?: string;
+  /** 0..1 */
+  anteil: number;
+  betrag: number;
+}
+
+/** Ergebnis der Splitting-Berechnung inkl. Wohnungen, die nicht zugeordnet werden konnten. */
+export interface AbrechnungskreisSplitErgebnis {
+  positionen: BuchungsAufteilungsPosition[];
+  summeVerteilt: number;
+  nichtZugeordneteWohnungen: string[];
 }
 
 export type KontoArt = "Aktiva" | "Passiva";
@@ -1131,6 +1199,67 @@ export interface DashboardVerlauf {
   buchungen: DashboardBuchungsVerlaufPunkt[];
   pruefung: DashboardPruefVerlaufPunkt[];
   aktivitaet: DashboardAktivitaetVerlaufPunkt[];
+}
+
+// -------- AI Cost & Model Observatory (Durchgang 6) --------
+// Instrumentiert den einen zentralen LLM-Aufrufpunkt (createChatCompletion in
+// groq-client.ts), durch den JEDE Chat-Completion der App läuft — Agent-Chat,
+// Klassifikation, Smart-Upload, Vertragsanalyse etc. Tokens kommen, wenn vom
+// Provider geliefert, exakt aus `completion.usage`; sonst (nicht jeder
+// OpenAI-kompatible Endpoint liefert das zuverlässig) fällt der Aufrufer auf
+// eine Schätzung zurück und markiert den Eintrag entsprechend – nie stille
+// Fantasiewerte.
+
+export type AiProvider = "groq" | "cerebras" | "cloudflare" | "nvidia";
+
+export interface AiCallLogEintrag {
+  id: string;
+  zeitpunkt: string;
+  provider: AiProvider;
+  model: string;
+  /** Fallback-Stufe: 0 = Primärmodell erfolgreich, 1+ = so oft musste auf das nächste Modell ausgewichen werden */
+  fallbackStufe: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  /** true = Tokens kommen exakt vom Provider; false = geschätzt (kein usage-Feld in der Antwort) */
+  exakt: boolean;
+  /** in USD; 0 für aktuell ausschließlich genutzte Free-Tier-Modelle */
+  geschaetzteKostenUsd: number;
+}
+
+/** Optionale Referenzpreise (USD je 1 Mio. Tokens) für ein Modell — nur gesetzt, wenn es NICHT auf einem Free-Tier läuft. */
+export interface AiModellPreis {
+  inputProMio: number;
+  outputProMio: number;
+}
+
+export interface AiModellStatistik {
+  provider: AiProvider;
+  model: string;
+  aufrufe: number;
+  fehlgeschlageneFallbacks: number;
+  promptTokens: number;
+  completionTokens: number;
+  geschaetzteKostenUsd: number;
+}
+
+export interface AiProviderKatalogEintrag {
+  provider: AiProvider;
+  label: string;
+  konfiguriert: boolean;
+  benoetigteEnvVars: string[];
+  hinweis: string;
+}
+
+export interface AiObservatoryUebersicht {
+  gesamtAufrufe: number;
+  gesamtPromptTokens: number;
+  gesamtCompletionTokens: number;
+  gesamtKostenUsd: number;
+  proModell: AiModellStatistik[];
+  providerKatalog: AiProviderKatalogEintrag[];
+  letzteAufrufe: AiCallLogEintrag[];
 }
 
 // -------- Dashboard: regelbasierte Agent-Hinweise (Durchgang 5) --------

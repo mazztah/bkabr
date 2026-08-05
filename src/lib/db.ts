@@ -3,10 +3,18 @@ import path from "path";
 import {
   AblageDokument,
   Abrechnung,
+  Abrechnungskreis,
+  AbrechnungskreisSplitErgebnis,
   AgentSchedule,
   AgentScheduleLauf,
+  AiCallLogEintrag,
+  AiObservatoryUebersicht,
+  AiProvider,
+  AiProviderKatalogEintrag,
   Buchung,
   BuchhaltungsUebersicht,
+  BuchungsAufteilungsPosition,
+  BuchungsTyp,
   AgentHinweis,
   DashboardAktivitaetVerlaufPunkt,
   DashboardBuchungsVerlaufPunkt,
@@ -50,6 +58,8 @@ interface DbShape {
   agentSchedules: AgentSchedule[];
   buchungen: Buchung[];
   konten: Konto[];
+  abrechnungskreise: Abrechnungskreis[];
+  aiUsageLog: AiCallLogEintrag[];
   counters: Record<string, number>;
 }
 
@@ -78,6 +88,8 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     agentSchedules: db.agentSchedules || [],
     buchungen: db.buchungen || [],
     konten: db.konten || [],
+    abrechnungskreise: db.abrechnungskreise || [],
+    aiUsageLog: db.aiUsageLog || [],
     counters: db.counters || {},
   };
 }
@@ -250,6 +262,7 @@ export const pruefLaufDb = makeCrud<PruefLauf>("pruefLaeufe", "PL");
 export const agentSchedulesDb = makeCrud<AgentSchedule>("agentSchedules", "KA-AG");
 export const buchungenDb = makeCrud<Buchung>("buchungen", "BU");
 export const kontenDb = makeCrud<Konto>("konten", "KT");
+export const abrechnungskreiseDb = makeCrud<Abrechnungskreis>("abrechnungskreise", "AK");
 
 // -------- Buchhaltung: Aggregation für Dashboard/KPI-Engine --------
 
@@ -740,4 +753,411 @@ export async function getAgentHinweise(): Promise<AgentHinweis[]> {
   }
 
   return hinweise;
+}
+
+// -------- AI Cost & Model Observatory (Durchgang 6) --------
+
+/**
+ * Referenzpreise (USD je 1 Mio. Tokens) — bewusst NUR für Modelle gepflegt,
+ * die kostenpflichtig laufen könnten. Alle aktuell in groq-client.ts
+ * verdrahteten Modelle (Groq/Cerebras/Cloudflare-Free-Tier/NVIDIA-Preview)
+ * fehlen hier absichtlich: sie laufen auf kostenlosen Kontingenten, ein
+ * Preis würde eine Abrechnung vortäuschen, die nicht stattfindet. Wird ein
+ * Modell hier eingetragen, fließt sein Preis automatisch in die
+ * Kostenschätzung ein.
+ */
+const AI_MODELL_PREISE: Record<string, { inputProMio: number; outputProMio: number }> = {};
+
+function schaetzeKostenUsd(model: string, promptTokens: number, completionTokens: number): number {
+  const preis = AI_MODELL_PREISE[model];
+  if (!preis) return 0;
+  return (promptTokens / 1_000_000) * preis.inputProMio + (completionTokens / 1_000_000) * preis.outputProMio;
+}
+
+/**
+ * Protokolliert einen einzelnen LLM-Aufruf. Wird von createChatCompletion in
+ * groq-client.ts nach jedem erfolgreichen Aufruf angestoßen — dort
+ * fire-and-forget mit try/catch, damit ein Logging-Fehler nie einen
+ * eigentlichen KI-Aufruf zum Scheitern bringt.
+ */
+export async function recordAiUsage(input: {
+  provider: AiProvider;
+  model: string;
+  fallbackStufe: number;
+  promptTokens: number;
+  completionTokens: number;
+  exakt: boolean;
+}): Promise<void> {
+  const db = await readDb();
+  const eintrag: AiCallLogEintrag = {
+    id: uid(),
+    zeitpunkt: new Date().toISOString(),
+    provider: input.provider,
+    model: input.model,
+    fallbackStufe: input.fallbackStufe,
+    promptTokens: input.promptTokens,
+    completionTokens: input.completionTokens,
+    totalTokens: input.promptTokens + input.completionTokens,
+    exakt: input.exakt,
+    geschaetzteKostenUsd: schaetzeKostenUsd(input.model, input.promptTokens, input.completionTokens),
+  };
+  db.aiUsageLog = [eintrag, ...db.aiUsageLog].slice(0, 2000);
+  await writeDb(db);
+}
+
+/** Welche Free-Tier-Provider sind (per ENV-Variable) aktuell konfiguriert? Direkt aus process.env gelesen, keine Vermutung. */
+function buildAiProviderKatalog(): AiProviderKatalogEintrag[] {
+  return [
+    {
+      provider: "groq",
+      label: "Groq (Primärkette: gpt-oss-120b/20b, qwen3.6-27b, compound-mini/compound)",
+      konfiguriert: Boolean(process.env.GROQ_API_KEY),
+      benoetigteEnvVars: ["GROQ_API_KEY"],
+      hinweis: "Bereits aktiv genutzte Hauptkette. Modelle überschreibbar via GROQ_TEXT_MODELS=model-a,model-b,...",
+    },
+    {
+      provider: "cerebras",
+      label: "Cerebras (Preview-Fallback, eigenes Kontingent)",
+      konfiguriert: Boolean(process.env.CEREBRAS_API_KEY),
+      benoetigteEnvVars: ["CEREBRAS_API_KEY"],
+      hinweis: "In groq-client.ts bereits verdrahtet — nur CEREBRAS_API_KEY setzen, um als zusätzliche Fallback-Stufe zu aktivieren.",
+    },
+    {
+      provider: "cloudflare",
+      label: "Cloudflare Workers AI (Free-Tier-Neurons)",
+      konfiguriert: Boolean(
+        process.env.CLOUDFLARE_ACCOUNT_ID && (process.env.CLOUDFLARE_API_TOKEN || process.env.CLOUDFLARE_API_KEY)
+      ),
+      benoetigteEnvVars: ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+      hinweis: "Bereits verdrahtet — CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN setzen, um zu aktivieren.",
+    },
+    {
+      provider: "nvidia",
+      label: "NVIDIA Build / NIM (Preview-Fallback)",
+      konfiguriert: Boolean(process.env.NVIDIA_API_KEY),
+      benoetigteEnvVars: ["NVIDIA_API_KEY"],
+      hinweis: "Bereits verdrahtet — nur NVIDIA_API_KEY (Format 'nvapi-…') setzen, um zu aktivieren.",
+    },
+  ];
+}
+
+export async function getAiObservatoryUebersicht(): Promise<AiObservatoryUebersicht> {
+  const db = await readDb();
+  const log = db.aiUsageLog;
+
+  const proModellMap = new Map<string, { provider: AiProvider; model: string; aufrufe: number; fehlgeschlageneFallbacks: number; promptTokens: number; completionTokens: number; geschaetzteKostenUsd: number }>();
+  for (const e of log) {
+    const key = `${e.provider}:${e.model}`;
+    const eintrag = proModellMap.get(key) || {
+      provider: e.provider,
+      model: e.model,
+      aufrufe: 0,
+      fehlgeschlageneFallbacks: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      geschaetzteKostenUsd: 0,
+    };
+    eintrag.aufrufe += 1;
+    if (e.fallbackStufe > 0) eintrag.fehlgeschlageneFallbacks += 1;
+    eintrag.promptTokens += e.promptTokens;
+    eintrag.completionTokens += e.completionTokens;
+    eintrag.geschaetzteKostenUsd += e.geschaetzteKostenUsd;
+    proModellMap.set(key, eintrag);
+  }
+
+  return {
+    gesamtAufrufe: log.length,
+    gesamtPromptTokens: log.reduce((s, e) => s + e.promptTokens, 0),
+    gesamtCompletionTokens: log.reduce((s, e) => s + e.completionTokens, 0),
+    gesamtKostenUsd: log.reduce((s, e) => s + e.geschaetzteKostenUsd, 0),
+    proModell: [...proModellMap.values()].sort((a, b) => b.aufrufe - a.aufrufe),
+    providerKatalog: buildAiProviderKatalog(),
+    letzteAufrufe: log.slice(0, 20),
+  };
+}
+
+// -------- Durchgang 7: Abrechnungskreise & Agent-Buchungstool --------
+
+/**
+ * Standard-Abrechnungskreiskatalog — liegenschaftsübergreifend anwendbar
+ * (kein wohnungIds-Filter), je einmal per Knopfdruck anlegbar. Individuelle
+ * Kreise (z.B. "nur Erdgeschoss") legt der Nutzer oder der Agent gezielt mit
+ * expliziten wohnungIds an, weil sich das nicht generisch aus Stammdaten
+ * ableiten lässt (Etagenangabe ist Freitext in `Wohnung.bezeichnung`).
+ */
+export async function seedStandardAbrechnungskreise(): Promise<Abrechnungskreis[]> {
+  const db = await readDb();
+  if (db.abrechnungskreise.some((k) => k.istStandard)) {
+    return db.abrechnungskreise.filter((k) => k.istStandard);
+  }
+  const now = new Date().toISOString();
+  const defaults: Array<Pick<Abrechnungskreis, "name" | "beschreibung" | "umlageschluessel">> = [
+    {
+      name: "Alle Mieter (Wohnfläche)",
+      beschreibung: "Umlage auf alle Wohnungen der Liegenschaft, proportional zur Wohnfläche.",
+      umlageschluessel: "Wohnflaeche",
+    },
+    {
+      name: "Alle Mieter (Miteigentumsanteil)",
+      beschreibung: "Umlage auf alle Wohnungen der Liegenschaft, proportional zum Miteigentumsanteil (MEA).",
+      umlageschluessel: "Miteigentumsanteil",
+    },
+    {
+      name: "Alle Mieter (gleich verteilt)",
+      beschreibung: "Umlage zu gleichen Teilen auf alle Wohnungen der Liegenschaft (Kopfteile).",
+      umlageschluessel: "Gleich",
+    },
+  ];
+  const created: Abrechnungskreis[] = [];
+  for (const d of defaults) {
+    const k = await abrechnungskreiseDb.create({
+      id: uid(),
+      istStandard: true,
+      createdAt: now,
+      updatedAt: now,
+      ...d,
+    } as Abrechnungskreis);
+    created.push(k);
+  }
+  return created;
+}
+
+/**
+ * Berechnet die Aufteilung eines Betrags auf Wohnungen/Mieter gemäß
+ * Abrechnungskreis. Löst den betroffenen Wohnungsbestand IMMER live gegen
+ * den aktuellen Stammdatenbestand auf (nicht gegen einen gespeicherten
+ * Schnappschuss) — Wohnungsbestand und Mieterwechsel ändern sich, die
+ * Zuordnung soll das zum Buchungszeitpunkt korrekt widerspiegeln.
+ */
+export async function berechneAbrechnungskreisSplit(
+  kreisId: string,
+  liegenschaftId: string,
+  betrag: number
+): Promise<AbrechnungskreisSplitErgebnis> {
+  const db = await readDb();
+  const kreis = db.abrechnungskreise.find((k) => k.id === kreisId);
+  if (!kreis) {
+    return { positionen: [], summeVerteilt: 0, nichtZugeordneteWohnungen: [] };
+  }
+
+  const gebaeudeIds = db.gebaeude.filter((g) => g.liegenschaftId === liegenschaftId).map((g) => g.id);
+  let wohnungen = db.wohnungen.filter((w) => gebaeudeIds.includes(w.gebaeudeId));
+  if (kreis.wohnungIds && kreis.wohnungIds.length > 0) {
+    const erlaubt = new Set(kreis.wohnungIds);
+    wohnungen = wohnungen.filter((w) => erlaubt.has(w.id));
+  }
+
+  type Kandidat = { wohnung: (typeof wohnungen)[number]; mieterId: string; mieterName: string; gewicht: number };
+  const kandidaten: Kandidat[] = [];
+  const nichtZugeordneteWohnungen: string[] = [];
+
+  for (const w of wohnungen) {
+    // Aktiven Mietvertrag bestimmen: kein mietende ODER mietende in der Zukunft.
+    const heute = new Date().toISOString().slice(0, 10);
+    const vertraege = db.mietvertraege.filter((mv) => mv.wohnungId === w.id && mv.mieterId);
+    const aktiverVertrag =
+      vertraege.find((mv) => !mv.mietende || mv.mietende >= heute) || vertraege[vertraege.length - 1];
+
+    if (!aktiverVertrag?.mieterId) {
+      nichtZugeordneteWohnungen.push(w.bezeichnung || w.nummer || w.id);
+      continue;
+    }
+    const mieter = db.mieter.find((m) => m.id === aktiverVertrag.mieterId);
+    if (!mieter) {
+      nichtZugeordneteWohnungen.push(w.bezeichnung || w.nummer || w.id);
+      continue;
+    }
+
+    let gewicht: number;
+    if (kreis.umlageschluessel === "Wohnflaeche") {
+      gewicht = w.flaeche || aktiverVertrag.flaeche || 0;
+    } else if (kreis.umlageschluessel === "Miteigentumsanteil") {
+      gewicht = w.miteigentumsanteil || 0;
+    } else {
+      gewicht = 1; // Gleich verteilt
+    }
+    if (gewicht <= 0) {
+      nichtZugeordneteWohnungen.push(
+        `${w.bezeichnung || w.nummer || w.id} (kein ${kreis.umlageschluessel === "Wohnflaeche" ? "Flächen" : "MEA"}-Wert hinterlegt)`
+      );
+      continue;
+    }
+    kandidaten.push({ wohnung: w, mieterId: mieter.id, mieterName: mieter.name, gewicht });
+  }
+
+  const gesamtgewicht = kandidaten.reduce((s, k) => s + k.gewicht, 0);
+  if (gesamtgewicht <= 0) {
+    return { positionen: [], summeVerteilt: 0, nichtZugeordneteWohnungen };
+  }
+
+  const positionen: BuchungsAufteilungsPosition[] = kandidaten.map((k) => {
+    const anteil = k.gewicht / gesamtgewicht;
+    return {
+      wohnungId: k.wohnung.id,
+      wohnungBezeichnung: k.wohnung.bezeichnung || k.wohnung.nummer || k.wohnung.id,
+      mieterId: k.mieterId,
+      mieterName: k.mieterName,
+      anteil,
+      betrag: Math.round(betrag * anteil * 100) / 100,
+    };
+  });
+
+  // Rundungsdifferenz auf die größte Position packen, damit Summe exakt stimmt.
+  const summeVerteilt = positionen.reduce((s, p) => s + p.betrag, 0);
+  const diff = Math.round((betrag - summeVerteilt) * 100) / 100;
+  if (diff !== 0 && positionen.length > 0) {
+    const groesste = positionen.reduce((a, b) => (b.betrag > a.betrag ? b : a));
+    groesste.betrag = Math.round((groesste.betrag + diff) * 100) / 100;
+  }
+
+  return {
+    positionen,
+    summeVerteilt: positionen.reduce((s, p) => s + p.betrag, 0),
+    nichtZugeordneteWohnungen,
+  };
+}
+
+export interface BuchungErstellenInput {
+  typ: "Einnahme" | "Ausgabe";
+  kategorie: string;
+  betrag: number;
+  datum?: string;
+  beschreibung?: string;
+  liegenschaftId?: string;
+  belegTyp?: Buchung["belegTyp"];
+  belegId?: string;
+  belegFreitext?: string;
+  rechnungsdaten?: Buchung["rechnungsdaten"];
+  abrechnungskreisId?: string;
+}
+
+export type BuchungErstellenErgebnis =
+  | { ok: true; buchung: Buchung; split?: AbrechnungskreisSplitErgebnis }
+  | { ok: false; fehler: string };
+
+/**
+ * Zentrale, einzige Stelle, an der Buchungen entstehen — genutzt sowohl vom
+ * manuellen Formular (API-Route) als auch vom Agenten (Tool-Call), damit
+ * Belegpflicht und Splitting-Logik nicht zweimal gepflegt werden müssen.
+ *
+ * Belegpflicht: JEDE Buchung braucht entweder eine Referenz auf ein
+ * existierendes Ablage-Dokument (`belegId`, z.B. ein Kaufvertrag oder eine
+ * Rechnung) ODER — falls (noch) kein digitalisiertes Dokument vorliegt —
+ * mindestens `belegFreitext` als nachvollziehbare Referenz. Ganz ohne
+ * Beleg-Angabe wird die Buchung abgelehnt.
+ */
+export async function buchungErstellen(input: BuchungErstellenInput): Promise<BuchungErstellenErgebnis> {
+  if (!input.kategorie || typeof input.betrag !== "number" || input.betrag <= 0) {
+    return { ok: false, fehler: "kategorie und ein positiver betrag sind erforderlich." };
+  }
+
+  const db = await readDb();
+
+  if (input.belegId) {
+    const beleg = db.ablage.find((a) => a.id === input.belegId);
+    if (!beleg) {
+      return { ok: false, fehler: `Beleg-Dokument ${input.belegId} wurde nicht gefunden.` };
+    }
+  } else if (!input.belegFreitext?.trim()) {
+    return {
+      ok: false,
+      fehler:
+        "Keine Buchung ohne Beleg: bitte entweder belegId (vorhandenes Ablage-Dokument, z.B. Kaufvertrag/Rechnung) oder belegFreitext (Referenz, falls noch kein Dokument digitalisiert ist) angeben.",
+    };
+  }
+
+  let split: AbrechnungskreisSplitErgebnis | undefined;
+  if (input.abrechnungskreisId) {
+    if (!input.liegenschaftId) {
+      return { ok: false, fehler: "Für eine Umlage auf einen Abrechnungskreis ist liegenschaftId erforderlich." };
+    }
+    const kreis = db.abrechnungskreise.find((k) => k.id === input.abrechnungskreisId);
+    if (!kreis) return { ok: false, fehler: `Abrechnungskreis ${input.abrechnungskreisId} wurde nicht gefunden.` };
+    split = await berechneAbrechnungskreisSplit(input.abrechnungskreisId, input.liegenschaftId, input.betrag);
+    if (split.positionen.length === 0) {
+      return {
+        ok: false,
+        fehler:
+          "Der Abrechnungskreis konnte keiner Wohnung mit aktivem Mieter zugeordnet werden — bitte Stammdaten (Mietverträge, Flächen/MEA) prüfen.",
+      };
+    }
+  }
+
+  const now = new Date().toISOString();
+  const buchung: Buchung = {
+    id: uid(),
+    datum: input.datum || now,
+    typ: input.typ,
+    kategorie: input.kategorie,
+    betrag: Math.abs(input.betrag),
+    beschreibung: input.beschreibung,
+    liegenschaftId: input.liegenschaftId,
+    belegTyp: input.belegId ? input.belegTyp || "Rechnung" : input.belegTyp || "Manuell",
+    belegId: input.belegId,
+    belegFreitext: input.belegFreitext,
+    rechnungsdaten: input.rechnungsdaten,
+    abrechnungskreisId: input.abrechnungskreisId,
+    aufteilung: split?.positionen,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const saved = await buchungenDb.create(buchung);
+  const aufteilungsHinweis = split
+    ? ` und auf ${split.positionen.length} Mieter umgelegt (${split.nichtZugeordneteWohnungen.length > 0 ? `${split.nichtZugeordneteWohnungen.length} Wohnung(en) ohne Zuordnung übersprungen` : "vollständig zugeordnet"})`
+    : "";
+  await logEvent(
+    "anlage",
+    `${saved.typ} „${saved.kategorie}" über ${saved.betrag.toFixed(2)} € gebucht${aufteilungsHinweis}.`,
+    { art: "Buchung", id: saved.id }
+  );
+
+  return { ok: true, buchung: saved, split };
+}
+
+/**
+ * Storniert eine Buchung NICHT durch Löschen, sondern durch eine
+ * Gegenbuchung (Buchhaltungs-Prinzip: der ursprüngliche Vorgang bleibt
+ * nachvollziehbar, inkl. eigener Aufteilung, falls vorhanden). Die
+ * Original-Buchung wird als `storniert` markiert und bleibt erhalten.
+ */
+export async function buchungStornieren(
+  buchungId: string,
+  grund?: string
+): Promise<{ ok: true; storno: Buchung } | { ok: false; fehler: string }> {
+  const original = await buchungenDb.get(buchungId);
+  if (!original) return { ok: false, fehler: "Buchung nicht gefunden." };
+  if (original.storniert) return { ok: false, fehler: "Buchung ist bereits storniert." };
+  if (original.istStornoBuchung) return { ok: false, fehler: "Eine Storno-Buchung kann nicht selbst storniert werden." };
+
+  const now = new Date().toISOString();
+  const gegenTyp: BuchungsTyp = original.typ === "Einnahme" ? "Ausgabe" : "Einnahme";
+  const storno: Buchung = {
+    id: uid(),
+    datum: now,
+    typ: gegenTyp,
+    kategorie: original.kategorie,
+    betrag: original.betrag,
+    beschreibung: `Stornierung von Buchung ${original.nummer || original.id}${grund ? `: ${grund}` : ""}`,
+    liegenschaftId: original.liegenschaftId,
+    belegTyp: original.belegTyp,
+    belegId: original.belegId,
+    belegFreitext: original.belegFreitext || `Storno zu ${original.nummer || original.id}`,
+    abrechnungskreisId: original.abrechnungskreisId,
+    aufteilung: original.aufteilung,
+    istStornoBuchung: true,
+    storniertVonBuchungId: original.id,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const savedStorno = await buchungenDb.create(storno);
+  await buchungenDb.update(original.id, { storniert: true, storniertDurchBuchungId: savedStorno.id } as Partial<Buchung>);
+
+  await logEvent(
+    "aenderung",
+    `Buchung „${original.kategorie}" über ${original.betrag.toFixed(2)} € storniert (Gegenbuchung ${savedStorno.nummer || savedStorno.id}).`,
+    { art: "Buchung", id: original.id }
+  );
+
+  return { ok: true, storno: savedStorno };
 }

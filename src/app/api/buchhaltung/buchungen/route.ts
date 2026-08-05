@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buchungenDb, logEvent } from "@/lib/db";
+import { buchungenDb, buchungErstellen } from "@/lib/db";
 import { Buchung } from "@/lib/types";
-import { uid } from "@/lib/utils";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -18,33 +17,23 @@ export async function POST(req: NextRequest) {
   if (body.typ !== "Einnahme" && body.typ !== "Ausgabe") {
     return NextResponse.json({ error: "typ muss 'Einnahme' oder 'Ausgabe' sein" }, { status: 400 });
   }
-  if (!body.kategorie || typeof body.betrag !== "number" || body.betrag <= 0) {
-    return NextResponse.json(
-      { error: "kategorie und ein positiver betrag sind erforderlich" },
-      { status: 400 }
-    );
-  }
 
-  const now = new Date().toISOString();
-  const buchung: Buchung = {
-    id: uid(),
-    datum: body.datum || now,
+  const result = await buchungErstellen({
     typ: body.typ,
     kategorie: body.kategorie,
-    betrag: Math.abs(body.betrag),
-    beschreibung: body.beschreibung || undefined,
-    liegenschaftId: body.liegenschaftId || undefined,
-    belegTyp: body.belegTyp || "Manuell",
-    belegId: body.belegId || undefined,
-    createdAt: now,
-    updatedAt: now,
-  };
+    betrag: body.betrag,
+    datum: body.datum,
+    beschreibung: body.beschreibung,
+    liegenschaftId: body.liegenschaftId,
+    belegTyp: body.belegTyp,
+    belegId: body.belegId,
+    belegFreitext: body.belegFreitext,
+    rechnungsdaten: body.rechnungsdaten,
+    abrechnungskreisId: body.abrechnungskreisId,
+  });
 
-  const saved = await buchungenDb.create(buchung);
-  await logEvent(
-    "anlage",
-    `${saved.typ} „${saved.kategorie}" über ${saved.betrag.toFixed(2)} € gebucht.`,
-    { art: "Buchung", id: saved.id }
-  );
-  return NextResponse.json({ buchung: saved });
+  if (!result.ok) {
+    return NextResponse.json({ error: result.fehler }, { status: 400 });
+  }
+  return NextResponse.json({ buchung: result.buchung, split: result.split });
 }
