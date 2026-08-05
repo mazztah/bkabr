@@ -5,6 +5,7 @@ import {
   Abrechnung,
   Abrechnungskreis,
   AbrechnungskreisSplitErgebnis,
+  AbgeleitetesKalenderEreignis,
   AgentSchedule,
   AgentScheduleLauf,
   AiCallLogEintrag,
@@ -15,6 +16,8 @@ import {
   BuchhaltungsUebersicht,
   BuchungsAufteilungsPosition,
   BuchungsTyp,
+  KalenderEreignis,
+  TeamNachricht,
   AgentHinweis,
   DashboardAktivitaetVerlaufPunkt,
   DashboardBuchungsVerlaufPunkt,
@@ -60,6 +63,8 @@ interface DbShape {
   konten: Konto[];
   abrechnungskreise: Abrechnungskreis[];
   aiUsageLog: AiCallLogEintrag[];
+  kalenderEreignisse: KalenderEreignis[];
+  teamNachrichten: TeamNachricht[];
   counters: Record<string, number>;
 }
 
@@ -90,6 +95,8 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     konten: db.konten || [],
     abrechnungskreise: db.abrechnungskreise || [],
     aiUsageLog: db.aiUsageLog || [],
+    kalenderEreignisse: db.kalenderEreignisse || [],
+    teamNachrichten: db.teamNachrichten || [],
     counters: db.counters || {},
   };
 }
@@ -263,6 +270,8 @@ export const agentSchedulesDb = makeCrud<AgentSchedule>("agentSchedules", "KA-AG
 export const buchungenDb = makeCrud<Buchung>("buchungen", "BU");
 export const kontenDb = makeCrud<Konto>("konten", "KT");
 export const abrechnungskreiseDb = makeCrud<Abrechnungskreis>("abrechnungskreise", "AK");
+export const kalenderEreignisseDb = makeCrud<KalenderEreignis>("kalenderEreignisse", "KE");
+export const teamNachrichtenDb = makeCrud<TeamNachricht>("teamNachrichten", "TN");
 
 // -------- Buchhaltung: Aggregation für Dashboard/KPI-Engine --------
 
@@ -1160,4 +1169,81 @@ export async function buchungStornieren(
   );
 
   return { ok: true, storno: savedStorno };
+}
+
+// -------- Mein Kalender: aus echten App-Daten abgeleitete Termine --------
+
+/**
+ * Liest read-only Termine aus bereits vorhandenen Daten der App — Mietbeginn/
+ * -ende, nächste Agent-Routinen-Läufe, letzte Prüfläufe, größere Buchungen
+ * (Kaufverträge). Das ist die "100% Synchronisation mit der App": keine
+ * eigene Terminverwaltung dupliziert Daten, sondern zeigt sie zusätzlich zu
+ * den manuell angelegten `KalenderEreignis`-Einträgen an.
+ */
+export async function getAbgeleiteteKalenderEreignisse(): Promise<AbgeleitetesKalenderEreignis[]> {
+  const db = await readDb();
+  const ereignisse: AbgeleitetesKalenderEreignis[] = [];
+
+  for (const mv of db.mietvertraege) {
+    if (mv.mietbeginn) {
+      ereignisse.push({
+        id: `mv-start-${mv.id}`,
+        titel: `Mietbeginn: ${mv.wohnungId}`,
+        datum: mv.mietbeginn,
+        kategorie: "Termin",
+        quelle: "Mietvertrag",
+        link: "/mieter",
+      });
+    }
+    if (mv.mietende) {
+      ereignisse.push({
+        id: `mv-ende-${mv.id}`,
+        titel: `Mietende: ${mv.wohnungId}`,
+        datum: mv.mietende,
+        kategorie: "Frist",
+        quelle: "Mietvertrag",
+        link: "/mieter",
+      });
+    }
+  }
+
+  for (const s of db.agentSchedules) {
+    if (!s.aktiv) continue;
+    ereignisse.push({
+      id: `routine-${s.id}`,
+      titel: `Routine: ${s.name}`,
+      datum: s.nextRunAt,
+      kategorie: "Aufgabe",
+      quelle: "Routine",
+      link: "/kalender?tab=routinen",
+    });
+  }
+
+  for (const lauf of db.pruefLaeufe) {
+    ereignisse.push({
+      id: `pruef-${lauf.id}`,
+      titel: `Plausibilitätsprüfung (${lauf.befunde.length} Befund(e))`,
+      datum: lauf.gestartetAm,
+      kategorie: "Erinnerung",
+      quelle: "Pruefung",
+      link: "/pruefung",
+    });
+  }
+
+  // Nur bedeutsame Buchungen (Kaufverträge) als Kalendertermin — sonst würde
+  // jede Alltagsbuchung den Kalender überfluten.
+  for (const b of db.buchungen) {
+    if (b.belegTyp === "Kaufvertrag") {
+      ereignisse.push({
+        id: `buchung-${b.id}`,
+        titel: `${b.kategorie}: ${b.betrag.toFixed(2)} €`,
+        datum: b.datum,
+        kategorie: "Termin",
+        quelle: "Buchung",
+        link: "/buchhaltung",
+      });
+    }
+  }
+
+  return ereignisse;
 }

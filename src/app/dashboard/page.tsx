@@ -11,6 +11,7 @@ import CategoryBars from "@/components/CategoryBars";
 import LlmControlCenter from "@/components/dashboard/LlmControlCenter";
 import AiObservatory from "@/components/dashboard/AiObservatory";
 import NewsWidget from "@/components/dashboard/NewsWidget";
+import CollapsibleSection from "@/components/dashboard/CollapsibleSection";
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardUebersicht | null>(null);
@@ -49,16 +50,39 @@ export default function DashboardPage() {
             </div>
             <NewsWidget />
           </div>
-          <LlmControlCenter />
-          <AiObservatory />
-          <BusinessCockpit data={data} />
-          {verlauf && <TrendCharts verlauf={verlauf} />}
-          <CategoryBreakdown data={data} />
-          <KpiExplorer data={data} />
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-            <ActivityFeed data={data} />
-            <RoadmapCard />
-          </div>
+
+          <CollapsibleSection title="LLM Dashboard Agent" icon="🧠" subtitle="Hinweise, Chat, Routinen">
+            <LlmControlCenter embedded />
+          </CollapsibleSection>
+
+          <CollapsibleSection title="AI Cost & Model Observatory" icon="🔭" subtitle="Tokens, Kosten, Provider-Katalog">
+            <AiObservatory embedded />
+          </CollapsibleSection>
+
+          <CollapsibleSection title="Business Cockpit" icon="📊" subtitle="Einnahmen, Ausgaben, Objekte, Prüfbefunde" defaultOpen>
+            <BusinessCockpit data={data} />
+          </CollapsibleSection>
+
+          {verlauf && (
+            <CollapsibleSection title="Trends" icon="📈" subtitle="Gewinnverlauf, Prüfbefunde, Aktivität">
+              <TrendCharts verlauf={verlauf} />
+            </CollapsibleSection>
+          )}
+
+          <CollapsibleSection title="Kategorie-Aufschlüsselung" icon="🧾" subtitle="Einnahmen/Ausgaben nach Kategorie">
+            <CategoryBreakdown data={data} />
+          </CollapsibleSection>
+
+          <CollapsibleSection title="Kennzahlen-Explorer" icon="📖" subtitle="10 klassische + 15 moderne Kennzahlen">
+            <KpiExplorer data={data} />
+          </CollapsibleSection>
+
+          <CollapsibleSection title="Aktivität & Roadmap" icon="📋" subtitle="Systemprotokoll, geplante Durchgänge">
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+              <ActivityFeed data={data} />
+              <RoadmapCard />
+            </div>
+          </CollapsibleSection>
         </>
       )}
     </div>

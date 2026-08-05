@@ -26,7 +26,7 @@ const SCHWEREGRAD_ICON: Record<AgentHinweis["schweregrad"], string> = {
   kritisch: "🚨",
 };
 
-export default function LlmControlCenter() {
+export default function LlmControlCenter({ embedded = false }: { embedded?: boolean }) {
   const { chatHistory, sendChat, chatSending, openChat } = useStore();
   const [hinweise, setHinweise] = useState<AgentHinweis[] | null>(null);
   const [routinen, setRoutinen] = useState<AgentSchedule[] | null>(null);
@@ -54,15 +54,17 @@ export default function LlmControlCenter() {
   };
 
   return (
-    <div className="mb-6 rounded-xl border border-border bg-card">
-      <div className="border-b border-border p-3">
-        <h2 className="text-sm font-semibold">🧠 LLM Dashboard Agent</h2>
-        <p className="text-xs text-muted-foreground">
-          Hinweise unten sind regelbasiert aus echten Kennzahlen abgeleitet (keine LLM-Halluzination).
-          Für Rückfragen und Aufträge steht derselbe Agent bereit, der auch als schwebendes Chatfenster
-          auf jeder Seite verfügbar ist — beide teilen sich denselben Gesprächsverlauf.
-        </p>
-      </div>
+    <div className={embedded ? "" : "mb-6 rounded-xl border border-border bg-card"}>
+      {!embedded && (
+        <div className="border-b border-border p-3">
+          <h2 className="text-sm font-semibold">🧠 LLM Dashboard Agent</h2>
+          <p className="text-xs text-muted-foreground">
+            Hinweise unten sind regelbasiert aus echten Kennzahlen abgeleitet (keine LLM-Halluzination).
+            Für Rückfragen und Aufträge steht derselbe Agent bereit, der auch als schwebendes Chatfenster
+            auf jeder Seite verfügbar ist — beide teilen sich denselben Gesprächsverlauf.
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3">
         {/* Hinweise */}

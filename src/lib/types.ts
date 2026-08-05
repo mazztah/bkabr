@@ -1304,3 +1304,56 @@ export interface AgentHinweis {
   /** Welche Kennzahl/Kachel den Hinweis ausgelöst hat, für Deep-Link/Hover */
   kpiId?: string;
 }
+
+// -------- Mein Kalender (Durchgang 8b) --------
+// Persönliche Termine, mit optionalen Dokument-Anhängen aus der Ablage.
+// "100% synchronisiert mit der App" wird dadurch erreicht, dass der Kalender
+// zusätzlich zu den hier gespeicherten Terminen automatisch reale, bereits
+// vorhandene Termine aus der App einblendet (Mietbeginn/-ende, Agent-
+// Routinen, Prüfläufe) — siehe getKalenderEreignisse() in db.ts. Es werden
+// keine synthetischen Termine erfunden.
+
+export type KalenderKategorie = "Termin" | "Frist" | "Aufgabe" | "Erinnerung";
+
+export interface KalenderEreignis {
+  id: string;
+  titel: string;
+  beschreibung?: string;
+  /** ISO-Datum/-Zeit, Start */
+  datum: string;
+  datumEnde?: string;
+  ganztaegig: boolean;
+  kategorie: KalenderKategorie;
+  liegenschaftId?: string;
+  /** Referenzen auf vorhandene Ablage-Dokumente, die an den Termin angehängt sind */
+  dokumentIds: string[];
+  erstelltVon?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Read-only, aus echten App-Daten abgeleiteter Kalendereintrag (keine eigene Speicherung). */
+export interface AbgeleitetesKalenderEreignis {
+  id: string;
+  titel: string;
+  datum: string;
+  kategorie: KalenderKategorie;
+  quelle: "Mietvertrag" | "Routine" | "Pruefung" | "Buchung";
+  link?: string;
+}
+
+// -------- Team-Nachrichten (minimalistischer Messenger, Durchgang 8b) --------
+// Bewusst ohne Benutzerkonten/Auth (die App hat aktuell kein Multi-User-
+// System) — der Autorenname wird frei eingegeben/aus zuletzt verwendeten
+// Namen gewählt. Funktional nutzbar, wenn mehrere Personen dieselbe
+// deployte App öffnen, aber ohne echte Identitätsprüfung.
+
+export interface TeamNachricht {
+  id: string;
+  autorName: string;
+  text: string;
+  emoji?: string;
+  liegenschaftId?: string;
+  createdAt: string;
+  updatedAt: string;
+}

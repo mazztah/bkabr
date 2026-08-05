@@ -19,6 +19,45 @@ import Modal from "@/components/Modal";
 import { cn } from "@/lib/utils";
 import { AgentSchedule, AgentScheduleRecurrence } from "@/lib/types";
 import { describeRecurrence } from "@/lib/schedule";
+import MeinKalenderTab from "@/components/kalender/MeinKalenderTab";
+import TeamTab from "@/components/kalender/TeamTab";
+
+type HauptTab = "mein-kalender" | "routinen" | "team";
+
+export default function KalenderPage() {
+  const [tab, setTab] = useState<HauptTab>("mein-kalender");
+
+  return (
+    <div className="h-full overflow-y-auto p-6">
+      <div className="mb-4 flex gap-2 border-b border-border text-sm">
+        {(
+          [
+            { key: "mein-kalender", label: "Mein Kalender" },
+            { key: "routinen", label: "Agent-Routinen" },
+            { key: "team", label: "Team" },
+          ] as { key: HauptTab; label: string }[]
+        ).map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={cn(
+              "-mb-px border-b-2 px-3 py-2 font-medium",
+              tab === t.key
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "mein-kalender" && <MeinKalenderTab />}
+      {tab === "routinen" && <RoutinenTab />}
+      {tab === "team" && <TeamTab />}
+    </div>
+  );
+}
 
 interface LiegenschaftLite {
   id: string;
@@ -71,7 +110,7 @@ const WOCHENTAGE = [
   { v: 6, l: "Sa" },
 ];
 
-export default function KalenderPage() {
+function RoutinenTab() {
   const [schedules, setSchedules] = useState<AgentSchedule[] | null>(null);
   const [liegenschaften, setLiegenschaften] = useState<LiegenschaftLite[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
@@ -145,17 +184,17 @@ export default function KalenderPage() {
   );
 
   return (
-    <div className="h-full overflow-y-auto p-6">
+    <div>
       <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-start gap-3">
           <div className="glow-ring-primary flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-[var(--primary)] to-[var(--brand-accent)] text-white">
             <CalendarClock className="h-5 w-5" strokeWidth={2.25} />
           </div>
           <div>
-            <h1 className="gradient-text text-xl font-bold leading-tight">Kalender</h1>
+            <h1 className="gradient-text text-xl font-bold leading-tight">Agent-Routinen (Daily Loop)</h1>
             <p className="max-w-xl text-sm text-muted-foreground">
-              Wiederkehrende Aufträge für den Agenten planen – z. B. „alle 2 Stunden Mahnlauf" oder
-              „täglich 23:40 Uhr E-Mail-Batch versenden". Der Agent führt fällige Aufgaben
+              Wiederkehrende Aufträge für den Agenten planen – z. B. „alle 2 Stunden Mahnlauf&rdquo; oder
+              „täglich 23:40 Uhr E-Mail-Batch versenden&rdquo;. Der Agent führt fällige Aufgaben
               selbstständig im Hintergrund aus.
             </p>
           </div>
