@@ -2860,7 +2860,7 @@ export async function runAgent(params: {
   try {
     for (let step = 0; step < MAX_AGENT_STEPS; step++) {
       const completion = await createChatCompletion({
-        max_completion_tokens: 2000,
+        max_completion_tokens: 1500,
         temperature: 0.2,
         tools: AGENT_TOOLS,
         tool_choice: "auto",
@@ -2898,16 +2898,32 @@ export async function runAgent(params: {
 
       for (const call of toolCalls) {
         let args: Record<string, unknown> = {};
+        let parseError: string | null = null;
         try {
-          args = JSON.parse(call.function.arguments || "{}");
-        } catch {
+          const raw = call.function.arguments;
+          if (raw == null || String(raw).trim() === "") {
+            args = {};
+          } else {
+            args = JSON.parse(raw);
+          }
+        } catch (e: any) {
+          // Nicht still auf {} fallen — dem Modell den Parse-Fehler klar zurückmelden,
+          // damit es die Argumente korrigieren kann statt mit leeren Args weiterzuarbeiten.
+          parseError = e?.message || String(e);
           args = {};
         }
 
         let result: unknown;
         const toolStartedAt = Date.now();
         try {
-          result = await executeTool(call.function.name, args);
+          if (parseError) {
+            result = {
+              error: `Ungültige Tool-Argumente (JSON-Parse-Fehler): ${parseError}. Bitte die arguments als gültiges JSON erneut senden.`,
+              rawArguments: String(call.function.arguments || "").slice(0, 400),
+            };
+          } else {
+            result = await executeTool(call.function.name, args);
+          }
         } catch (toolErr: any) {
           result = { error: toolErr?.message || String(toolErr) };
         }

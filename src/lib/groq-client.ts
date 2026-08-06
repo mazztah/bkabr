@@ -3,6 +3,8 @@ import type {
   ChatCompletion,
   ChatCompletionCreateParamsNonStreaming,
 } from "groq-sdk/resources/chat/completions";
+import type { AiProvider } from "./types";
+import { recordAiUsage } from "./db";
 
 /**
  * Primärmodell + Fallbacks. Rate-Limits (TPD) sind modellbezogen –
@@ -589,88 +591,96 @@ function estimateMessagesTokens(messages: ChatParams["messages"]): number {
 }
 
 /**
- * Nur für qwen/qwen3.6-27b (Groq TPM 8000): Nachrichten so kürzen und
- * max_completion_tokens so setzen, dass Input+Output ≤ 7500 Tokens bleiben.
- * Andere Modelle bleiben unberührt.
+ * Globaler Token-Budget-Cap (Free-Tier-Schutz).
+ *
+ * Nie mehr als GLOBAL_TOKEN_SAFE Tokens pro Aufruf (Input + max_completion).
+ * Zusätzlich bleibt der engere qwen-TPM-Schutz im Hinterkopf; der strengere
+ * Wert (5000 global) gewinnt immer.
+ *
+ * Kürzt bei Bedarf History (älteste non-system zuerst) und begrenzt
+ * max_completion_tokens, damit Free-Tier-Kontingente nicht unnötig
+ * verbrannt werden.
  */
-function applyQwenTokenBudget(model: string, params: ChatParams): ChatParams {
-  if (!model.includes("qwen/qwen3.6-27b") && !model.includes("qwen3.6-27b")) {
-    return params;
-  }
+const GLOBAL_TOKEN_SAFE = 5000;
+const MIN_COMPLETION = 256;
 
-  const TPM_SAFE = 7500; // unter dem Hard-Limit 8000 TPM
-  const MIN_COMPLETION = 256;
+function applyTokenBudget(model: string, params: ChatParams): ChatParams {
+  const SAFE = GLOBAL_TOKEN_SAFE;
+
   const messages = [...(params.messages || [])];
-
-  // System + letzte User-Nachricht priorisieren; ältere Turns kürzen
   let inputTokens = estimateMessagesTokens(messages);
   const toolsTax = params.tools?.length
-    ? Math.min(2000, estimateTokens(JSON.stringify(params.tools)))
+    ? Math.min(1800, estimateTokens(JSON.stringify(params.tools)))
     : 0;
   inputTokens += toolsTax;
 
-  // max completion so wählen, dass Input + Completion ≤ TPM_SAFE
   let maxCompletion =
     (params as any).max_completion_tokens ??
     (params as any).max_tokens ??
-    2000;
-  maxCompletion = Math.min(maxCompletion, Math.max(MIN_COMPLETION, TPM_SAFE - inputTokens));
+    1500;
+  // Completion nie größer als Restbudget und nie größer als 1500 (Free-Tier-schonend)
+  maxCompletion = Math.min(
+    maxCompletion,
+    1500,
+    Math.max(MIN_COMPLETION, SAFE - inputTokens)
+  );
 
-  // Wenn Input schon zu groß: von vorn (älteste non-system) kürzen / truncaten
-  if (inputTokens + MIN_COMPLETION > TPM_SAFE) {
-    const system = messages.filter((m) => m.role === "system");
-    const rest = messages.filter((m) => m.role !== "system");
-    // Behalte die letzten N Nachrichten, bis Budget passt
-    let kept = [...rest];
-    while (kept.length > 1) {
-      const trial = [...system, ...kept];
-      const t = estimateMessagesTokens(trial) + toolsTax;
-      if (t + MIN_COMPLETION <= TPM_SAFE) break;
-      // älteste droppen
-      kept = kept.slice(1);
+  if (inputTokens + MIN_COMPLETION <= SAFE && maxCompletion >= MIN_COMPLETION) {
+    if (maxCompletion < ((params as any).max_completion_tokens ?? 1500)) {
+      console.warn(
+        `[llm] max_completion_tokens auf ${maxCompletion} begrenzt (input≈${inputTokens}, safe=${SAFE}, model=${model})`
+      );
     }
-    // Falls immer noch zu groß: letzte User-Nachricht hart kürzen
-    let trialMsgs = [...system, ...kept];
-    let t = estimateMessagesTokens(trialMsgs) + toolsTax;
-    if (t + MIN_COMPLETION > TPM_SAFE) {
-      const budgetForLast = Math.max(500, TPM_SAFE - toolsTax - MIN_COMPLETION - 200);
-      trialMsgs = trialMsgs.map((m, idx) => {
-        if (idx < trialMsgs.length - 1) return m;
-        const c = (m as any).content;
-        if (typeof c !== "string") return m;
-        const maxChars = budgetForLast * 4;
-        if (c.length <= maxChars) return m;
-        return {
-          ...m,
-          content:
-            c.slice(0, Math.floor(maxChars * 0.7)) +
-            "\n…[gekürzt wegen qwen TPM-Limit]…\n" +
-            c.slice(-Math.floor(maxChars * 0.25)),
-        } as any;
-      });
-      t = estimateMessagesTokens(trialMsgs) + toolsTax;
-    }
-    maxCompletion = Math.min(
-      maxCompletion,
-      Math.max(MIN_COMPLETION, TPM_SAFE - (estimateMessagesTokens(trialMsgs) + toolsTax))
-    );
-    console.warn(
-      `[groq] qwen/qwen3.6-27b: Token-Budget angepasst (input≈${estimateMessagesTokens(trialMsgs) + toolsTax}, max_completion=${maxCompletion}, safe=${TPM_SAFE})`
-    );
     return {
       ...params,
-      messages: trialMsgs,
       max_completion_tokens: maxCompletion,
     } as ChatParams;
   }
 
-  if (maxCompletion < ((params as any).max_completion_tokens ?? 2000)) {
-    console.warn(
-      `[groq] qwen/qwen3.6-27b: max_completion_tokens auf ${maxCompletion} begrenzt (input≈${inputTokens}, safe=${TPM_SAFE})`
-    );
+  // Input zu groß: älteste non-system Nachrichten droppen, dann letzte kürzen
+  const system = messages.filter((m) => m.role === "system");
+  let kept = messages.filter((m) => m.role !== "system");
+  while (kept.length > 1) {
+    const trial = [...system, ...kept];
+    const t = estimateMessagesTokens(trial) + toolsTax;
+    if (t + MIN_COMPLETION <= SAFE) break;
+    kept = kept.slice(1);
   }
+
+  let trialMsgs = [...system, ...kept];
+  let t = estimateMessagesTokens(trialMsgs) + toolsTax;
+  if (t + MIN_COMPLETION > SAFE) {
+    const budgetForLast = Math.max(400, SAFE - toolsTax - MIN_COMPLETION - 150);
+    trialMsgs = trialMsgs.map((m, idx) => {
+      if (idx < trialMsgs.length - 1) return m;
+      const c = (m as any).content;
+      if (typeof c !== "string") return m;
+      const maxChars = budgetForLast * 4;
+      if (c.length <= maxChars) return m;
+      return {
+        ...m,
+        content:
+          c.slice(0, Math.floor(maxChars * 0.7)) +
+          "\n…[gekürzt wegen Token-Budget ≤5000]…\n" +
+          c.slice(-Math.floor(maxChars * 0.25)),
+      } as any;
+    });
+    t = estimateMessagesTokens(trialMsgs) + toolsTax;
+  }
+
+  maxCompletion = Math.min(
+    maxCompletion,
+    1500,
+    Math.max(MIN_COMPLETION, SAFE - t)
+  );
+
+  console.warn(
+    `[llm] Token-Budget angepasst (model=${model}, input≈${t}, max_completion=${maxCompletion}, safe=${SAFE})`
+  );
+
   return {
     ...params,
+    messages: trialMsgs,
     max_completion_tokens: maxCompletion,
   } as ChatParams;
 }
@@ -751,16 +761,20 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
     try {
+      // Globaler Token-Cap ≤ 5000 für ALLE Provider (Free-Tier-Schutz)
+      const budgeted = applyTokenBudget(model, params);
+      const { model: _ignored, ...rest } = budgeted;
+
       let completion: ChatCompletion;
       if (isCerebrasModel(model)) {
         const cerebrasId = stripCerebrasPrefix(model);
-        completion = await createCerebrasChatCompletion(cerebrasId, params);
+        completion = await createCerebrasChatCompletion(cerebrasId, { ...rest, model: cerebrasId } as ChatParams);
       } else if (isCloudflareModel(model)) {
         const cfId = stripCloudflarePrefix(model);
-        completion = await createCloudflareChatCompletion(cfId, params);
+        completion = await createCloudflareChatCompletion(cfId, { ...rest, model: cfId } as ChatParams);
       } else if (isNvidiaModel(model)) {
         const nvId = stripNvidiaPrefix(model);
-        completion = await createNvidiaChatCompletion(nvId, params);
+        completion = await createNvidiaChatCompletion(nvId, { ...rest, model: nvId } as ChatParams);
       } else {
         if (!groq) {
           const err: any = new Error(
@@ -769,19 +783,59 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
           err.status = 401;
           throw err;
         }
-        const budgeted = applyQwenTokenBudget(model, params);
-        const { model: _ignored, ...rest } = budgeted;
         completion = await groq.chat.completions.create({
           ...rest,
           model,
         });
       }
-      // Sichtbares Erfolgs-Log, sobald NICHT das primäre Modell verwendet wurde –
-      // sonst bleibt bei einem Fallback (insb. Cerebras/Cloudflare/NVIDIA) unklar, ob
-      // der Request überhaupt durchgekommen ist ("kein Feedback von der Cloudflare API").
+
+      // Sichtbares Erfolgs-Log bei Fallback
       if (i > 0) {
         console.info(`[${providerNameOf(model)}] Modell ${stripProviderPrefix(model)} erfolgreich (Fallback-Stufe ${i + 1}/${models.length}).`);
       }
+
+      // Usage-Logging (fire-and-forget) → speist das AI Cost & Model Observatory
+      try {
+        const usage = (completion as any)?.usage;
+        let promptTokens = 0;
+        let completionTokens = 0;
+        let exakt = false;
+        if (usage && (usage.prompt_tokens != null || usage.completion_tokens != null)) {
+          promptTokens = Number(usage.prompt_tokens) || 0;
+          completionTokens = Number(usage.completion_tokens) || 0;
+          exakt = true;
+        } else {
+          // Schätzung, wenn Provider kein usage liefert
+          promptTokens = estimateMessagesTokens(budgeted.messages || params.messages || []);
+          const toolsTax = (budgeted.tools || params.tools)?.length
+            ? Math.min(1800, estimateTokens(JSON.stringify(budgeted.tools || params.tools)))
+            : 0;
+          promptTokens += toolsTax;
+          const content = completion?.choices?.[0]?.message?.content;
+          completionTokens = typeof content === "string" ? estimateTokens(content) : 0;
+          const tcs = (completion?.choices?.[0]?.message as any)?.tool_calls;
+          if (Array.isArray(tcs)) {
+            for (const tc of tcs) {
+              completionTokens += estimateTokens(tc?.function?.name || "");
+              completionTokens += estimateTokens(tc?.function?.arguments || "");
+            }
+          }
+          exakt = false;
+        }
+        void recordAiUsage({
+          provider: providerNameOf(model) as AiProvider,
+          model: stripProviderPrefix(model),
+          fallbackStufe: i,
+          promptTokens,
+          completionTokens,
+          exakt,
+        }).catch((e) =>
+          console.warn("[llm] recordAiUsage fehlgeschlagen:", e instanceof Error ? e.message : e)
+        );
+      } catch (logErr) {
+        console.warn("[llm] Usage-Logging übersprungen:", logErr instanceof Error ? logErr.message : logErr);
+      }
+
       return completion;
     } catch (err: any) {
       lastError = err;

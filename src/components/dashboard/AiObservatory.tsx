@@ -16,7 +16,18 @@ export default function AiObservatory({ embedded = false }: { embedded?: boolean
   useEffect(() => {
     fetch("/api/dashboard/ai-observatory")
       .then((r) => r.json())
-      .then((d) => setData(d.uebersicht || null));
+      .then((d) => setData(d.uebersicht || null))
+      .catch(() =>
+        setData({
+          gesamtAufrufe: 0,
+          gesamtPromptTokens: 0,
+          gesamtCompletionTokens: 0,
+          gesamtKostenUsd: 0,
+          proModell: [],
+          providerKatalog: [],
+          letzteAufrufe: [],
+        })
+      );
   }, []);
 
   return (
