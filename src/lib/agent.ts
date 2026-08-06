@@ -1,5 +1,7 @@
 import Groq from "groq-sdk";
 import { v4 as uuidv4 } from "uuid";
+import { inferCapability } from "./agent-capabilities";
+import { completeAgentRun, createAgentRun, type AgentRunStep } from "./supabase";
 import {
   Gebaeude,
   Liegenschaft,
@@ -2771,6 +2773,10 @@ export interface AgentResult {
   reply: string;
   steps: { tool: string; args: Record<string, unknown>; result: unknown }[];
   createdBriefIds: string[];
+  /** Supabase-Lauf-ID, falls persistiert (Durchgang 9: Agent-Gedächtnis) */
+  runId?: string | null;
+  /** Nur bei auffälligen Läufen gefüllt (Max-Steps/Fehler) — spart LLM-Kosten bei normalen Läufen */
+  reflection?: string;
 }
 
 export async function runAgent(params: {
@@ -2780,10 +2786,15 @@ export async function runAgent(params: {
 }): Promise<AgentResult> {
   const steps: AgentResult["steps"] = [];
   const createdBriefIds: string[] = [];
+  const capabilitySteps: AgentRunStep[] = [];
 
   // Bei klarem Bereinigungsauftrag: deterministisch ausführen (zuverlässig, kein Timeout)
   const det = await tryDeterministicCleanup(params.message);
   if (det) return det;
+
+  // Agent-Gedächtnis (Durchgang 9): 1 von max. 2 Supabase-Writes für diesen Lauf.
+  // Liefert null, wenn Supabase nicht konfiguriert ist — der Agent läuft dann unverändert weiter.
+  const runId = await createAgentRun(params.message, params.path);
 
   const messages: Groq.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: AGENT_SYSTEM },
@@ -2818,10 +2829,19 @@ export async function runAgent(params: {
 
       const toolCalls = msg.tool_calls;
       if (!toolCalls || toolCalls.length === 0) {
+        const reflection = `Ziel ohne Auffälligkeiten erreicht (${steps.length} Schritt(e), ${capabilitySteps.filter((s) => !s.success).length} Fehler).`;
+        await completeAgentRun(runId, {
+          status: "success",
+          steps: capabilitySteps,
+          reflection,
+          reply: msg.content || "Fertig.",
+        });
         return {
           reply: msg.content || "Fertig.",
           steps,
           createdBriefIds,
+          runId,
+          reflection,
         };
       }
 
@@ -2841,11 +2861,19 @@ export async function runAgent(params: {
         }
 
         let result: unknown;
+        const toolStartedAt = Date.now();
         try {
           result = await executeTool(call.function.name, args);
         } catch (toolErr: any) {
           result = { error: toolErr?.message || String(toolErr) };
         }
+        const toolSuccess = !(result && typeof result === "object" && "error" in (result as Record<string, unknown>));
+        capabilitySteps.push({
+          tool: call.function.name,
+          capability: inferCapability(call.function.name),
+          success: toolSuccess,
+          durationMs: Date.now() - toolStartedAt,
+        });
         steps.push({ tool: call.function.name, args, result });
 
         if (
@@ -2871,13 +2899,37 @@ export async function runAgent(params: {
       }
     }
 
+    const reflection = await generateReflection(
+      params.message,
+      capabilitySteps,
+      "Der Agent hat die maximale Anzahl an Schritten erreicht, ohne selbst ein Ende zu finden."
+    );
+    await completeAgentRun(runId, {
+      status: "max_steps_reached",
+      steps: capabilitySteps,
+      reflection,
+    });
     return {
       reply:
         "Der Agent hat die maximale Anzahl interner Schritte erreicht. Bitte prüfe die bisher erstellten Dokumente unter Schriftverkehr oder formuliere den Auftrag enger.",
       steps,
       createdBriefIds,
+      runId,
+      reflection,
     };
   } catch (e: any) {
+    const reflection = await generateReflection(
+      params.message,
+      capabilitySteps,
+      `Der Agent-Loop ist mit einem Fehler abgebrochen: ${e?.message || String(e)}`
+    );
+    await completeAgentRun(runId, {
+      status: "error",
+      steps: capabilitySteps,
+      reflection,
+      reply: e?.message,
+    });
+
     const cleanupFallback = await tryDeterministicCleanup(params.message);
     if (cleanupFallback) {
       return {
@@ -2886,6 +2938,8 @@ export async function runAgent(params: {
           (e?.message ? `\n\n(Hinweis: LLM-Agent-Loop abgebrochen: ${e.message})` : ""),
         steps: cleanupFallback.steps,
         createdBriefIds: [],
+        runId,
+        reflection,
       };
     }
     // Fallback: deterministische Mahnungs-Erstellung ohne Tool-Calling
@@ -2899,9 +2953,44 @@ export async function runAgent(params: {
             : ""),
         steps: fallback.steps,
         createdBriefIds: fallback.createdBriefIds,
+        runId,
+        reflection,
       };
     }
     throw e;
+  }
+}
+
+/**
+ * Reflection (Durchgang 9) — bewusst NUR für auffällige Läufe (Max-Steps,
+ * Fehler) aufgerufen, nicht für jeden erfolgreichen Lauf: ein zusätzlicher
+ * LLM-Call kostet Tokens, und bei normalen Läufen bringt eine Reflexion
+ * wenig zusätzliche Erkenntnis. Bei Problemen dagegen ist sie günstig
+ * (kurzer Prompt, kleines Token-Limit) und wertvoll für Audit/Debugging.
+ * Schlägt der Call fehl, gibt es einen deterministischen Fallback-Text statt
+ * eines Absturzes.
+ */
+async function generateReflection(goal: string, steps: AgentRunStep[], problem: string): Promise<string> {
+  const toolListe = steps.map((s) => `${s.tool}${s.success ? "" : " (Fehler)"}`).join(", ") || "keine";
+  try {
+    const completion = await createChatCompletion({
+      max_completion_tokens: 150,
+      temperature: 0,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Du bewertest kurz einen fehlgeschlagenen Agenten-Lauf. Maximal 2 Sätze auf Deutsch: was ist vermutlich passiert, und was sollte der Nutzer als Nächstes tun. Keine Entschuldigungen, keine Füllwörter.",
+        },
+        {
+          role: "user",
+          content: `Ziel: ${goal}\nProblem: ${problem}\nAusgeführte Tools: ${toolListe}`,
+        },
+      ],
+    });
+    return completion.choices[0]?.message?.content?.trim() || problem;
+  } catch {
+    return `${problem} (ausgeführte Tools: ${toolListe})`;
   }
 }
 

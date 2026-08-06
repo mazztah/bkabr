@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useStore } from "@/lib/store";
 import { AgentHinweis, AgentSchedule, AgentScheduleRecurrence } from "@/lib/types";
+import type { AgentRunRecord } from "@/lib/supabase";
 import { cn, formatDate } from "@/lib/utils";
 import KpiInfo from "@/components/KpiInfo";
 
@@ -168,6 +169,62 @@ export default function LlmControlCenter({ embedded = false }: { embedded?: bool
           )}
         </div>
       </div>
+
+      <AgentMemoryPanel />
+    </div>
+  );
+}
+
+function AgentMemoryPanel() {
+  const [data, setData] = useState<{ konfiguriert: boolean; laeufe: AgentRunRecord[] } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/dashboard/agent-runs")
+      .then((r) => r.json())
+      .then(setData);
+  }, []);
+
+  if (!data) return null;
+
+  return (
+    <div className="border-t border-border p-3">
+      <div className="mb-2 text-xs font-semibold text-muted-foreground">
+        🗂️ Agent-Gedächtnis {data.konfiguriert ? "(Supabase)" : ""}
+      </div>
+      {!data.konfiguriert ? (
+        <p className="text-xs text-muted-foreground">
+          Supabase nicht konfiguriert — der Agent läuft normal, aber ohne Langzeitgedächtnis über
+          einzelne Chat-Turns hinaus. Einrichtung: <code className="rounded bg-muted px-1">supabase/schema.sql</code>{" "}
+          ausführen und <code className="rounded bg-muted px-1">SUPABASE_URL</code> /{" "}
+          <code className="rounded bg-muted px-1">SUPABASE_SERVICE_ROLE_KEY</code> setzen.
+        </p>
+      ) : data.laeufe.length === 0 ? (
+        <p className="text-xs text-muted-foreground">Noch keine protokollierten Agent-Läufe.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {data.laeufe.map((lauf) => (
+            <div key={lauf.id} className="rounded-lg border border-border p-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate font-medium">{lauf.goal}</span>
+                <span
+                  className={cn(
+                    "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                    lauf.status === "success"
+                      ? "bg-[var(--success-bg)] text-[var(--success)]"
+                      : "bg-[var(--destructive)]/10 text-[var(--destructive)]"
+                  )}
+                >
+                  {lauf.status}
+                </span>
+              </div>
+              <div className="mt-0.5 text-[10px] text-muted-foreground">
+                {lauf.steps.length} Schritt(e) · {formatDate(lauf.createdAt)}
+              </div>
+              {lauf.reflection && <div className="mt-1 text-[10px] italic text-muted-foreground">{lauf.reflection}</div>}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
