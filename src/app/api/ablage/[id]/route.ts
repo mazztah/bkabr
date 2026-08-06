@@ -13,6 +13,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (body.zugeordnetAn !== undefined) patch.zugeordnetAn = body.zugeordnetAn;
   if (body.erkannterTyp !== undefined) patch.erkannterTyp = body.erkannterTyp;
   if (body.konfidenz !== undefined) patch.konfidenz = body.konfidenz;
+  if (body.dateiName !== undefined && String(body.dateiName).trim()) {
+    patch.dateiName = String(body.dateiName).trim();
+  }
 
   const aktualisiert = await ablageDb.update(id, patch as any);
 
@@ -24,6 +27,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     );
   } else if (body.status === "verworfen") {
     await logEvent("info", `„${bestehend.dateiName}" in der Ablage verworfen.`, { art: "Ablage", id });
+  } else if (patch.dateiName && patch.dateiName !== bestehend.dateiName) {
+    await logEvent(
+      "aenderung",
+      `„${bestehend.dateiName}" umbenannt in „${patch.dateiName}".`,
+      { art: "Ablage", id }
+    );
   }
 
   return NextResponse.json({ ablage: aktualisiert });

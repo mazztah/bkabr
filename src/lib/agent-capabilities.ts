@@ -82,7 +82,7 @@ export function inferCapability(toolName: string): string {
  * heute etwas an der bewährten Logik zu verändern.
  */
 const HOHES_RISIKO = /^(delete_|merge_|beende_|execute_safe_cleanup|buchung_stornieren)/;
-const MITTLERES_RISIKO = /^(update_|reassign_|create_briefe_batch|buchung_erstellen|apply_pruef_befund|mark_befund_status|create_abrechnungskreis)/;
+const MITTLERES_RISIKO = /^(update_|reassign_|create_|buchung_erstellen|apply_pruef_befund|mark_befund_status|rename_|set_ablage)/;
 
 export function inferRisk(toolName: string): "low" | "medium" | "high" {
   if (HOHES_RISIKO.test(toolName)) return "high";
