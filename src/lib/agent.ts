@@ -1,6 +1,6 @@
 import Groq from "groq-sdk";
 import { v4 as uuidv4 } from "uuid";
-import { inferCapability } from "./agent-capabilities";
+import { inferCapability, inferRisk } from "./agent-capabilities";
 import { completeAgentRun, createAgentRun, type AgentRunStep } from "./supabase";
 import {
   Gebaeude,
@@ -2779,6 +2779,44 @@ export interface AgentResult {
   reflection?: string;
 }
 
+/**
+ * Löst die aktuelle App-Seite in einen kompakten, faktenbasierten
+ * Kontextblock auf (Durchgang 10: Kontext-Injection). Aktuell unterstützt:
+ * `/liegenschaften?select=<id>` → Kurzübersicht der ausgewählten Liegenschaft.
+ * Liefert null, wenn kein bekanntes Muster erkannt wird oder die Liegenschaft
+ * nicht gefunden wird — der Agent fällt dann einfach auf seine Tools zurück,
+ * wie zuvor. Rein additiv, kein Ersatz für list_*-Tools bei Bedarf.
+ */
+async function buildSeitenKontext(path?: string): Promise<string | null> {
+  if (!path) return null;
+  const [pathname, query] = path.split("?");
+  if (!query || !pathname.startsWith("/liegenschaften")) return null;
+
+  const liegenschaftId = new URLSearchParams(query).get("select");
+  if (!liegenschaftId) return null;
+
+  try {
+    const liegenschaft = await liegenschaftenDb.get(liegenschaftId);
+    if (!liegenschaft) return null;
+
+    const gebaeude = await gebaeudeDb.list({ liegenschaftId });
+    const gebaeudeIds = new Set(gebaeude.map((g) => g.id));
+    const [alleWohnungen, alleMietvertraege] = await Promise.all([wohnungenDb.list(), mietvertraegeDb.list()]);
+    const wohnungen = alleWohnungen.filter((w) => gebaeudeIds.has(w.gebaeudeId));
+    const wohnungIds = new Set(wohnungen.map((w) => w.id));
+    const aktiveMietvertraege = alleMietvertraege.filter((mv) => wohnungIds.has(mv.wohnungId) && mv.mieterId);
+
+    return [
+      `[Kontext: Der Nutzer hat gerade "${liegenschaft.name}" (ID ${liegenschaft.id}) ausgewählt.]`,
+      `Adresse: ${liegenschaft.strasse} ${liegenschaft.hausnummer}, ${liegenschaft.plz} ${liegenschaft.ort}`,
+      `Gebäude: ${gebaeude.length} · Wohnungen: ${wohnungen.length} · Mietverträge mit Mieter: ${aktiveMietvertraege.length}`,
+      "Nutze diesen Kontext, bevor du list_liegenschaften/list_wohnungen erneut aufrufst — nur bei Bedarf für Details nachschlagen.",
+    ].join("\n");
+  } catch {
+    return null;
+  }
+}
+
 export async function runAgent(params: {
   message: string;
   history?: { role: "user" | "assistant"; content: string }[];
@@ -2796,8 +2834,14 @@ export async function runAgent(params: {
   // Liefert null, wenn Supabase nicht konfiguriert ist — der Agent läuft dann unverändert weiter.
   const runId = await createAgentRun(params.message, params.path);
 
+  // Kontext-Injection (Durchgang 10): löst z.B. "/liegenschaften?select=xyz" in eine
+  // kompakte Liegenschafts-Übersicht auf, damit der Agent nicht bei fast jeder Anfrage
+  // erst list_liegenschaften/list_wohnungen aufrufen muss — spart Tool-Calls und Tokens.
+  const seitenKontext = await buildSeitenKontext(params.path);
+
   const messages: Groq.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: AGENT_SYSTEM },
+    ...(seitenKontext ? [{ role: "system", content: seitenKontext } as Groq.Chat.Completions.ChatCompletionMessageParam] : []),
     ...(params.history || []).map(
       (h) =>
         ({
@@ -2868,11 +2912,16 @@ export async function runAgent(params: {
           result = { error: toolErr?.message || String(toolErr) };
         }
         const toolSuccess = !(result && typeof result === "object" && "error" in (result as Record<string, unknown>));
+        const awaitingConfirmation = Boolean(
+          result && typeof result === "object" && "needsConfirmation" in (result as Record<string, unknown>)
+        );
         capabilitySteps.push({
           tool: call.function.name,
           capability: inferCapability(call.function.name),
+          risk: inferRisk(call.function.name),
           success: toolSuccess,
           durationMs: Date.now() - toolStartedAt,
+          awaitingConfirmation,
         });
         steps.push({ tool: call.function.name, args, result });
 

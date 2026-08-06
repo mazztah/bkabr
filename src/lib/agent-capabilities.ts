@@ -69,3 +69,23 @@ export function inferCapability(toolName: string): string {
   }
   return `${domaene}.${aktion}`;
 }
+
+/**
+ * Risiko-Einstufung für das Decision/Policy-Audit (Durchgang 10, Kapitel 9
+ * aus dem Brainstorming: "jede Entscheidung speichert Ziel, Risiken,
+ * Alternativen"). Bewusst additiv und rein beobachtend — ersetzt NICHT die
+ * bestehenden 14 einzelnen `user_confirmed`-Prüfungen in den jeweiligen
+ * Tool-Handlern (deren kontextspezifische Vorschau-Texte wären beim
+ * Zentralisieren ein hohes Risiko für Regressionen). Stattdessen wird jeder
+ * Aufruf zusätzlich mit seinem Risiko getaggt und im Agent-Gedächtnis
+ * protokolliert — die Grundlage für eine spätere echte Policy-Engine, ohne
+ * heute etwas an der bewährten Logik zu verändern.
+ */
+const HOHES_RISIKO = /^(delete_|merge_|beende_|execute_safe_cleanup|buchung_stornieren)/;
+const MITTLERES_RISIKO = /^(update_|reassign_|create_briefe_batch|buchung_erstellen|apply_pruef_befund|mark_befund_status|create_abrechnungskreis)/;
+
+export function inferRisk(toolName: string): "low" | "medium" | "high" {
+  if (HOHES_RISIKO.test(toolName)) return "high";
+  if (MITTLERES_RISIKO.test(toolName)) return "medium";
+  return "low";
+}

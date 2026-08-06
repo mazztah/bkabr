@@ -52,6 +52,10 @@ export interface AgentRunStep {
   capability: string;
   success: boolean;
   durationMs: number;
+  /** Risikoeinstufung des Tools (Decision/Policy-Audit, Durchgang 10) */
+  risk: "low" | "medium" | "high";
+  /** true = Tool wurde aufgerufen, hat aber wegen fehlender user_confirmed nur einen Vorschlag zurückgegeben */
+  awaitingConfirmation?: boolean;
 }
 
 export interface AgentRunRecord {

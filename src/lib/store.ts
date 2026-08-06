@@ -274,7 +274,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
     set((s) => ({ chatHistory: [...s.chatHistory, userMsg], chatSending: true }));
 
-    const path = typeof window !== "undefined" ? window.location.pathname : "/";
+    const path = typeof window !== "undefined" ? window.location.pathname + window.location.search : "/";
     const history = get()
       .chatHistory.slice(-10)
       .map((m) => ({ role: m.role, content: m.content }));
