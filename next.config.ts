@@ -17,7 +17,7 @@ const nextConfig: NextConfig = {
   // webpack in das Server-Bundle einbündelt, werden diese Pfade falsch
   // aufgelöst. Als "external" markiert, bleiben sie normale Node-Requires,
   // die zur Laufzeit korrekt über node_modules aufgelöst werden.
-  serverExternalPackages: ["tesseract.js", "tesseract.js-core", "pdf-parse"],
+  serverExternalPackages: ["tesseract.js", "tesseract.js-core", "pdf-parse", "nats"],
 };
 
 export default nextConfig;
