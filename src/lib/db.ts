@@ -19,6 +19,7 @@ import {
   KalenderEreignis,
   TeamNachricht,
   AgentHinweis,
+  AgentAuditEintrag,
   DashboardAktivitaetVerlaufPunkt,
   DashboardBuchungsVerlaufPunkt,
   DashboardPruefVerlaufPunkt,
@@ -31,14 +32,22 @@ import {
   Liegenschaft,
   Mieter,
   Mietvertrag,
+  ModelCatalogEntry,
+  ObservabilityOverview,
   PmVertrag,
   PruefLauf,
+  RateLimitEvent,
   SchriftverkehrDokument,
   SystemLogEintrag,
   SystemLogTyp,
   Wohnung,
 } from "./types";
 import { uid } from "./utils";
+import {
+  buildLedWall,
+  getStaticModelCatalog,
+  isFunModeEnabled,
+} from "./llm-observability";
 
 // DATA_DIR kann per ENV überschrieben werden (z.B. für ein Fly.io Volume unter /data)
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
@@ -66,6 +75,15 @@ interface DbShape {
   kalenderEreignisse: KalenderEreignis[];
   teamNachrichten: TeamNachricht[];
   counters: Record<string, number>;
+  // ————— Observability / LLM Mission Control —————
+  rateLimitEvents: RateLimitEvent[];
+  /** Laufzeit-Health je Modell-Katalog-ID (Ping-Ergebnisse, Rate-Limits, Free-Tier-Überschreitungen) */
+  modelHealth: Record<string, ModelCatalogEntry["health"]>;
+  agentAudit: AgentAuditEintrag[];
+  observabilityMeta: {
+    funMode: boolean;
+    lastMonthlyUpdateAt?: string;
+  };
 }
 
 let cache: DbShape | null = null;
@@ -94,10 +112,14 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     buchungen: db.buchungen || [],
     konten: db.konten || [],
     abrechnungskreise: db.abrechnungskreise || [],
-    aiUsageLog: db.aiUsageLog || [],
+aiUsageLog: db.aiUsageLog || [],
     kalenderEreignisse: db.kalenderEreignisse || [],
     teamNachrichten: db.teamNachrichten || [],
     counters: db.counters || {},
+    rateLimitEvents: db.rateLimitEvents || [],
+    modelHealth: db.modelHealth || {},
+    agentAudit: db.agentAudit || [],
+    observabilityMeta: db.observabilityMeta || { funMode: isFunModeEnabled() },
   };
 }
 
@@ -1247,5 +1269,265 @@ export async function getAbgeleiteteKalenderEreignisse(): Promise<AbgeleitetesKa
     }
   }
 
-  return ereignisse;
+return ereignisse;
+}
+
+// ============================================================
+// Observability / LLM Mission Control (Super Spielekind-Agent)
+// ============================================================
+
+/**
+ * Protokolliert ein Rate-Limit-Event (aus dem Log-Parser oder aus
+ * createChatCompletion-Fehlern). Bewusst getrennt von aiUsageLog,
+ * da Rate-Limits häufiger und kürzer sind.
+ */
+export async function recordRateLimitEvent(event: RateLimitEvent): Promise<void> {
+  const db = await readDb();
+  db.rateLimitEvents = [event, ...db.rateLimitEvents].slice(0, 500);
+  await writeDb(db);
+}
+
+/**
+ * Aktualisiert den Health-Status eines Modells im Katalog.
+ * Modell-Health wird persistent gehalten, damit Pings über Server-Neustarts
+ * hinweg erhalten bleiben.
+ */
+export async function updateModelHealth(
+  modelId: string,
+  patch: Partial<ModelCatalogEntry["health"]>
+): Promise<void> {
+  const db = await readDb();
+  const current = db.modelHealth[modelId] || {
+    status: "unknown" as const,
+    freeTierExceededCount: 0,
+    rateLimitCount: 0,
+    totalCalls: 0,
+    successCalls: 0,
+  };
+  db.modelHealth[modelId] = { ...current, ...patch };
+  await writeDb(db);
+}
+
+/**
+ * Protokolliert eine Agent-Aktion im Audit-Log.
+ * Agent-Aktionen sind: Ping, Monthly-Update, Rate-Limit-Detection,
+ * Plausibilitäts-Check, Fun-Mode-Wechsel, etc.
+ */
+export async function recordAgentAudit(
+  aktion: string,
+  detail: string,
+  ergebnis: AgentAuditEintrag["ergebnis"],
+  kontext?: Record<string, unknown>
+): Promise<AgentAuditEintrag> {
+  const db = await readDb();
+  const eintrag: AgentAuditEintrag = {
+    id: uid(),
+    zeitpunkt: new Date().toISOString(),
+    aktion,
+    detail,
+    ergebnis,
+    kontext,
+  };
+  db.agentAudit = [eintrag, ...db.agentAudit].slice(0, 500);
+  await writeDb(db);
+  return eintrag;
+}
+
+/**
+ * Führt einen Health-Ping für ein Katalog-Modell durch und aktualisiert
+ * dessen Health-Status. Wird regelmäßig vom Agent-Scheduler aufgerufen
+ * (alle 30 min für Groq, alle 2h für andere Provider) sowie manuell
+ * über das Dashboard.
+ */
+export async function pingModel(modelId: string): Promise<{
+  ok: boolean;
+  status: "green" | "gray";
+  durationMs: number;
+}> {
+  const catalog = getStaticModelCatalog();
+  const entry = catalog.find((m) => m.id === modelId);
+  if (!entry) {
+    await recordAgentAudit("ping", `Modell ${modelId} nicht im Katalog gefunden`, "fehler");
+    return { ok: false, status: "gray", durationMs: 0 };
+  }
+
+  // API-Key je Provider ermitteln
+  let apiKey: string | undefined;
+  let accountId: string | undefined;
+
+  if (entry.provider === "groq") apiKey = process.env.GROQ_API_KEY;
+  else if (entry.provider === "cerebras") apiKey = process.env.CEREBRAS_API_KEY;
+  else if (entry.provider === "cloudflare") {
+    apiKey = process.env.CLOUDFLARE_API_TOKEN || process.env.CLOUDFLARE_API_KEY;
+    accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  } else if (entry.provider === "nvidia") apiKey = process.env.NVIDIA_API_KEY;
+
+  if (!apiKey && entry.provider !== "groq") {
+    // Kein API-Key = kein Ping möglich = gray
+    await updateModelHealth(modelId, { status: "gray", lastPingAt: new Date().toISOString() });
+    await recordAgentAudit("ping", `Modell ${entry.label}: kein API-Key → gray`, "ok", { modelId, provider: entry.provider });
+    return { ok: false, status: "gray", durationMs: 0 };
+  }
+
+  const result = await pingProviderModel({
+    provider: entry.provider,
+    apiModel: entry.apiModel,
+    apiKey,
+    accountId,
+  });
+
+  await updateModelHealth(modelId, {
+    status: result.status,
+    lastPingAt: new Date().toISOString(),
+    pingDurationMs: result.durationMs,
+    ...(result.ok ? { lastSuccessAt: new Date().toISOString() } : {}),
+  });
+
+  await recordAgentAudit(
+    "ping",
+    `Modell ${entry.label}: ${result.status} (${result.durationMs}ms)${result.error ? ` — ${result.error}` : ""}`,
+    result.ok ? "ok" : "fehler",
+    { modelId, provider: entry.provider, durationMs: result.durationMs, error: result.error }
+  );
+
+  return { ok: result.ok, status: result.status, durationMs: result.durationMs };
+}
+
+/**
+ * Führt das monatliche Modell-Update durch:
+ * 1. Pingt alle Modelle, die API-Keys haben
+ * 2. Aktualisiert Health-Status
+ * 3. Setzt lastMonthlyUpdateAt
+ * 4. Schreibt Audit-Eintrag
+ */
+export async function runMonthlyModelUpdate(): Promise<{
+  gepingt: number;
+  gruen: number;
+  grau: number;
+  dauerMs: number;
+}> {
+  const start = Date.now();
+  const catalog = getStaticModelCatalog();
+  let gepingt = 0;
+  let gruen = 0;
+  let grau = 0;
+
+  // Nur Modelle pingen, deren Provider API-Keys haben
+  const hasGroq = Boolean(process.env.GROQ_API_KEY);
+  const hasCerebras = Boolean(process.env.CEREBRAS_API_KEY);
+  const hasCloudflare = Boolean(
+    process.env.CLOUDFLARE_ACCOUNT_ID && (process.env.CLOUDFLARE_API_TOKEN || process.env.CLOUDFLARE_API_KEY)
+  );
+  const hasNvidia = Boolean(process.env.NVIDIA_API_KEY);
+
+  for (const entry of catalog) {
+    const shouldPing =
+      (entry.provider === "groq" && hasGroq) ||
+      (entry.provider === "cerebras" && hasCerebras) ||
+      (entry.provider === "cloudflare" && hasCloudflare) ||
+      (entry.provider === "nvidia" && hasNvidia);
+
+    if (!shouldPing) continue;
+
+    gepingt++;
+    const result = await pingModel(entry.id);
+    if (result.status === "green") gruen++;
+    else grau++;
+  }
+
+  const dauerMs = Date.now() - start;
+  const db = await readDb();
+  db.observabilityMeta.lastMonthlyUpdateAt = new Date().toISOString();
+  db.observabilityMeta.funMode = isFunModeEnabled();
+  await writeDb(db);
+
+  await recordAgentAudit(
+    "monthly_update",
+    `Monatliches Update: ${gepingt} Modelle gepingt (${gruen} grün, ${grau} grau) in ${dauerMs}ms`,
+    "ok",
+    { gepingt, gruen, grau, dauerMs }
+  );
+
+  return { gepingt, gruen, grau, dauerMs };
+}
+
+/**
+ * Baut die vollständige Observability-Übersicht zusammen:
+ * - Modell-Katalog (mit Laufzeit-Health aus db)
+ * - Letzte Rate-Limit-Events
+ * - LED-Wall
+ * - Letzte Audit-Einträge
+ * - Summary
+ */
+export async function getObservabilityOverview(): Promise<ObservabilityOverview> {
+  const db = await readDb();
+  const catalog = getStaticModelCatalog();
+
+  // Laufzeit-Health aus db einspielen
+  const modelCatalog = catalog.map((entry) => {
+    const runtimeHealth = db.modelHealth[entry.id];
+    if (runtimeHealth) {
+      return { ...entry, health: { ...entry.health, ...runtimeHealth } };
+    }
+    return entry;
+  });
+
+  // Provider-Health in die Health-Werte einfließen lassen aus konfigurierten Keys
+  const hasGroq = Boolean(process.env.GROQ_API_KEY);
+  const hasCerebras = Boolean(process.env.CEREBRAS_API_KEY);
+  const hasCloudflare = Boolean(
+    process.env.CLOUDFLARE_ACCOUNT_ID && (process.env.CLOUDFLARE_API_TOKEN || process.env.CLOUDFLARE_API_KEY)
+  );
+  const hasNvidia = Boolean(process.env.NVIDIA_API_KEY);
+
+  // Falls nie gepingt, setze zumindest initialen Status basierend auf API-Keys
+  for (const entry of modelCatalog) {
+    if (entry.health.status !== "unknown") continue;
+    const hasKey =
+      (entry.provider === "groq" && hasGroq) ||
+      (entry.provider === "cerebras" && hasCerebras) ||
+      (entry.provider === "cloudflare" && hasCloudflare) ||
+      (entry.provider === "nvidia" && hasNvidia);
+    entry.health.status = hasKey ? "gray" : "gray"; // unknown mit key = gray (noch nicht gepingt)
+  }
+
+  const recentRateLimits = db.rateLimitEvents.slice(0, 50);
+
+  // LED-Wall bauen
+  const ledWall = buildLedWall({
+    hasDocuments: db.ablage.length > 0,
+    hasPruefLaeufe: db.pruefLaeufe.length > 0,
+    rateLimitCount: db.rateLimitEvents.length,
+  });
+
+  const recentAudit = db.agentAudit.slice(0, 30);
+
+  const greenModels = modelCatalog.filter((m) => m.health.status === "green").length;
+  const grayModels = modelCatalog.filter((m) => m.health.status === "gray").length;
+
+  const summary = {
+    totalModels: modelCatalog.length,
+    greenModels,
+    grayModels,
+    totalRateLimits: db.rateLimitEvents.length,
+    totalAudits: db.agentAudit.length,
+    lastAgentRun: db.observabilityMeta.lastMonthlyUpdateAt,
+    funMode: db.observabilityMeta.funMode,
+  };
+
+  return { modelCatalog, recentRateLimits, ledWall, recentAudit, summary };
+}
+
+/**
+ * Setzt den Fun-Mode (Spaßmodus) um – persistiert in der DB.
+ */
+export async function setFunMode(enabled: boolean): Promise<void> {
+  const db = await readDb();
+  db.observabilityMeta.funMode = enabled;
+  await writeDb(db);
+  await recordAgentAudit(
+    "fun_mode",
+    `Spaßmodus ${enabled ? "eingeschaltet" : "ausgeschaltet"}`,
+    "ok"
+  );
 }

@@ -1357,3 +1357,176 @@ export interface TeamNachricht {
   createdAt: string;
   updatedAt: string;
 }
+
+// ============================================================
+// Observability / LLM Mission Control (Super Spielekind-Agent)
+// ============================================================
+
+/** Rate-Limit-Kategorie für Log-Parsing und Dashboard */
+export type RateLimitKategorie =
+  | "TPM"   // Tokens per Minute
+  | "TPD"   // Tokens per Day
+  | "RPM"   // Requests per Minute
+  | "RPD"   // Requests per Day
+  | "ZPM"   // (Reserve)
+  | "ZPD";  // (Reserve)
+
+export interface RateLimitEvent {
+  id: string;
+  zeitpunkt: string;
+  provider: string;
+  model: string;
+  kategorie: RateLimitKategorie;
+  limit: number;
+  used: number;
+  requested: number;
+  warteSekunden: number;
+  fallbackTo: string;
+  fallbackStufe: number;
+  gesamteKette: number;
+}
+
+/** Eintrag im Agent-Audit-Log */
+export interface AgentAuditEintrag {
+  id: string;
+  zeitpunkt: string;
+  aktion: string;
+  detail: string;
+  ergebnis: "ok" | "fehler" | "plausibel" | "unplausibel";
+  kontext?: Record<string, unknown>;
+}
+
+/** Provider-Typ für das erweiterte Observability */
+export type ObservableProvider =
+  | "groq"
+  | "cerebras"
+  | "cloudflare"
+  | "nvidia"
+  | "openai"
+  | "anthropic"
+  | "google"
+  | "mistral"
+  | "together"
+  | "openrouter"
+  | "deepinfra"
+  | "fireworks";
+
+/** Modell-Katalog-Eintrag für das LLM Observatory */
+export interface ModelCatalogEntry {
+  id: string;
+  provider: string;
+  model: string;
+  label: string;
+  /** vollständiger API-Bezeichner */
+  apiModel: string;
+  /** Provider-Präfix in der Fallback-Kette */
+  providerPrefix: string;
+  /** Fallback-Position (1-basiert) */
+  fallbackPriority: number;
+  /** Anbieterfirma */
+  company: string;
+  /** Erscheinungsdatum (bekannt) */
+  released?: string;
+  /** Letztes bekanntes Update */
+  lastUpdate?: string;
+  /** Context Window (Tokens) */
+  contextLength: number;
+  /** Maximale Output-Tokens */
+  maxOutput?: number;
+  /** Unterstützte Features */
+  capabilities: {
+    vision: boolean;
+    reasoning: boolean;
+    functionCalling: boolean;
+    jsonMode: boolean;
+    structuredOutput: boolean;
+    streaming: boolean;
+    multilingual: boolean;
+    toolUse: boolean;
+    embedding: boolean;
+  };
+  /** Links zur Dokumentation */
+  links: {
+    api?: string;
+    docs?: string;
+    playground?: string;
+    github?: string;
+    changelog?: string;
+    pricing?: string;
+  };
+  /** Gesundheitsstatus */
+  health: {
+    status: "green" | "gray" | "unknown";
+    lastPingAt?: string;
+    lastSuccessAt?: string;
+    pingDurationMs?: number;
+    errorRate?: number;
+    /** Wie oft das Free-Tier-Limit überschritten wurde */
+    freeTierExceededCount: number;
+    rateLimitCount: number;
+    totalCalls: number;
+    successCalls: number;
+  };
+  /** Free-Tier-Info */
+  freeTier?: {
+    tpdLimit?: number;
+    tpmLimit?: number;
+    rpdLimit?: number;
+    rpmLimit?: number;
+    expiresAt?: string;
+    dailyUsed: number;
+  };
+  /** Preis (USD pro 1M Tokens) – null = kostenlos */
+  pricing?: {
+    inputPerMillion: number;
+    outputPerMillion: number;
+    cachingDiscount?: number;
+  };
+  /** Der Agent hat dieses Modell zuletzt aktualisiert */
+  lastAgentUpdate?: string;
+  /** Quelle der Daten (auto-fetched / manual) */
+  dataSource: "agent" | "manual" | "builtin";
+}
+
+/** LED-Typ für die LED-Wall */
+export type LedTyp =
+  | "fly" | "sqlite" | "supabase" | "cloudflare" | "groq" | "cerebras" | "nvidia" | "github" | "scheduler"
+  | "cron" | "telegram" | "memory" | "agent" | "queue" | "background"
+  | "backup" | "search" | "sse" | "websocket" | "push" | "mail"
+  | "dns" | "https" | "ssl" | "storage" | "cache" | "ollama"
+  | "local" | "api_keys" | "billing"
+  // Hausverwaltungs-LEDs
+  | "dokumente" | "ocr_queue" | "bk_bearbeitung" | "eigentuemerwechsel"
+  | "mieterwechsel" | "kunden_rueckfragen" | "export" | "mahnlauf"
+  | "wiedervorlagen" | "ki_agent" | "db_backup" | "sync_extern";
+
+export interface LedEntry {
+  id: LedTyp;
+  label: string;
+  status: "green" | "yellow" | "red" | "gray";
+  blinker?: boolean;
+  tooltip?: string;
+  href?: string;
+}
+
+/** Observability-Gesamtübersicht (für API) */
+export interface ObservabilityOverview {
+  /** Alle Modelle im Katalog */
+  modelCatalog: ModelCatalogEntry[];
+  /** Rate-Limit-Events (letzte 50) */
+  recentRateLimits: RateLimitEvent[];
+  /** LED-Wall-Status */
+  ledWall: LedEntry[];
+  /** Agent-Audit (letzte 30) */
+  recentAudit: AgentAuditEintrag[];
+  /** Zusammenfassung */
+  summary: {
+    totalModels: number;
+    greenModels: number;
+    grayModels: number;
+    totalRateLimits: number;
+    totalAudits: number;
+    lastAgentRun?: string;
+    funMode: boolean;
+  };
+}

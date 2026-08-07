@@ -23,4 +23,9 @@ export async function register() {
   process.on("unhandledRejection", (reason) => {
     console.error("[unhandledRejection] Prozess bleibt aktiv:", reason);
   });
+
+  // Observability / LLM Mission Control: täglichen Health-Ping starten
+  // und monatlichen Modell-Update-Job einplanen.
+  const { startObservabilityScheduler } = await import("./lib/observability-scheduler");
+  startObservabilityScheduler();
 }
