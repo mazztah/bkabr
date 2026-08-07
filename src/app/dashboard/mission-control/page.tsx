@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { cn, fetchJson, formatDate } from "@/lib/utils";
 import type {
   LedEntry,
@@ -24,6 +24,13 @@ export default function MissionControlPage() {
   const [fehler, setFehler] = useState<string | null>(null);
   const [funMode, setFunMode] = useState(false);
   const [logs, setLogs] = useState<{ id: string; zeitpunkt: string; text: string; typ: string }[]>([]);
+  const [flyLogs, setFlyLogs] = useState<
+    { id: string; zeitpunkt: string; text: string; typ: string; machine?: string; region?: string }[]
+  >([]);
+  const [flyLogStatus, setFlyLogStatus] = useState<{ active: boolean; error: string | null }>({
+    active: false,
+    error: null,
+  });
   const [funComments, setFunComments] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [aktiverTab, setAktiverTab] = useState<
@@ -53,7 +60,7 @@ export default function MissionControlPage() {
     const es = new EventSource("/api/dashboard/log-stream");
 // Nimm das "log"-Feld robust aus dem SSE-Payload, um doppelte
     // Verschachtelung (array-in-object) defensiv zu behandeln.
-    const extractLog = (data: Record<string, unknown>): { id: string; zeitpunkt: string; text: string; typ: string }[] => {
+const extractLog = (data: Record<string, unknown>): { id: string; zeitpunkt: string; text: string; typ: string }[] => {
       const raw = data.log;
       if (Array.isArray(raw)) return raw as { id: string; zeitpunkt: string; text: string; typ: string }[];
       // Falls verschachtelt: { log: { log: [...] } }
@@ -62,30 +69,51 @@ export default function MissionControlPage() {
       }
       return [];
     };
+    // Nimm das "flyLog"-Feld (Fly.io-NATS-Logs) robust aus dem SSE-Payload.
+    const extractFlyLog = (
+      data: Record<string, unknown>
+    ): { id: string; zeitpunkt: string; text: string; typ: string; machine?: string; region?: string }[] => {
+      const raw = data.flyLog;
+      if (Array.isArray(raw)) {
+        return raw as { id: string; zeitpunkt: string; text: string; typ: string; machine?: string; region?: string }[];
+      }
+      return [];
+    };
+    // Setzt Verbindungsstatus (active/error) der Fly-NATS-Verbindung.
+    const applyFlyStatus = (data: Record<string, unknown>) => {
+      const st = data.flyLogStatus;
+      if (st && typeof st === "object") {
+        setFlyLogStatus({
+          active: Boolean((st as { active?: boolean }).active),
+          error: (st as { error?: string | null }).error ?? null,
+        });
+      }
+    };
+    const applyStream = (data: Record<string, unknown>) => {
+      const extracted = extractLog(data);
+      if (extracted.length > 0) setLogs(extracted);
+      const extractedFly = extractFlyLog(data);
+      if (extractedFly.length > 0) setFlyLogs(extractedFly);
+      applyFlyStatus(data);
+      if (data.overview) setOverview(data.overview);
+    };
     es.onmessage = (ev) => {
       try {
-        const data = JSON.parse(ev.data);
-        const extracted = extractLog(data);
-        if (extracted.length > 0) setLogs(extracted);
-        if (data.overview) setOverview(data.overview);
+        applyStream(JSON.parse(ev.data));
       } catch {
         /* ignorieren */
       }
     };
     es.addEventListener("init", (ev) => {
       try {
-        const data = JSON.parse((ev as MessageEvent).data);
-        const extracted = extractLog(data);
-        if (extracted.length > 0) setLogs(extracted);
+        applyStream(JSON.parse((ev as MessageEvent).data));
       } catch {
         /* ignorieren */
       }
     });
     es.addEventListener("log", (ev) => {
       try {
-        const data = JSON.parse((ev as MessageEvent).data);
-        const extracted = extractLog(data);
-        if (extracted.length > 0) setLogs(extracted);
+        applyStream(JSON.parse((ev as MessageEvent).data));
       } catch {
         /* ignorieren */
       }
@@ -208,7 +236,13 @@ export default function MissionControlPage() {
       )}
 
 {aktiverTab === "logs" && (
-        <LiveLogs logs={logs} funComments={funComments} logEndRef={logEndRef} />
+        <LiveLogs
+          logs={logs}
+          flyLogs={flyLogs}
+          flyLogStatus={flyLogStatus}
+          funComments={funComments}
+          logEndRef={logEndRef}
+        />
       )}
 
       {aktiverTab === "cost" && (
@@ -318,27 +352,75 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
+type LiveLogZeile = {
+  id: string;
+  zeitpunkt: string;
+  text: string;
+  typ: string;
+  quelle: "system" | "fly";
+  machine?: string;
+  region?: string;
+};
+
 function LiveLogs({
   logs,
+  flyLogs,
+  flyLogStatus,
   funComments,
   logEndRef,
 }: {
   logs: { id: string; zeitpunkt: string; text: string; typ: string }[];
+  flyLogs: {
+    id: string;
+    zeitpunkt: string;
+    text: string;
+    typ: string;
+    machine?: string;
+    region?: string;
+  }[];
+  flyLogStatus: { active: boolean; error: string | null };
   funComments: string[];
-logEndRef: RefObject<HTMLDivElement | null>;
+  logEndRef: RefObject<HTMLDivElement | null>;
 }) {
+  // App-Logs + Fly-Logs zu einer chronologisch sortierten, gemischten Liste
+  // zusammenführen. Quelle ("system" vs "fly") wird pro Zeile als Badge angezeigt.
+  const gemischt: LiveLogZeile[] = useMemo(() => {
+    const sys: LiveLogZeile[] = logs.map((l) => ({ ...l, quelle: "system" as const }));
+    const fly: LiveLogZeile[] = flyLogs.map((f) => ({
+      ...f,
+      quelle: "fly" as const,
+    }));
+    return [...sys, ...fly].sort(
+      (a, b) => new Date(b.zeitpunkt).getTime() - new Date(a.zeitpunkt).getTime()
+    );
+  }, [logs, flyLogs]);
+
   return (
     <div>
       <div className="mb-3">
         <h2 className="text-sm font-semibold">🪵 Live-Systemlogs</h2>
         <p className="text-xs text-muted-foreground">
-          Fly.io-artiger Live-Stream (SSE) · aktualisiert alle 3 Sekunden.
+          Fly.io-artiger Live-Stream (SSE) · aktualisiert alle 3 Sekunden ·{" "}
+          {flyLogStatus.active ? (
+            <span className="text-emerald-400">🌐 Fly.io-NATS verbunden</span>
+          ) : (
+            <span className="text-white/50">🌐 Fly.io-Logs inaktiv (lokal/kein Token)</span>
+          )}
         </p>
       </div>
       <div className="rounded-lg border border-border bg-black p-3 font-mono text-[11px] leading-relaxed">
-        <div className="mb-2 text-[10px] text-white/40">
-          $ fly logs -a bkabr ← LLM Mission Control Live-Stream
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-white/40">
+          <span>$ fly logs -a bkabr ← LLM Mission Control Live-Stream</span>
+          <span className="flex items-center gap-2">
+            <span className="rounded bg-white/10 px-1.5 py-0.5 text-[9px]">📦 SYS</span>
+            <span className="rounded bg-cyan-500/20 px-1.5 py-0.5 text-[9px] text-cyan-300">✈️ FLY</span>
+          </span>
         </div>
+        {flyLogStatus.error && !flyLogStatus.active && (
+          <div className="mb-2 text-[10px] text-amber-400/80">
+            ⚠️ Fly-NATS: {flyLogStatus.error}
+          </div>
+        )}
         {funComments.length > 0 && (
           <div className="mb-2 space-y-1">
             {funComments.map((c, i) => (
@@ -348,11 +430,11 @@ logEndRef: RefObject<HTMLDivElement | null>;
             ))}
           </div>
         )}
-        {logs.length === 0 ? (
+        {gemischt.length === 0 ? (
           <p className="text-white/40">Waiting for logs…</p>
         ) : (
           <div className="max-h-[50vh] space-y-0.5 overflow-y-auto">
-            {logs.map((l) => (
+            {gemischt.map((l) => (
               <div key={l.id} className="flex gap-2">
                 <span className="shrink-0 text-white/40">
                   {new Date(l.zeitpunkt).toLocaleTimeString("de-DE", {
@@ -361,7 +443,16 @@ logEndRef: RefObject<HTMLDivElement | null>;
                     second: "2-digit",
                   })}
                 </span>
-                <span className="shrink-0 text-emerald-400">[{l.typ}]</span>
+                {l.quelle === "fly" ? (
+                  <span className="shrink-0 rounded bg-cyan-500/20 px-1 py-0.5 text-[9px] leading-none text-cyan-300">
+                    FLY
+                    {l.region ? ` ${l.region}` : ""}
+                    {l.machine ? ` ${l.machine.slice(0, 4)}` : ""}
+                  </span>
+                ) : (
+                  <span className="shrink-0 text-emerald-400/80">[SYS]</span>
+                )}
+                <span className="shrink-0 text-white/50">[{l.typ}]</span>
                 <span className="break-words text-white/90">{l.text}</span>
               </div>
             ))}

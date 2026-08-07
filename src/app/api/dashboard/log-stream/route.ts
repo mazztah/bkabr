@@ -5,10 +5,14 @@ import { getFunComments } from "@/lib/fun-mode";
  * GET /api/dashboard/log-stream
  * Server-Sent Events (SSE) für Live-Tailing des System-Logs im Stil der
  * Fly.io "Live Machine Logs". Sendet:
- *   - event: "init"   → die letzten 20 Log-Einträge
+ *   - event: "init"   → die letzten 20 Log-Einträge inkl. FLY-Logs
  *   - event: "log"    → neue System-Log-Einträge (Polling alle 3s)
  *   - event: "fun"    → humorvolle Agenten-Kommentare (Spaßmodus)
  *   - event: "ping"   → Keepalive
+ *
+ * Das Payload enthält zusätzlich:
+ *   - flyLog       → die zuletzt über den Fly-NATS-Proxy empfangenen Logs
+ *   - flyLogStatus → { active, error } für den Verbindungsstatus in der UI
  */
 export async function GET() {
   const encoder = new TextEncoder();
