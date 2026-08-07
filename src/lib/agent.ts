@@ -2,20 +2,21 @@ import Groq from "groq-sdk";
 import { v4 as uuidv4 } from "uuid";
 import { inferCapability, inferRisk } from "./agent-capabilities";
 import { completeAgentRun, createAgentRun, type AgentRunStep } from "./supabase";
+
+// Idempotenz-Schutz (Top-25 #1): In-Memory-Cache pro Prozess, reicht für
+// Single-Instance-Deploys. Bei mehreren Fly.io-Maschinen kein Schutz über
+// Instanzen hinweg — dafür bräuchte es einen shared store (z.B. Supabase),
+// das ist bewusst nicht Teil dieses schnellen Fixes.
+const recentToolCalls = new Map<string, { at: number; result: unknown }>();
+const IDEMPOTENZ_FENSTER_MS = 5000;
 import {
-  Abrechnung,
-  Eigentuemer,
-  EinheitTyp,
   Gebaeude,
   Liegenschaft,
   Mieter,
-  Mietvertrag,
-  PmVertrag,
   PruefBefund,
   SchriftverkehrDokument,
   Wohnung,
 } from "./types";
-import { uid } from "./utils";
 import {
   ablageDb,
   abrechnungskreiseDb,
@@ -23,7 +24,6 @@ import {
   buchungenDb,
   buchungErstellen,
   buchungStornieren,
-  createAbrechnung,
   deleteAbrechnung,
   gebaeudeDb,
   liegenschaftenDb,
@@ -873,401 +873,7 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
           grund: { type: "string" },
           user_confirmed: { type: "boolean" },
         },
-required: ["buchung_id"],
-      },
-    },
-  },
-
-  // ---- Durchgang 12: vollständige Stammdaten-/Dokument-CRUD ----
-  {
-    type: "function",
-    function: {
-      name: "list_gebaeude",
-      description: "Listet Gebäude, optional gefiltert nach liegenschaft_id oder Freitext-Query (Name).",
-      parameters: {
-        type: "object",
-        properties: {
-          liegenschaft_id: { type: "string" },
-          query: { type: "string" },
-          limit: { type: "number" },
-        },
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "update_gebaeude",
-      description: "Aktualisiert Stammdaten eines Gebäudes (name, baujahr, anzahl_einheiten, heizungsart, notizen, status).",
-      parameters: {
-        type: "object",
-        properties: {
-          gebaeude_id: { type: "string" },
-          name: { type: "string" },
-          baujahr: { type: "number" },
-          anzahl_einheiten: { type: "number" },
-          heizungsart: { type: "string" },
-          notizen: { type: "string" },
-          status: { type: "string", description: "aktiv|inaktiv" },
-        },
-        required: ["gebaeude_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "reassign_gebaeude",
-      description: "Verschiebt ein Gebäude unter eine andere Liegenschaft.",
-      parameters: {
-        type: "object",
-        properties: {
-          gebaeude_id: { type: "string" },
-          ziel_liegenschaft_id: { type: "string" },
-          ziel_liegenschaft_query: { type: "string", description: "Straße/Name falls ID unbekannt" },
-          user_confirmed: { type: "boolean" },
-        },
-        required: ["gebaeude_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "create_wohnung",
-      description: "Legt eine Wohnung/Einheit unter einem Gebäude an.",
-      parameters: {
-        type: "object",
-        properties: {
-          gebaeude_id: { type: "string" },
-          bezeichnung: { type: "string", description: "z.B. EG links" },
-          typ: { type: "string", description: "Wohnung|Gewerbe|Stellplatz|Sonstige" },
-          flaeche: { type: "number" },
-          zimmer: { type: "number" },
-          miteigentumsanteil: { type: "number" },
-          notizen: { type: "string" },
-          user_confirmed: { type: "boolean" },
-        },
-        required: ["gebaeude_id", "bezeichnung"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "reassign_wohnung",
-      description: "Verschiebt eine Wohnung in ein anderes Gebäude.",
-      parameters: {
-        type: "object",
-        properties: {
-          wohnung_id: { type: "string" },
-          ziel_gebaeude_id: { type: "string" },
-          user_confirmed: { type: "boolean" },
-        },
-        required: ["wohnung_id", "ziel_gebaeude_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "create_mieter",
-      description: "Legt einen Mieter an einer Wohnung an.",
-      parameters: {
-        type: "object",
-        properties: {
-          wohnung_id: { type: "string" },
-          name: { type: "string" },
-          email: { type: "string" },
-          telefon: { type: "string" },
-          mietbeginn: { type: "string" },
-          mietende: { type: "string" },
-          kaltmiete: { type: "number" },
-          nebenkosten_vorauszahlung: { type: "number" },
-          notizen: { type: "string" },
-          user_confirmed: { type: "boolean" },
-        },
-        required: ["wohnung_id", "name"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "create_mietvertrag",
-      description: "Legt einen Mietvertrag manuell an (ohne Datei-Upload). Verknüpft Wohnung und optional Mieter.",
-      parameters: {
-        type: "object",
-        properties: {
-          wohnung_id: { type: "string" },
-          mieter_id: { type: "string" },
-          soll_miete: { type: "number" },
-          nebenkosten_vorauszahlung: { type: "number" },
-          mietbeginn: { type: "string" },
-          mietende: { type: "string" },
-          kaution: { type: "number" },
-          flaeche: { type: "number" },
-          zimmer: { type: "number" },
-          status: { type: "string", description: "Entwurf|Aktiv|Beendet" },
-          datei_name: { type: "string", description: "Anzeigename, Standard manuell-angelegt" },
-          user_confirmed: { type: "boolean" },
-        },
-        required: ["wohnung_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "update_mietvertrag",
-      description: "Aktualisiert Mietvertrags-Stammdaten (Miete, NK, Laufzeit, Status, Fläche, …).",
-      parameters: {
-        type: "object",
-        properties: {
-          mietvertrag_id: { type: "string" },
-          soll_miete: { type: "number" },
-          nebenkosten_vorauszahlung: { type: "number" },
-          bk_vorauszahlung: { type: "number" },
-          hk_vorauszahlung: { type: "number" },
-          warmmiete: { type: "number" },
-          kaution: { type: "number" },
-          mietbeginn: { type: "string" },
-          mietende: { type: "string" },
-          flaeche: { type: "number" },
-          zimmer: { type: "number" },
-          status: { type: "string" },
-          mieter_id: { type: "string" },
-          wohnung_id: { type: "string" },
-        },
-        required: ["mietvertrag_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "list_pm_vertraege",
-      description: "Listet Property-Management-Verträge, optional nach Liegenschaft oder Query.",
-      parameters: {
-        type: "object",
-        properties: {
-          liegenschaft_id: { type: "string" },
-          query: { type: "string" },
-          limit: { type: "number" },
-        },
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "create_pm_vertrag",
-      description: "Legt einen PM-Vertrag für eine Liegenschaft an (manuell, ohne Upload).",
-      parameters: {
-        type: "object",
-        properties: {
-          liegenschaft_id: { type: "string" },
-          verwalter_name: { type: "string" },
-          auftraggeber_name: { type: "string" },
-          honorar_modell: { type: "string" },
-          honorar_satz: { type: "number" },
-          leistungsumfang: { type: "string" },
-          laufzeit_beginn: { type: "string" },
-          laufzeit_ende: { type: "string" },
-          kuendigungsfrist: { type: "string" },
-          status: { type: "string", description: "Entwurf|Aktiv|Beendet" },
-          datei_name: { type: "string" },
-          user_confirmed: { type: "boolean" },
-        },
-        required: ["liegenschaft_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "update_pm_vertrag",
-      description: "Aktualisiert PM-Vertrags-Stammdaten.",
-      parameters: {
-        type: "object",
-        properties: {
-          pm_vertrag_id: { type: "string" },
-          verwalter_name: { type: "string" },
-          auftraggeber_name: { type: "string" },
-          honorar_modell: { type: "string" },
-          honorar_satz: { type: "number" },
-          leistungsumfang: { type: "string" },
-          laufzeit_beginn: { type: "string" },
-          laufzeit_ende: { type: "string" },
-          kuendigungsfrist: { type: "string" },
-          status: { type: "string" },
-          liegenschaft_id: { type: "string" },
-        },
-        required: ["pm_vertrag_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "delete_pm_vertrag",
-      description: "Löscht einen PM-Vertrag endgültig (nicht nur beenden). user_confirmed=true erforderlich.",
-      parameters: {
-        type: "object",
-        properties: {
-          pm_vertrag_id: { type: "string" },
-          user_confirmed: { type: "boolean" },
-        },
-        required: ["pm_vertrag_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "list_eigentuemer",
-      description: "Listet Eigentümer, optional nach Liegenschaft oder Namens-Query.",
-      parameters: {
-        type: "object",
-        properties: {
-          liegenschaft_id: { type: "string" },
-          query: { type: "string" },
-          limit: { type: "number" },
-        },
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "create_eigentuemer",
-      description: "Legt einen Eigentümer an einer Liegenschaft an.",
-      parameters: {
-        type: "object",
-        properties: {
-          liegenschaft_id: { type: "string" },
-          name: { type: "string" },
-          anschrift: { type: "string" },
-          email: { type: "string" },
-          telefon: { type: "string" },
-          miteigentumsanteil: { type: "number" },
-          notizen: { type: "string" },
-          user_confirmed: { type: "boolean" },
-        },
-        required: ["liegenschaft_id", "name"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "update_eigentuemer",
-      description: "Aktualisiert Eigentümer-Stammdaten (Name, Kontakt, MEA, Notizen, Liegenschaft).",
-      parameters: {
-        type: "object",
-        properties: {
-          eigentuemer_id: { type: "string" },
-          name: { type: "string" },
-          anschrift: { type: "string" },
-          email: { type: "string" },
-          telefon: { type: "string" },
-          miteigentumsanteil: { type: "number" },
-          notizen: { type: "string" },
-          liegenschaft_id: { type: "string" },
-          vollmacht_von: { type: "string" },
-          vollmacht_bis: { type: "string" },
-        },
-        required: ["eigentuemer_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "delete_eigentuemer",
-      description: "Löscht einen Eigentümer. user_confirmed=true erforderlich.",
-      parameters: {
-        type: "object",
-        properties: {
-          eigentuemer_id: { type: "string" },
-          user_confirmed: { type: "boolean" },
-        },
-        required: ["eigentuemer_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "create_abrechnung",
-      description: "Legt eine Rechnung/Abrechnung (Beleg) manuell an und ordnet sie optional einer Liegenschaft/Wohnung zu.",
-      parameters: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Bezeichnung z.B. Heizölrechnung März" },
-          adresse: { type: "string" },
-          zeitraum: { type: "string" },
-          gesamt_summe: { type: "number" },
-          objekt_typ: { type: "string", description: "Wohnung|Haus|Gewerbe" },
-          status: { type: "string", description: "Rohdaten|Validierung|Fertig" },
-          liegenschaft_id: { type: "string" },
-          gebaeude_id: { type: "string" },
-          wohnung_id: { type: "string" },
-          mieter_name: { type: "string" },
-          vermieter_name: { type: "string" },
-          user_confirmed: { type: "boolean" },
-        },
-        required: ["name", "gesamt_summe"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "reassign_abrechnung",
-      description: "Hängt eine Rechnung/Abrechnung an eine andere Liegenschaft/Gebäude/Wohnung um.",
-      parameters: {
-        type: "object",
-        properties: {
-          abrechnung_id: { type: "string" },
-          liegenschaft_id: { type: "string" },
-          gebaeude_id: { type: "string" },
-          wohnung_id: { type: "string" },
-          liegenschaft_query: { type: "string" },
-        },
-        required: ["abrechnung_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "rename_ablage_dokument",
-      description: "Benennt ein Ablage-Dokument um (nur Anzeigename dateiName, Datei auf Disk bleibt).",
-      parameters: {
-        type: "object",
-        properties: {
-          ablage_id: { type: "string" },
-          datei_name: { type: "string", description: "Aktueller Name/Teilstring zur Suche" },
-          neuer_name: { type: "string" },
-        },
-        required: ["neuer_name"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "set_ablage_status",
-      description: "Setzt den Status eines Ablage-Dokuments: neu|in_pruefung|zugeordnet|verworfen.",
-      parameters: {
-        type: "object",
-        properties: {
-          ablage_id: { type: "string" },
-          datei_name: { type: "string" },
-          status: { type: "string" },
-        },
-        required: ["status"],
+        required: ["buchung_id"],
       },
     },
   },
@@ -1275,7 +881,7 @@ required: ["buchung_id"],
     type: "function",
     function: {
       name: "create_liegenschaft",
-      description: "Legt eine neue Liegenschaft an (Name, Adresse, PLZ, Ort, Flurstück, Notizen).",
+      description: "Legt eine neue Liegenschaft an. user_confirmed=true erforderlich.",
       parameters: {
         type: "object",
         properties: {
@@ -1288,11 +894,141 @@ required: ["buchung_id"],
           notizen: { type: "string" },
           user_confirmed: { type: "boolean" },
         },
-        required: ["name"],
+        required: ["name", "strasse", "hausnummer", "plz", "ort"],
       },
     },
   },
-
+  {
+    type: "function",
+    function: {
+      name: "list_gebaeude",
+      description: "Listet Gebäude auf, optional gefiltert nach liegenschaft_id.",
+      parameters: {
+        type: "object",
+        properties: { liegenschaft_id: { type: "string" } },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_gebaeude",
+      description: "Aktualisiert Felder eines Gebäudes.",
+      parameters: {
+        type: "object",
+        properties: {
+          gebaeude_id: { type: "string" },
+          name: { type: "string" },
+          baujahr: { type: "number" },
+          anzahl_einheiten: { type: "number" },
+          heizungsart: { type: "string" },
+          notizen: { type: "string" },
+        },
+        required: ["gebaeude_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_wohnung",
+      description: "Legt eine neue Wohnung/Einheit unter einem Gebäude an. user_confirmed=true erforderlich.",
+      parameters: {
+        type: "object",
+        properties: {
+          gebaeude_id: { type: "string" },
+          bezeichnung: { type: "string", description: "z.B. '1. OG links'" },
+          typ: { type: "string", enum: ["Wohnung", "Gewerbe", "Stellplatz", "Sonstige"] },
+          flaeche: { type: "number" },
+          zimmer: { type: "number" },
+          miteigentumsanteil: { type: "number" },
+          user_confirmed: { type: "boolean" },
+        },
+        required: ["gebaeude_id", "bezeichnung"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "reassign_wohnung",
+      description: "Verschiebt eine Wohnung auf ein anderes Gebäude. user_confirmed=true erforderlich.",
+      parameters: {
+        type: "object",
+        properties: {
+          wohnung_id: { type: "string" },
+          neues_gebaeude_id: { type: "string" },
+          user_confirmed: { type: "boolean" },
+        },
+        required: ["wohnung_id", "neues_gebaeude_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_mieter",
+      description: "Legt einen neuen Mieter in einer Wohnung an. user_confirmed=true erforderlich.",
+      parameters: {
+        type: "object",
+        properties: {
+          wohnung_id: { type: "string" },
+          name: { type: "string" },
+          email: { type: "string" },
+          telefon: { type: "string" },
+          mietbeginn: { type: "string" },
+          kaltmiete: { type: "number" },
+          nebenkostenVorauszahlung: { type: "number" },
+          user_confirmed: { type: "boolean" },
+        },
+        required: ["wohnung_id", "name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_mietvertrag",
+      description:
+        "Legt manuell einen Mietvertrag-Datensatz an (ohne PDF-Upload, z.B. bei mündlicher/formloser Vereinbarung). user_confirmed=true erforderlich.",
+      parameters: {
+        type: "object",
+        properties: {
+          wohnung_id: { type: "string" },
+          mieter_id: { type: "string" },
+          soll_miete: { type: "number" },
+          nebenkosten_vorauszahlung: { type: "number" },
+          mietbeginn: { type: "string" },
+          mietende: { type: "string" },
+          kaution: { type: "number" },
+          status: { type: "string", enum: ["Entwurf", "Aktiv", "Beendet"] },
+          user_confirmed: { type: "boolean" },
+        },
+        required: ["wohnung_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_mietvertrag",
+      description: "Aktualisiert Vertragsfelder eines bestehenden Mietvertrags (Miete, Laufzeit, Status etc.).",
+      parameters: {
+        type: "object",
+        properties: {
+          mietvertrag_id: { type: "string" },
+          soll_miete: { type: "number" },
+          nebenkosten_vorauszahlung: { type: "number" },
+          mietbeginn: { type: "string" },
+          mietende: { type: "string" },
+          kaution: { type: "number" },
+          status: { type: "string", enum: ["Entwurf", "Aktiv", "Beendet"] },
+        },
+        required: ["mietvertrag_id"],
+      },
+    },
+  },
 ];
 
 // -------- Kontext-Helfer --------
@@ -3138,599 +2874,178 @@ async function executeTool(
       return { ok: true, storno: { id: result.storno.id, nummer: result.storno.nummer, betrag: result.storno.betrag } };
     }
 
+    case "create_liegenschaft": {
+      if (!args.name || !args.strasse || !args.hausnummer || !args.plz || !args.ort) {
+        return { error: "name, strasse, hausnummer, plz und ort sind erforderlich" };
+      }
+      if (!args.user_confirmed) {
+        return {
+          needsConfirmation: true,
+          frage: `Soll Liegenschaft „${args.name}\" (${args.strasse} ${args.hausnummer}, ${args.plz} ${args.ort}) angelegt werden?`,
+        };
+      }
+      const now = new Date().toISOString();
+      const lg = await liegenschaftenDb.create({
+        id: uuidv4(),
+        name: String(args.name),
+        strasse: String(args.strasse),
+        hausnummer: String(args.hausnummer),
+        plz: String(args.plz),
+        ort: String(args.ort),
+        flurstueck: args.flurstueck ? String(args.flurstueck) : undefined,
+        notizen: args.notizen ? String(args.notizen) : undefined,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await logEvent("anlage", `Liegenschaft „${lg.name}\" vom Agent angelegt.`, { art: "Liegenschaft", id: lg.id });
+      return { ok: true, liegenschaft: { id: lg.id, name: lg.name } };
+    }
 
     case "list_gebaeude": {
-      let list = await gebaeudeDb.list(
-        args.liegenschaft_id ? ({ liegenschaftId: String(args.liegenschaft_id) } as any) : undefined
-      );
-      if (args.query) {
-        const q = String(args.query).toLowerCase();
-        list = list.filter((g) => (g.name || "").toLowerCase().includes(q) || (g.id || "").includes(q));
-      }
-      const limit = Math.min(Number(args.limit) || 50, 100);
-      return {
-        anzahl: list.length,
-        gebaeude: list.slice(0, limit).map((g) => ({
-          id: g.id,
-          nummer: g.nummer,
-          name: g.name,
-          liegenschaftId: g.liegenschaftId,
-          baujahr: g.baujahr,
-          anzahlEinheiten: g.anzahlEinheiten,
-          heizungsart: g.heizungsart,
-          status: g.status,
-        })),
-      };
+      const alle = await gebaeudeDb.list(args.liegenschaft_id ? { liegenschaftId: String(args.liegenschaft_id) } : undefined);
+      return { gebaeude: alle.map((g) => ({ id: g.id, name: g.name, liegenschaftId: g.liegenschaftId, baujahr: g.baujahr })) };
     }
 
     case "update_gebaeude": {
       const id = String(args.gebaeude_id || "");
-      const g = await gebaeudeDb.get(id);
-      if (!g) return { error: "Gebäude nicht gefunden" };
       const patch: Record<string, unknown> = {};
-      if (args.name != null) patch.name = String(args.name);
-      if (args.baujahr != null) patch.baujahr = Number(args.baujahr);
-      if (args.anzahl_einheiten != null) patch.anzahlEinheiten = Number(args.anzahl_einheiten);
-      if (args.heizungsart != null) patch.heizungsart = String(args.heizungsart);
-      if (args.notizen != null) patch.notizen = String(args.notizen);
-      if (args.status != null) patch.status = String(args.status);
+      if (args.name !== undefined) patch.name = String(args.name);
+      if (typeof args.baujahr === "number") patch.baujahr = args.baujahr;
+      if (typeof args.anzahl_einheiten === "number") patch.anzahlEinheiten = args.anzahl_einheiten;
+      if (args.heizungsart !== undefined) patch.heizungsart = String(args.heizungsart);
+      if (args.notizen !== undefined) patch.notizen = String(args.notizen);
       const updated = await gebaeudeDb.update(id, patch as any);
-      await logEvent("aenderung", `Agent: Gebäude „${g.name}" aktualisiert.`, { art: "Gebäude", id });
-      return { ok: true, gebaeude: updated };
-    }
-
-    case "reassign_gebaeude": {
-      const id = String(args.gebaeude_id || "");
-      const g = await gebaeudeDb.get(id);
-      if (!g) return { error: "Gebäude nicht gefunden" };
-      let zielId = args.ziel_liegenschaft_id ? String(args.ziel_liegenschaft_id) : "";
-      if (!zielId && args.ziel_liegenschaft_query) {
-        const lgs = await liegenschaftenDb.list();
-        const treffer = lgs.filter((l) => matchesQuery(String(args.ziel_liegenschaft_query), l));
-        if (treffer.length === 0) return { error: `Keine Liegenschaft zu „${args.ziel_liegenschaft_query}"` };
-        if (treffer.length > 1)
-          return {
-            error: "Mehrere Liegenschaften – bitte ziel_liegenschaft_id wählen",
-            treffer: treffer.map((l) => ({ id: l.id, name: l.name })),
-          };
-        zielId = treffer[0].id;
-      }
-      if (!zielId) return { error: "ziel_liegenschaft_id oder ziel_liegenschaft_query erforderlich" };
-      const ziel = await liegenschaftenDb.get(zielId);
-      if (!ziel) return { error: "Ziel-Liegenschaft nicht gefunden" };
-      if (g.liegenschaftId === zielId) return { ok: true, hinweis: "Gebäude hängt bereits an dieser Liegenschaft", gebaeude: g };
-      if (!args.user_confirmed) {
-        return {
-          needsConfirmation: true,
-          frage: `Gebäude „${g.name}" von Liegenschaft ${g.liegenschaftId} nach „${ziel.name}" verschieben?`,
-          gebaeude_id: id,
-          ziel_liegenschaft_id: zielId,
-        };
-      }
-      const updated = await gebaeudeDb.update(id, { liegenschaftId: zielId } as any);
-      await logEvent(
-        "aenderung",
-        `Agent: Gebäude „${g.name}" nach Liegenschaft „${ziel.name}" verschoben.`,
-        { art: "Gebäude", id }
-      );
-      return { ok: true, gebaeude: updated };
+      if (!updated) return { error: "Gebäude nicht gefunden" };
+      await logEvent("aenderung", `Gebäude „${updated.name}\" vom Agent aktualisiert.`, { art: "Gebäude", id });
+      return { ok: true, gebaeude: { id: updated.id, name: updated.name } };
     }
 
     case "create_wohnung": {
-      const gId = String(args.gebaeude_id || "");
-      const g = await gebaeudeDb.get(gId);
-      if (!g) return { error: "Gebäude nicht gefunden" };
-      const bez = String(args.bezeichnung || "").trim();
-      if (!bez) return { error: "bezeichnung erforderlich" };
-      const typ = (String(args.typ || "Wohnung") as EinheitTyp);
+      const gebId = String(args.gebaeude_id || "");
+      const geb = await gebaeudeDb.get(gebId);
+      if (!geb) return { error: `Gebäude ${gebId} nicht gefunden` };
+      if (!args.bezeichnung) return { error: "bezeichnung ist erforderlich" };
       if (!args.user_confirmed) {
         return {
           needsConfirmation: true,
-          frage: `Wohnung „${bez}" (${typ}) unter Gebäude „${g.name}" anlegen?`,
-          gebaeude_id: gId,
-          bezeichnung: bez,
+          frage: `Soll in Gebäude „${geb.name}\" die Wohnung „${args.bezeichnung}\" angelegt werden?`,
         };
       }
       const now = new Date().toISOString();
       const w = await wohnungenDb.create({
-        id: uid(),
-        gebaeudeId: gId,
-        bezeichnung: bez,
-        typ: ["Wohnung", "Gewerbe", "Stellplatz", "Sonstige"].includes(typ) ? typ : "Wohnung",
-        flaeche: args.flaeche != null ? Number(args.flaeche) : undefined,
-        zimmer: args.zimmer != null ? Number(args.zimmer) : undefined,
-        miteigentumsanteil: args.miteigentumsanteil != null ? Number(args.miteigentumsanteil) : undefined,
-        notizen: args.notizen != null ? String(args.notizen) : undefined,
-        status: "aktiv",
+        id: uuidv4(),
+        gebaeudeId: gebId,
+        bezeichnung: String(args.bezeichnung),
+        typ: (args.typ as any) || "Wohnung",
+        flaeche: typeof args.flaeche === "number" ? args.flaeche : undefined,
+        zimmer: typeof args.zimmer === "number" ? args.zimmer : undefined,
+        miteigentumsanteil: typeof args.miteigentumsanteil === "number" ? args.miteigentumsanteil : undefined,
         createdAt: now,
         updatedAt: now,
-      } as Wohnung);
-      await logEvent("anlage", `Agent: Wohnung „${bez}" unter „${g.name}" angelegt.`, { art: "Wohnung", id: w.id });
-      return { ok: true, wohnung: w };
+      });
+      await logEvent("anlage", `Wohnung „${w.bezeichnung}\" vom Agent angelegt.`, { art: "Wohnung", id: w.id });
+      return { ok: true, wohnung: { id: w.id, bezeichnung: w.bezeichnung } };
     }
 
     case "reassign_wohnung": {
-      const id = String(args.wohnung_id || "");
-      const w = await wohnungenDb.get(id);
+      const wohnungId = String(args.wohnung_id || "");
+      const neuesGebaeudeId = String(args.neues_gebaeude_id || "");
+      const w = await wohnungenDb.get(wohnungId);
       if (!w) return { error: "Wohnung nicht gefunden" };
-      const zielGId = String(args.ziel_gebaeude_id || "");
-      const zielG = await gebaeudeDb.get(zielGId);
-      if (!zielG) return { error: "Ziel-Gebäude nicht gefunden" };
-      if (w.gebaeudeId === zielGId) return { ok: true, hinweis: "Wohnung hängt bereits an diesem Gebäude", wohnung: w };
+      const neuesGeb = await gebaeudeDb.get(neuesGebaeudeId);
+      if (!neuesGeb) return { error: `Ziel-Gebäude ${neuesGebaeudeId} nicht gefunden` };
       if (!args.user_confirmed) {
         return {
           needsConfirmation: true,
-          frage: `Wohnung „${w.bezeichnung}" nach Gebäude „${zielG.name}" verschieben?`,
-          wohnung_id: id,
-          ziel_gebaeude_id: zielGId,
+          frage: `Soll Wohnung „${w.bezeichnung}\" in Gebäude „${neuesGeb.name}\" verschoben werden?`,
         };
       }
-      const updated = await wohnungenDb.update(id, { gebaeudeId: zielGId } as any);
-      await logEvent("aenderung", `Agent: Wohnung „${w.bezeichnung}" nach „${zielG.name}" verschoben.`, {
+      const updated = await wohnungenDb.update(wohnungId, { gebaeudeId: neuesGebaeudeId } as any);
+      await logEvent("aenderung", `Wohnung „${w.bezeichnung}\" vom Agent nach „${neuesGeb.name}\" verschoben.`, {
         art: "Wohnung",
-        id,
+        id: wohnungId,
       });
       return { ok: true, wohnung: updated };
     }
 
     case "create_mieter": {
-      const wId = String(args.wohnung_id || "");
-      const w = await wohnungenDb.get(wId);
-      if (!w) return { error: "Wohnung nicht gefunden" };
-      const name = String(args.name || "").trim();
-      if (!name) return { error: "name erforderlich" };
+      const wohnungId = String(args.wohnung_id || "");
+      const w = await wohnungenDb.get(wohnungId);
+      if (!w) return { error: `Wohnung ${wohnungId} nicht gefunden` };
+      if (!args.name) return { error: "name ist erforderlich" };
       if (!args.user_confirmed) {
         return {
           needsConfirmation: true,
-          frage: `Mieter „${name}" an Wohnung „${w.bezeichnung}" anlegen?`,
-          wohnung_id: wId,
-          name,
+          frage: `Soll Mieter „${args.name}\" in Wohnung „${w.bezeichnung}\" angelegt werden?`,
         };
       }
       const now = new Date().toISOString();
-      const m = await mieterDb.create({
-        id: uid(),
-        wohnungId: wId,
-        name,
-        email: args.email != null ? String(args.email) : undefined,
-        telefon: args.telefon != null ? String(args.telefon) : undefined,
-        mietbeginn: args.mietbeginn != null ? String(args.mietbeginn) : undefined,
-        mietende: args.mietende != null ? String(args.mietende) : undefined,
-        kaltmiete: args.kaltmiete != null ? Number(args.kaltmiete) : undefined,
+      const mieter = await mieterDb.create({
+        id: uuidv4(),
+        wohnungId,
+        name: String(args.name),
+        email: args.email ? String(args.email) : undefined,
+        telefon: args.telefon ? String(args.telefon) : undefined,
+        mietbeginn: args.mietbeginn ? String(args.mietbeginn) : undefined,
+        kaltmiete: typeof args.kaltmiete === "number" ? args.kaltmiete : undefined,
         nebenkostenVorauszahlung:
-          args.nebenkosten_vorauszahlung != null ? Number(args.nebenkosten_vorauszahlung) : undefined,
-        notizen: args.notizen != null ? String(args.notizen) : undefined,
-        status: "aktiv",
+          typeof args.nebenkostenVorauszahlung === "number" ? args.nebenkostenVorauszahlung : undefined,
         createdAt: now,
         updatedAt: now,
-      } as Mieter);
-      await logEvent("anlage", `Agent: Mieter „${name}" angelegt.`, { art: "Mieter", id: m.id });
-      return { ok: true, mieter: m };
+      });
+      await logEvent("anlage", `Mieter „${mieter.name}\" vom Agent angelegt.`, { art: "Mieter", id: mieter.id });
+      return { ok: true, mieter: { id: mieter.id, name: mieter.name } };
     }
 
     case "create_mietvertrag": {
-      const wId = String(args.wohnung_id || "");
-      const w = await wohnungenDb.get(wId);
-      if (!w) return { error: "Wohnung nicht gefunden" };
-      if (args.mieter_id) {
-        const mi = await mieterDb.get(String(args.mieter_id));
-        if (!mi) return { error: "Mieter nicht gefunden" };
-      }
+      const wohnungId = String(args.wohnung_id || "");
+      const w = await wohnungenDb.get(wohnungId);
+      if (!w) return { error: `Wohnung ${wohnungId} nicht gefunden` };
       if (!args.user_confirmed) {
         return {
           needsConfirmation: true,
-          frage: `Mietvertrag für Wohnung „${w.bezeichnung}" anlegen (Soll-Miete ${args.soll_miete ?? "–"} €)?`,
-          wohnung_id: wId,
+          frage: `Soll für Wohnung „${w.bezeichnung}\" manuell ein Mietvertrag-Datensatz angelegt werden (ohne PDF)?`,
         };
       }
       const now = new Date().toISOString();
-      const status = String(args.status || "Aktiv");
       const mv = await mietvertraegeDb.create({
-        id: uid(),
-        wohnungId: wId,
+        id: uuidv4(),
+        wohnungId,
         mieterId: args.mieter_id ? String(args.mieter_id) : undefined,
-        dateiName: args.datei_name ? String(args.datei_name) : "manuell-angelegt",
-        mimeType: "application/manual",
+        dateiName: "Manuell vom Agent angelegt (kein Dokument)",
+        mimeType: "text/plain",
         hochgeladenAm: now,
-        sollMiete: args.soll_miete != null ? Number(args.soll_miete) : undefined,
+        sollMiete: typeof args.soll_miete === "number" ? args.soll_miete : undefined,
         nebenkostenVorauszahlung:
-          args.nebenkosten_vorauszahlung != null ? Number(args.nebenkosten_vorauszahlung) : undefined,
-        mietbeginn: args.mietbeginn != null ? String(args.mietbeginn) : undefined,
-        mietende: args.mietende != null ? String(args.mietende) : undefined,
-        kaution: args.kaution != null ? Number(args.kaution) : undefined,
-        flaeche: args.flaeche != null ? Number(args.flaeche) : undefined,
-        zimmer: args.zimmer != null ? Number(args.zimmer) : undefined,
-        status: (["Entwurf", "Aktiv", "Beendet"].includes(status) ? status : "Aktiv") as any,
+          typeof args.nebenkosten_vorauszahlung === "number" ? args.nebenkosten_vorauszahlung : undefined,
+        mietbeginn: args.mietbeginn ? String(args.mietbeginn) : undefined,
+        mietende: args.mietende ? String(args.mietende) : undefined,
+        kaution: typeof args.kaution === "number" ? args.kaution : undefined,
+        status: (args.status as any) || "Aktiv",
         createdAt: now,
         updatedAt: now,
-      } as Mietvertrag);
-      await logEvent("anlage", `Agent: Mietvertrag für „${w.bezeichnung}" angelegt.`, {
+      });
+      await logEvent("anlage", `Mietvertrag für Wohnung „${w.bezeichnung}\" vom Agent angelegt.`, {
         art: "Mietvertrag",
         id: mv.id,
       });
-      return { ok: true, mietvertrag: mv };
+      return { ok: true, mietvertrag: { id: mv.id, wohnungId } };
     }
 
     case "update_mietvertrag": {
       const id = String(args.mietvertrag_id || "");
-      const mv = await mietvertraegeDb.get(id);
-      if (!mv) return { error: "Mietvertrag nicht gefunden" };
       const patch: Record<string, unknown> = {};
-      if (args.soll_miete != null) patch.sollMiete = Number(args.soll_miete);
-      if (args.nebenkosten_vorauszahlung != null)
-        patch.nebenkostenVorauszahlung = Number(args.nebenkosten_vorauszahlung);
-      if (args.bk_vorauszahlung != null) patch.bkVorauszahlung = Number(args.bk_vorauszahlung);
-      if (args.hk_vorauszahlung != null) patch.hkVorauszahlung = Number(args.hk_vorauszahlung);
-      if (args.warmmiete != null) patch.warmmiete = Number(args.warmmiete);
-      if (args.kaution != null) patch.kaution = Number(args.kaution);
-      if (args.mietbeginn != null) patch.mietbeginn = String(args.mietbeginn);
-      if (args.mietende != null) patch.mietende = String(args.mietende);
-      if (args.flaeche != null) patch.flaeche = Number(args.flaeche);
-      if (args.zimmer != null) patch.zimmer = Number(args.zimmer);
-      if (args.status != null) patch.status = String(args.status);
-      if (args.mieter_id != null) patch.mieterId = String(args.mieter_id);
-      if (args.wohnung_id != null) patch.wohnungId = String(args.wohnung_id);
+      if (typeof args.soll_miete === "number") patch.sollMiete = args.soll_miete;
+      if (typeof args.nebenkosten_vorauszahlung === "number") patch.nebenkostenVorauszahlung = args.nebenkosten_vorauszahlung;
+      if (args.mietbeginn !== undefined) patch.mietbeginn = String(args.mietbeginn);
+      if (args.mietende !== undefined) patch.mietende = String(args.mietende);
+      if (typeof args.kaution === "number") patch.kaution = args.kaution;
+      if (args.status !== undefined) patch.status = args.status;
       const updated = await mietvertraegeDb.update(id, patch as any);
-      await logEvent("aenderung", `Agent: Mietvertrag „${mv.dateiName}" aktualisiert.`, {
-        art: "Mietvertrag",
-        id,
-      });
-      return { ok: true, mietvertrag: updated };
+      if (!updated) return { error: "Mietvertrag nicht gefunden" };
+      await logEvent("aenderung", "Mietvertrag vom Agent aktualisiert.", { art: "Mietvertrag", id });
+      return { ok: true, mietvertrag: { id: updated.id, status: updated.status } };
     }
-
-    case "list_pm_vertraege": {
-      let list = await pmVertraegeDb.list(
-        args.liegenschaft_id ? ({ liegenschaftId: String(args.liegenschaft_id) } as any) : undefined
-      );
-      if (args.query) {
-        const q = String(args.query).toLowerCase();
-        list = list.filter(
-          (p) =>
-            (p.verwalterName || "").toLowerCase().includes(q) ||
-            (p.auftraggeberName || "").toLowerCase().includes(q) ||
-            (p.dateiName || "").toLowerCase().includes(q) ||
-            (p.id || "").includes(q)
-        );
-      }
-      const limit = Math.min(Number(args.limit) || 30, 100);
-      return {
-        anzahl: list.length,
-        pmVertraege: list.slice(0, limit).map((p) => ({
-          id: p.id,
-          nummer: p.nummer,
-          liegenschaftId: p.liegenschaftId,
-          verwalterName: p.verwalterName,
-          auftraggeberName: p.auftraggeberName,
-          status: p.status,
-          laufzeitBeginn: p.laufzeitBeginn,
-          laufzeitEnde: p.laufzeitEnde,
-          dateiName: p.dateiName,
-        })),
-      };
-    }
-
-    case "create_pm_vertrag": {
-      const lgId = String(args.liegenschaft_id || "");
-      const lg = await liegenschaftenDb.get(lgId);
-      if (!lg) return { error: "Liegenschaft nicht gefunden" };
-      if (!args.user_confirmed) {
-        return {
-          needsConfirmation: true,
-          frage: `PM-Vertrag für „${lg.name}" anlegen (Verwalter: ${args.verwalter_name || "–"})?`,
-          liegenschaft_id: lgId,
-        };
-      }
-      const now = new Date().toISOString();
-      const status = String(args.status || "Aktiv");
-      const pm = await pmVertraegeDb.create({
-        id: uid(),
-        liegenschaftId: lgId,
-        dateiName: args.datei_name ? String(args.datei_name) : "manuell-angelegt",
-        mimeType: "application/manual",
-        hochgeladenAm: now,
-        verwalterName: args.verwalter_name != null ? String(args.verwalter_name) : undefined,
-        auftraggeberName: args.auftraggeber_name != null ? String(args.auftraggeber_name) : undefined,
-        honorarModell: args.honorar_modell != null ? String(args.honorar_modell) : undefined,
-        honorarSatz: args.honorar_satz != null ? Number(args.honorar_satz) : undefined,
-        leistungsumfang: args.leistungsumfang != null ? String(args.leistungsumfang) : undefined,
-        laufzeitBeginn: args.laufzeit_beginn != null ? String(args.laufzeit_beginn) : undefined,
-        laufzeitEnde: args.laufzeit_ende != null ? String(args.laufzeit_ende) : undefined,
-        kuendigungsfrist: args.kuendigungsfrist != null ? String(args.kuendigungsfrist) : undefined,
-        status: (["Entwurf", "Aktiv", "Beendet"].includes(status) ? status : "Aktiv") as any,
-        createdAt: now,
-        updatedAt: now,
-      } as PmVertrag);
-      await logEvent("anlage", `Agent: PM-Vertrag für „${lg.name}" angelegt.`, { art: "PM-Vertrag", id: pm.id });
-      return { ok: true, pmVertrag: pm };
-    }
-
-    case "update_pm_vertrag": {
-      const id = String(args.pm_vertrag_id || "");
-      const pm = await pmVertraegeDb.get(id);
-      if (!pm) return { error: "PM-Vertrag nicht gefunden" };
-      const patch: Record<string, unknown> = {};
-      if (args.verwalter_name != null) patch.verwalterName = String(args.verwalter_name);
-      if (args.auftraggeber_name != null) patch.auftraggeberName = String(args.auftraggeber_name);
-      if (args.honorar_modell != null) patch.honorarModell = String(args.honorar_modell);
-      if (args.honorar_satz != null) patch.honorarSatz = Number(args.honorar_satz);
-      if (args.leistungsumfang != null) patch.leistungsumfang = String(args.leistungsumfang);
-      if (args.laufzeit_beginn != null) patch.laufzeitBeginn = String(args.laufzeit_beginn);
-      if (args.laufzeit_ende != null) patch.laufzeitEnde = String(args.laufzeit_ende);
-      if (args.kuendigungsfrist != null) patch.kuendigungsfrist = String(args.kuendigungsfrist);
-      if (args.status != null) patch.status = String(args.status);
-      if (args.liegenschaft_id != null) patch.liegenschaftId = String(args.liegenschaft_id);
-      const updated = await pmVertraegeDb.update(id, patch as any);
-      await logEvent("aenderung", `Agent: PM-Vertrag aktualisiert.`, { art: "PM-Vertrag", id });
-      return { ok: true, pmVertrag: updated };
-    }
-
-    case "delete_pm_vertrag": {
-      const id = String(args.pm_vertrag_id || "");
-      const pm = await pmVertraegeDb.get(id);
-      if (!pm) return { error: "PM-Vertrag nicht gefunden" };
-      if (!args.user_confirmed) {
-        return {
-          needsConfirmation: true,
-          frage: `PM-Vertrag „${pm.verwalterName || pm.dateiName}" wirklich endgültig löschen?`,
-          pm_vertrag_id: id,
-        };
-      }
-      await pmVertraegeDb.remove(id);
-      await logEvent("loeschung", `Agent: PM-Vertrag gelöscht.`, { art: "PM-Vertrag", id });
-      return { ok: true, geloescht: { id, verwalterName: pm.verwalterName } };
-    }
-
-    case "list_eigentuemer": {
-      let list = await eigentuemerDb.list(
-        args.liegenschaft_id ? ({ liegenschaftId: String(args.liegenschaft_id) } as any) : undefined
-      );
-      if (args.query) {
-        const q = String(args.query).toLowerCase();
-        list = list.filter(
-          (e) =>
-            (e.name || "").toLowerCase().includes(q) ||
-            (e.email || "").toLowerCase().includes(q) ||
-            (e.id || "").includes(q)
-        );
-      }
-      const limit = Math.min(Number(args.limit) || 30, 100);
-      return {
-        anzahl: list.length,
-        eigentuemer: list.slice(0, limit).map((e) => ({
-          id: e.id,
-          nummer: e.nummer,
-          name: e.name,
-          liegenschaftId: e.liegenschaftId,
-          email: e.email,
-          telefon: e.telefon,
-          miteigentumsanteil: e.miteigentumsanteil,
-        })),
-      };
-    }
-
-    case "create_eigentuemer": {
-      const lgId = String(args.liegenschaft_id || "");
-      const lg = await liegenschaftenDb.get(lgId);
-      if (!lg) return { error: "Liegenschaft nicht gefunden" };
-      const name = String(args.name || "").trim();
-      if (!name) return { error: "name erforderlich" };
-      if (!args.user_confirmed) {
-        return {
-          needsConfirmation: true,
-          frage: `Eigentümer „${name}" an Liegenschaft „${lg.name}" anlegen?`,
-          liegenschaft_id: lgId,
-          name,
-        };
-      }
-      const now = new Date().toISOString();
-      const e = await eigentuemerDb.create({
-        id: uid(),
-        liegenschaftId: lgId,
-        name,
-        anschrift: args.anschrift != null ? String(args.anschrift) : undefined,
-        email: args.email != null ? String(args.email) : undefined,
-        telefon: args.telefon != null ? String(args.telefon) : undefined,
-        miteigentumsanteil: args.miteigentumsanteil != null ? Number(args.miteigentumsanteil) : undefined,
-        notizen: args.notizen != null ? String(args.notizen) : undefined,
-        createdAt: now,
-        updatedAt: now,
-      } as Eigentuemer);
-      await logEvent("anlage", `Agent: Eigentümer „${name}" angelegt.`, { art: "Eigentümer", id: e.id });
-      return { ok: true, eigentuemer: e };
-    }
-
-    case "update_eigentuemer": {
-      const id = String(args.eigentuemer_id || "");
-      const e = await eigentuemerDb.get(id);
-      if (!e) return { error: "Eigentümer nicht gefunden" };
-      const patch: Record<string, unknown> = {};
-      if (args.name != null) patch.name = String(args.name);
-      if (args.anschrift != null) patch.anschrift = String(args.anschrift);
-      if (args.email != null) patch.email = String(args.email);
-      if (args.telefon != null) patch.telefon = String(args.telefon);
-      if (args.miteigentumsanteil != null) patch.miteigentumsanteil = Number(args.miteigentumsanteil);
-      if (args.notizen != null) patch.notizen = String(args.notizen);
-      if (args.liegenschaft_id != null) patch.liegenschaftId = String(args.liegenschaft_id);
-      if (args.vollmacht_von != null) patch.vollmachtVon = String(args.vollmacht_von);
-      if (args.vollmacht_bis != null) patch.vollmachtBis = String(args.vollmacht_bis);
-      const updated = await eigentuemerDb.update(id, patch as any);
-      await logEvent("aenderung", `Agent: Eigentümer „${e.name}" aktualisiert.`, { art: "Eigentümer", id });
-      return { ok: true, eigentuemer: updated };
-    }
-
-    case "delete_eigentuemer": {
-      const id = String(args.eigentuemer_id || "");
-      const e = await eigentuemerDb.get(id);
-      if (!e) return { error: "Eigentümer nicht gefunden" };
-      if (!args.user_confirmed) {
-        return {
-          needsConfirmation: true,
-          frage: `Eigentümer „${e.name}" wirklich endgültig löschen?`,
-          eigentuemer_id: id,
-        };
-      }
-      await eigentuemerDb.remove(id);
-      await logEvent("loeschung", `Agent: Eigentümer „${e.name}" gelöscht.`, { art: "Eigentümer", id });
-      return { ok: true, geloescht: { id, name: e.name } };
-    }
-
-    case "create_abrechnung": {
-      const name = String(args.name || "").trim();
-      if (!name) return { error: "name erforderlich" };
-      if (args.gesamt_summe == null) return { error: "gesamt_summe erforderlich" };
-      if (!args.user_confirmed) {
-        return {
-          needsConfirmation: true,
-          frage: `Rechnung/Abrechnung „${name}" über ${Number(args.gesamt_summe).toFixed(2)} € anlegen?`,
-          name,
-          gesamt_summe: args.gesamt_summe,
-        };
-      }
-      const now = new Date().toISOString();
-      const status = String(args.status || "Rohdaten");
-      const objektTyp = String(args.objekt_typ || "Haus");
-      const a: Abrechnung = {
-        id: uid(),
-        name,
-        adresse: args.adresse != null ? String(args.adresse) : "",
-        objektTyp: (["Wohnung", "Haus", "Gewerbe"].includes(objektTyp) ? objektTyp : "Haus") as any,
-        zeitraum: args.zeitraum != null ? String(args.zeitraum) : "",
-        gesamtSumme: Number(args.gesamt_summe),
-        status: (["Rohdaten", "Validierung", "Fertig"].includes(status) ? status : "Rohdaten") as any,
-        dokumente: [],
-        workspace: { positionen: [], mieteinnahmen: 0, nebenkosten: 0 },
-        chat: [],
-        version: 1,
-        history: [],
-        createdAt: now,
-        updatedAt: now,
-        liegenschaftId: args.liegenschaft_id != null ? String(args.liegenschaft_id) : undefined,
-        gebaeudeId: args.gebaeude_id != null ? String(args.gebaeude_id) : undefined,
-        wohnungId: args.wohnung_id != null ? String(args.wohnung_id) : undefined,
-        mieterName: args.mieter_name != null ? String(args.mieter_name) : undefined,
-        vermieterName: args.vermieter_name != null ? String(args.vermieter_name) : undefined,
-      };
-      const saved = await createAbrechnung(a);
-      await logEvent("anlage", `Agent: Rechnung/Abrechnung „${name}" angelegt.`, {
-        art: "Abrechnung",
-        id: saved.id,
-      });
-      return { ok: true, abrechnung: { id: saved.id, name: saved.name, gesamtSumme: saved.gesamtSumme } };
-    }
-
-    case "reassign_abrechnung": {
-      const id = String(args.abrechnung_id || "");
-      const all = await listAbrechnungen();
-      const a = all.find((x) => x.id === id);
-      if (!a) return { error: "Abrechnung nicht gefunden" };
-      const patch: Record<string, unknown> = {};
-      if (args.liegenschaft_id != null) patch.liegenschaftId = String(args.liegenschaft_id);
-      if (args.gebaeude_id != null) patch.gebaeudeId = String(args.gebaeude_id);
-      if (args.wohnung_id != null) patch.wohnungId = String(args.wohnung_id);
-      if (!patch.liegenschaftId && args.liegenschaft_query) {
-        const lgs = await liegenschaftenDb.list();
-        const treffer = lgs.filter((l) => matchesQuery(String(args.liegenschaft_query), l));
-        if (treffer.length === 0) return { error: `Keine Liegenschaft zu „${args.liegenschaft_query}"` };
-        if (treffer.length > 1)
-          return {
-            error: "Mehrere Liegenschaften – bitte liegenschaft_id wählen",
-            treffer: treffer.map((l) => ({ id: l.id, name: l.name })),
-          };
-        patch.liegenschaftId = treffer[0].id;
-        if (!patch.adresse && treffer[0]) {
-          /* keep existing adresse */
-        }
-      }
-      if (Object.keys(patch).length === 0)
-        return { error: "Mindestens liegenschaft_id, gebaeude_id, wohnung_id oder liegenschaft_query setzen" };
-      const updated = await updateAbrechnung(id, patch as any);
-      await logEvent("aenderung", `Agent: Abrechnung „${a.name}" neu zugeordnet.`, { art: "Abrechnung", id });
-      return { ok: true, abrechnung: updated };
-    }
-
-    case "rename_ablage_dokument": {
-      let id = args.ablage_id ? String(args.ablage_id) : "";
-      if (!id && args.datei_name) {
-        const q = String(args.datei_name).toLowerCase();
-        const list = await ablageDb.list();
-        const treffer = list.filter((d) => (d.dateiName || "").toLowerCase().includes(q));
-        if (treffer.length === 0) return { error: `Kein Ablage-Dokument „${args.datei_name}"` };
-        if (treffer.length > 1)
-          return {
-            error: "Mehrere Dokumente – bitte ablage_id wählen",
-            treffer: treffer.map((d) => ({ id: d.id, dateiName: d.dateiName })),
-          };
-        id = treffer[0].id;
-      }
-      if (!id) return { error: "ablage_id oder datei_name erforderlich" };
-      const neuer = String(args.neuer_name || "").trim();
-      if (!neuer) return { error: "neuer_name erforderlich" };
-      const doc = await ablageDb.get(id);
-      if (!doc) return { error: "Ablage-Dokument nicht gefunden" };
-      const updated = await ablageDb.update(id, { dateiName: neuer } as any);
-      await logEvent("aenderung", `Agent: Ablage „${doc.dateiName}" umbenannt in „${neuer}".`, {
-        art: "Ablage",
-        id,
-      });
-      return { ok: true, ablage: { id, dateiName: updated?.dateiName || neuer, vorher: doc.dateiName } };
-    }
-
-    case "set_ablage_status": {
-      let id = args.ablage_id ? String(args.ablage_id) : "";
-      if (!id && args.datei_name) {
-        const q = String(args.datei_name).toLowerCase();
-        const list = await ablageDb.list();
-        const treffer = list.filter((d) => (d.dateiName || "").toLowerCase().includes(q));
-        if (treffer.length === 0) return { error: `Kein Ablage-Dokument „${args.datei_name}"` };
-        if (treffer.length > 1)
-          return {
-            error: "Mehrere Dokumente – bitte ablage_id wählen",
-            treffer: treffer.map((d) => ({ id: d.id, dateiName: d.dateiName, status: d.status })),
-          };
-        id = treffer[0].id;
-      }
-      if (!id) return { error: "ablage_id oder datei_name erforderlich" };
-      const status = String(args.status || "");
-      if (!["neu", "in_pruefung", "zugeordnet", "verworfen"].includes(status))
-        return { error: "status muss neu|in_pruefung|zugeordnet|verworfen sein" };
-      const doc = await ablageDb.get(id);
-      if (!doc) return { error: "Ablage-Dokument nicht gefunden" };
-      const updated = await ablageDb.update(id, { status } as any);
-      await logEvent("aenderung", `Agent: Ablage „${doc.dateiName}" Status → ${status}.`, {
-        art: "Ablage",
-        id,
-      });
-      return { ok: true, ablage: { id, dateiName: doc.dateiName, status: updated?.status || status } };
-    }
-
-    case "create_liegenschaft": {
-      const name = String(args.name || "").trim();
-      if (!name) return { error: "name erforderlich" };
-      if (!args.user_confirmed) {
-        return {
-          needsConfirmation: true,
-          frage: `Liegenschaft „${name}"${args.strasse ? ` (${args.strasse} ${args.hausnummer || ""})` : ""} anlegen?`,
-          name,
-        };
-      }
-      const now = new Date().toISOString();
-      const lg = await liegenschaftenDb.create({
-        id: uid(),
-        name,
-        strasse: args.strasse != null ? String(args.strasse) : "",
-        hausnummer: args.hausnummer != null ? String(args.hausnummer) : "",
-        plz: args.plz != null ? String(args.plz) : "",
-        ort: args.ort != null ? String(args.ort) : "",
-        flurstueck: args.flurstueck != null ? String(args.flurstueck) : undefined,
-        notizen: args.notizen != null ? String(args.notizen) : undefined,
-        status: "aktiv",
-        createdAt: now,
-        updatedAt: now,
-      } as Liegenschaft);
-      await logEvent("anlage", `Agent: Liegenschaft „${name}" angelegt.`, { art: "Liegenschaft", id: lg.id });
-      return { ok: true, liegenschaft: lg };
-    }
-
 
     default:
       return { error: `Unbekanntes Tool: ${name}` };
@@ -3741,20 +3056,6 @@ async function executeTool(
 
 const AGENT_SYSTEM = `Du bist "BetriebsKostenBot Agent" – ein Handlungs-Assistent in einer deutschen Hausverwaltungs-App.
 Du hast Schreibrechte über Tools (Datenbank-Updates). Behaupte NIEMALS, du könntest Stammdaten nicht speichern oder hättest keine Schreibrechte.
-
-## Stammdaten vollständig (Durchgang 12)
-Du kannst Stammdaten ANLEGEN, AKTUALISIEREN, VERSCHIEBEN und (mit Confirm) LÖSCHEN – überall:
-- Liegenschaft: create_liegenschaft, update_liegenschaft, delete_liegenschaft, merge_liegenschaften
-- Gebäude: list_gebaeude, create_gebaeude, update_gebaeude, reassign_gebaeude, delete_gebaeude
-- Wohnung: list_wohnungen, create_wohnung, update_wohnung, reassign_wohnung, delete_wohnung
-- Mieter: find_mieter, create_mieter, update_mieter, delete_mieter, sync_mieter_from_mietvertraege
-- Mietvertrag: list_mietvertraege, create_mietvertrag, update_mietvertrag, reassign_mietvertrag, delete_mietvertrag
-- PM-Vertrag: list_pm_vertraege, create_pm_vertrag, update_pm_vertrag, delete_pm_vertrag, beende_pm_vertrag
-- Eigentümer: list_eigentuemer, create_eigentuemer, update_eigentuemer, delete_eigentuemer
-- Rechnung/Abrechnung: list_abrechnungen, create_abrechnung, update_abrechnung, reassign_abrechnung, delete_abrechnung
-- Ablage: list_ablage, update_ablage_zuordnung, rename_ablage_dokument, set_ablage_status, delete_ablage_dokument
-Anlegen/Verschieben/Löschen: bei unsicherem Bezug zuerst list_*/find_*; destruktiv und create oft mit user_confirmed.
-Upload von Binärdateien: nicht möglich – Nutzer auf Smart-Upload (/smart-upload) verweisen; danach zuordnen/umbenennen/Status setzen.
 
 ## Wichtige Tools (Stammdaten)
 - sync_mieter_from_mietvertraege – übernimmt Kaltmiete, NK, Mietbeginn/Ende aus verknüpften Mietverträgen in die Mieter-Stammdaten. Parameter mieter_name oder liegenschaft_query. Bei „Stammdaten nachtragen/Mietbeginn nachpflegen“ SOFORT aufrufen.
@@ -3772,6 +3073,7 @@ Upload von Binärdateien: nicht möglich – Nutzer auf Smart-Upload (/smart-upl
 - Löschen immer erst mit needsConfirmation fragen, dann user_confirmed=true ausführen, wenn der Nutzer klar bestätigt („ja“, „lösche“, „endgültig“, „ja bitte“, „mach das“). Bestätigung aus dem Chat-Verlauf erkennen und Tool erneut mit user_confirmed=true aufrufen – nicht erneut nur fragen.
 - list_mietvertraege / list_ablage / list_unpassende_dokumente / list_abrechnungen – Übersicht.
 - list_wohnungen – Wohnungen inkl. Fläche/MEA auflisten, filterbar nach Liegenschaft und Bezeichnung (z.B. „EG“).
+- create_liegenschaft / list_gebaeude / update_gebaeude / create_wohnung / reassign_wohnung / create_mieter / create_mietvertrag / update_mietvertrag – volle Stammdaten-Kette anlegen/bearbeiten/verschieben. Anlegen und Verschieben immer erst mit needsConfirmation fragen, dann user_confirmed=true.
 - get_pruef_befunde / run_pruefung / execute_safe_cleanup – Prüfbefunde.
 
 ## Module der Plausibilitätsprüfung
@@ -3891,7 +3193,7 @@ export async function runAgent(params: {
   try {
     for (let step = 0; step < MAX_AGENT_STEPS; step++) {
       const completion = await createChatCompletion({
-        max_completion_tokens: 1500,
+        max_completion_tokens: 2000,
         temperature: 0.2,
         tools: AGENT_TOOLS,
         tool_choice: "auto",
@@ -3929,34 +3231,34 @@ export async function runAgent(params: {
 
       for (const call of toolCalls) {
         let args: Record<string, unknown> = {};
-        let parseError: string | null = null;
+        let argsParseError: string | null = null;
         try {
-          const raw = call.function.arguments;
-          if (raw == null || String(raw).trim() === "") {
-            args = {};
-          } else {
-            args = JSON.parse(raw);
-          }
-        } catch (e: any) {
-          // Nicht still auf {} fallen — dem Modell den Parse-Fehler klar zurückmelden,
-          // damit es die Argumente korrigieren kann statt mit leeren Args weiterzuarbeiten.
-          parseError = e?.message || String(e);
-          args = {};
+          args = JSON.parse(call.function.arguments || "{}");
+        } catch {
+          argsParseError = `Ungültiges JSON in den Tool-Argumenten: ${call.function.arguments}`;
         }
 
         let result: unknown;
         const toolStartedAt = Date.now();
-        try {
-          if (parseError) {
-            result = {
-              error: `Ungültige Tool-Argumente (JSON-Parse-Fehler): ${parseError}. Bitte die arguments als gültiges JSON erneut senden.`,
-              rawArguments: String(call.function.arguments || "").slice(0, 400),
-            };
+        if (argsParseError) {
+          result = { error: argsParseError };
+        } else {
+          // Idempotenz-Schutz: identischer Tool-Aufruf (gleicher Name + gleiche Args)
+          // innerhalb von 5s wird nicht erneut ausgeführt, sondern das vorige
+          // Ergebnis zurückgegeben — schützt vor doppelten Buchungen/Briefen bei
+          // Doppel-Klicks oder Netzwerk-Retries.
+          const idemKey = `${call.function.name}:${JSON.stringify(args)}`;
+          const cached = recentToolCalls.get(idemKey);
+          if (cached && Date.now() - cached.at < IDEMPOTENZ_FENSTER_MS) {
+            result = { ...((cached.result as Record<string, unknown>) || {}), idempotent: true };
           } else {
-            result = await executeTool(call.function.name, args);
+            try {
+              result = await executeTool(call.function.name, args);
+            } catch (toolErr: any) {
+              result = { error: toolErr?.message || String(toolErr) };
+            }
+            recentToolCalls.set(idemKey, { at: Date.now(), result });
           }
-        } catch (toolErr: any) {
-          result = { error: toolErr?.message || String(toolErr) };
         }
         const toolSuccess = !(result && typeof result === "object" && "error" in (result as Record<string, unknown>));
         const awaitingConfirmation = Boolean(
@@ -4676,23 +3978,17 @@ export function isAgentIntent(message: string): boolean {
   ) {
     return true;
   }
-if (/\b(trotzdem|force)\b/.test(m) && /\b(loesch|entfernen|liegenschaft|rechnung|abrechnung)\w*/.test(m)) {
+  if (/\b(trotzdem|force)\b/.test(m) && /\b(loesch|entfernen|liegenschaft|rechnung|abrechnung)\w*/.test(m)) {
     return true;
   }
 
-// Bestätigung nach needsConfirmation (z.B. „ja“, „lösche“, „endgültig“): der Agent muss
-  // das Tool mit user_confirmed ausführen. Bewusst ENG gehalten: reine Zustimmungen ohne
-  // Aktions-/Lösch-Kontext (z.B. „ja, das ist gut“) dürfen NICHT den Agent-Loop triggern.
-  const t = m.trim();
-  const istBestatigung =
-    /^(ja|yes|ok|okay|genau|mach\s*das|bestaetigt|bestätigt|einverstanden|loeschen|löschen)\s*$/.test(t) ||
-    /^(ja|yes|ok|okay|genau|einverstanden|bestaetigt|bestätigt)[,\s.!-]+\s*(bitte|mach\s*das|fuehr\s+aus|führ\s+aus|endgueltig|endgültig)\b/.test(
-      t
+  // Bestätigung nach needsConfirmation (z.B. „ja“, „lösche“, „endgültig“) – Agent muss Tool mit user_confirmed ausführen
+  if (
+    /^(ja|yes|ok|okay|genau|richtig|mach\s*das|bitte\s*loeschen|bitte\s*löschen|endgueltig|endgültig|loeschen|löschen|bestaetigt|bestätigt|einverstanden)(\b|[!.\s,]|$)/.test(
+      m.trim()
     ) ||
-    /\b(bitte\s+(loesch|lösch|entfern)|endgueltig\s+(loesch|lösch|entfern)|endgültig\s+(loeschen|löschen|entfernen)|ja\s+bitte\s+(loesch|lösch|entfern)|user_confirmed)\b/.test(
-      m
-    );
-  if (istBestatigung) {
+    /\b(ja[,.]?\s*(bitte|loesch|lösch|mach|genau)|user_confirmed|endgueltig\s+loesch|endgültig\s+lösch)\w*/.test(m)
+  ) {
     return true;
   }
 

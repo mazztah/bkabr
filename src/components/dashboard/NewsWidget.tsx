@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { cn } from "@/lib/utils";
+import { cn, fetchJson } from "@/lib/utils";
 import { NewsArtikel, NewsKategorie, NewsRegion } from "@/lib/types";
 
 const KATEGORIEN: (NewsKategorie | "Alle")[] = ["Alle", "KI & Tech", "Immobilien", "Allgemein"];
@@ -13,9 +13,9 @@ export default function NewsWidget() {
   const [index, setIndex] = useState(0);
 
   useEffect(() => {
-    fetch("/api/dashboard/news")
-      .then((r) => r.json())
-      .then((d) => setArtikel(d.artikel || []));
+    fetchJson<{ artikel: NewsArtikel[] }>("/api/dashboard/news")
+      .then((d) => setArtikel(d.artikel || []))
+      .catch(() => setArtikel([]));
   }, []);
 
   const gefiltert = useMemo(() => {

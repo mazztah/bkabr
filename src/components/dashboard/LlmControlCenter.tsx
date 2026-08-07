@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useStore } from "@/lib/store";
 import { AgentHinweis, AgentSchedule, AgentScheduleRecurrence } from "@/lib/types";
 import type { AgentRunRecord } from "@/lib/supabase";
-import { cn, formatDate } from "@/lib/utils";
+import { cn, fetchJson, formatDate } from "@/lib/utils";
 import KpiInfo from "@/components/KpiInfo";
 
 function formatRecurrence(r: AgentScheduleRecurrence): string {
@@ -35,12 +35,12 @@ export default function LlmControlCenter({ embedded = false }: { embedded?: bool
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetch("/api/dashboard/hinweise")
-      .then((r) => r.json())
-      .then((d) => setHinweise(d.hinweise || []));
-    fetch("/api/kalender")
-      .then((r) => r.json())
-      .then((d) => setRoutinen((d.schedules || []).filter((s: AgentSchedule) => s.aktiv)));
+    fetchJson<{ hinweise: AgentHinweis[] }>("/api/dashboard/hinweise")
+      .then((d) => setHinweise(d.hinweise || []))
+      .catch(() => setHinweise([]));
+    fetchJson<{ schedules: AgentSchedule[] }>("/api/kalender")
+      .then((d) => setRoutinen((d.schedules || []).filter((s) => s.aktiv)))
+      .catch(() => setRoutinen([]));
   }, []);
 
   useEffect(() => {
@@ -179,9 +179,9 @@ function AgentMemoryPanel() {
   const [data, setData] = useState<{ konfiguriert: boolean; laeufe: AgentRunRecord[] } | null>(null);
 
   useEffect(() => {
-    fetch("/api/dashboard/agent-runs")
-      .then((r) => r.json())
-      .then(setData);
+    fetchJson<{ konfiguriert: boolean; laeufe: AgentRunRecord[] }>("/api/dashboard/agent-runs")
+      .then(setData)
+      .catch(() => setData({ konfiguriert: false, laeufe: [] }));
   }, []);
 
   if (!data) return null;

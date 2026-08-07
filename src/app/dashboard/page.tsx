@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { cn, formatCurrency, formatDate, formatPercent } from "@/lib/utils";
+import { cn, fetchJson, formatCurrency, formatDate, formatPercent } from "@/lib/utils";
 import { DashboardUebersicht, DashboardVerlauf, SYSTEM_LOG_TYP_ICON } from "@/lib/types";
 import ProgressRing from "@/components/ProgressRing";
 import KpiInfo, { KPI_KATALOG } from "@/components/KpiInfo";
@@ -16,17 +16,23 @@ import CollapsibleSection from "@/components/dashboard/CollapsibleSection";
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardUebersicht | null>(null);
   const [verlauf, setVerlauf] = useState<DashboardVerlauf | null>(null);
+  const [ladeFehler, setLadeFehler] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([
-      fetch("/api/dashboard/uebersicht").then((r) => r.json()),
-      fetch("/api/dashboard/verlauf").then((r) => r.json()),
-    ]).then(([u, v]) => {
-      setData(u.uebersicht || null);
-      setVerlauf(v.verlauf || null);
-      setLoading(false);
-    });
+      fetchJson<{ uebersicht: DashboardUebersicht }>("/api/dashboard/uebersicht"),
+      fetchJson<{ verlauf: DashboardVerlauf }>("/api/dashboard/verlauf"),
+    ])
+      .then(([u, v]) => {
+        setData(u.uebersicht || null);
+        setVerlauf(v.verlauf || null);
+        setLoading(false);
+      })
+      .catch((err) => {
+        setLadeFehler(err?.message || "Dashboard-Daten konnten nicht geladen werden.");
+        setLoading(false);
+      });
   }, []);
 
   return (
@@ -40,7 +46,17 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      {loading || !data ? (
+      {ladeFehler ? (
+        <div className="rounded-lg border border-[var(--destructive)] p-4 text-sm">
+          <p className="mb-2 text-[var(--destructive)]">⚠️ {ladeFehler}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-muted"
+          >
+            Seite neu laden
+          </button>
+        </div>
+      ) : loading || !data ? (
         <p className="text-sm text-muted-foreground">Lade Kennzahlen…</p>
       ) : (
         <>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { cn, formatCurrency } from "@/lib/utils";
+import { cn, fetchJson, formatCurrency } from "@/lib/utils";
 import { AiObservatoryUebersicht } from "@/lib/types";
 
 function formatTokens(n: number): string {
@@ -12,23 +12,23 @@ function formatTokens(n: number): string {
 
 export default function AiObservatory({ embedded = false }: { embedded?: boolean }) {
   const [data, setData] = useState<AiObservatoryUebersicht | null>(null);
+  const [fehler, setFehler] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
 
   useEffect(() => {
-    fetch("/api/dashboard/ai-observatory")
-      .then((r) => r.json())
-      .then((d) => setData(d.uebersicht || null))
-      .catch(() =>
-        setData({
-          gesamtAufrufe: 0,
-          gesamtPromptTokens: 0,
-          gesamtCompletionTokens: 0,
-          gesamtKostenUsd: 0,
-          proModell: [],
-          providerKatalog: [],
-          letzteAufrufe: [],
-        })
-      );
-  }, []);
+    let aktiv = true;
+    setFehler(null);
+    fetchJson<{ uebersicht: AiObservatoryUebersicht }>("/api/dashboard/ai-observatory")
+      .then((d) => {
+        if (aktiv) setData(d.uebersicht || null);
+      })
+      .catch((err) => {
+        if (aktiv) setFehler(err?.message || "Konnte nicht geladen werden.");
+      });
+    return () => {
+      aktiv = false;
+    };
+  }, [tick]);
 
   return (
     <div className={embedded ? "" : "mb-6 rounded-xl border border-border bg-card"}>
@@ -44,7 +44,17 @@ export default function AiObservatory({ embedded = false }: { embedded?: boolean
         </div>
       )}
 
-      {!data ? (
+      {fehler ? (
+        <div className="p-3 text-xs">
+          <p className="mb-1.5 text-[var(--destructive)]">⚠️ {fehler}</p>
+          <button
+            onClick={() => setTick((t) => t + 1)}
+            className="rounded-md border border-border px-2 py-1 text-muted-foreground hover:bg-muted"
+          >
+            Erneut versuchen
+          </button>
+        </div>
+      ) : !data ? (
         <p className="p-3 text-xs text-muted-foreground">Lade…</p>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2">
