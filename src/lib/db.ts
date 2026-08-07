@@ -468,9 +468,11 @@ export async function getDashboardUebersicht(): Promise<DashboardUebersicht> {
     fertig: db.abrechnungen.filter((a) => a.status === "Fertig").length,
   };
 
-  // -- Letzte Plausibilitätsprüfung --
+// -- Letzte Plausibilitätsprüfung --
+  // Konsistent nach gestartetAm sortieren (nicht createdAt), damit der "letzte Lauf"
+  // überall in der App dieselbe Definition hat (agent.ts nutzt bereits gestartetAm).
   const letzterPruefLauf = [...db.pruefLaeufe].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    (a, b) => new Date(b.gestartetAm).getTime() - new Date(a.gestartetAm).getTime()
   )[0];
   const offeneBefunde = letzterPruefLauf?.befunde.filter((b) => b.status === "offen") || [];
   const pruefung = {

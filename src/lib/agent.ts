@@ -873,10 +873,10 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
           grund: { type: "string" },
           user_confirmed: { type: "boolean" },
         },
-        required: ["buchung_id"],
+required: ["buchung_id"],
       },
     },
-  },,
+  },
 
   // ---- Durchgang 12: vollständige Stammdaten-/Dokument-CRUD ----
   {
@@ -4676,17 +4676,23 @@ export function isAgentIntent(message: string): boolean {
   ) {
     return true;
   }
-  if (/\b(trotzdem|force)\b/.test(m) && /\b(loesch|entfernen|liegenschaft|rechnung|abrechnung)\w*/.test(m)) {
+if (/\b(trotzdem|force)\b/.test(m) && /\b(loesch|entfernen|liegenschaft|rechnung|abrechnung)\w*/.test(m)) {
     return true;
   }
 
-  // Bestätigung nach needsConfirmation (z.B. „ja“, „lösche“, „endgültig“) – Agent muss Tool mit user_confirmed ausführen
-  if (
-    /^(ja|yes|ok|okay|genau|richtig|mach\s*das|bitte\s*loeschen|bitte\s*löschen|endgueltig|endgültig|loeschen|löschen|bestaetigt|bestätigt|einverstanden)(\b|[!.\s,]|$)/.test(
-      m.trim()
+// Bestätigung nach needsConfirmation (z.B. „ja“, „lösche“, „endgültig“): der Agent muss
+  // das Tool mit user_confirmed ausführen. Bewusst ENG gehalten: reine Zustimmungen ohne
+  // Aktions-/Lösch-Kontext (z.B. „ja, das ist gut“) dürfen NICHT den Agent-Loop triggern.
+  const t = m.trim();
+  const istBestatigung =
+    /^(ja|yes|ok|okay|genau|mach\s*das|bestaetigt|bestätigt|einverstanden|loeschen|löschen)\s*$/.test(t) ||
+    /^(ja|yes|ok|okay|genau|einverstanden|bestaetigt|bestätigt)[,\s.!-]+\s*(bitte|mach\s*das|fuehr\s+aus|führ\s+aus|endgueltig|endgültig)\b/.test(
+      t
     ) ||
-    /\b(ja[,.]?\s*(bitte|loesch|lösch|mach|genau)|user_confirmed|endgueltig\s+loesch|endgültig\s+lösch)\w*/.test(m)
-  ) {
+    /\b(bitte\s+(loesch|lösch|entfern)|endgueltig\s+(loesch|lösch|entfern)|endgültig\s+(loeschen|löschen|entfernen)|ja\s+bitte\s+(loesch|lösch|entfern)|user_confirmed)\b/.test(
+      m
+    );
+  if (istBestatigung) {
     return true;
   }
 
