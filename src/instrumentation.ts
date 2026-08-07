@@ -31,8 +31,9 @@ export async function register() {
 
   // Fly.io NATS-Log-Streaming: verbindet sich (wenn auf Fly deployt) mit dem
   // internen Log-Proxy und befüllt den In-Memory-Ringpuffer für die
-  // "FLY"-Einträge im Live-Systemlog des LLM Mission Control. Außerhalb von
-  // Fly.io (lokal, fehlendes FLY_NATS_TOKEN) bleibt das Modul inaktiv.
+  // "FLY"-Einträge im Live-Systemlog des LLM Mission Control. Ohne FLY_ORG
+  // und ACCESS_TOKEN/FLY_ACCESS_TOKEN (lokal / nicht konfiguriert) bleibt
+  // das Modul inaktiv.
   const { startFlyLogTicker } = await import("./lib/fly-logs");
   startFlyLogTicker().catch((err) => {
     console.warn("[instrumentation] Fly-Log-Ticker konnte nicht starten:", err);

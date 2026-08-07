@@ -1,33 +1,61 @@
 /**
  * Fly.io NATS-Log-Streaming
  * -------------------------
- * Verbindet sich mit dem internen NATS-Proxy von Fly.io (snapshot, der alle
- * App-Logs (stdout/stderr) der aktuellen App publishiert) und hält einen
- * In-Memory-Ringpuffer der zuletzt empfangenen Log-Zeilen bereit.
+ * Verbindet sich mit dem internen NATS-Log-Proxy von Fly.io (dem selben, den
+ * auch das offizielle Referenzprojekt github.com/fly-apps/natstream nutzt)
+ * und hält einen In-Memory-Ringpuffer der zuletzt empfangenen Log-Zeilen
+ * bereit.
  *
  * Warum NATS statt der Logs-API?
  *  - Der NATS-Proxy liefert Logs nahezu in Echtzeit (Subscriber-Modell),
  *    ganz im Sinne des "Fly.io-artigen Live-Streams" im LLM Mission Control.
  *  - Der Flux ist noch schlanker als Polling der HTTP-Logs-API.
  *
+ * Endpoint:  nats://[fdaa::3]:4223 (IPv6-Literal von Fly.io's internem
+ *            NATS-Proxy, nur aus dem privaten Fly-6PN-Netz heraus
+ *            erreichbar – funktioniert also nur, wenn diese App selbst auf
+ *            Fly.io läuft).
+ * Auth:      NATS-Benutzername/Passwort-Auth, KEIN Bearer-Token:
+ *              user = FLY_ORG      (Org-Slug, z.B. "personal")
+ *              pass = ACCESS_TOKEN (Read-Only-Token: `fly tokens create readonly <org>`)
+ *            Fly.io injiziert diese NICHT automatisch – beide müssen als
+ *            Secrets/Env-Vars gesetzt werden. Aus Kompatibilität mit einem
+ *            evtl. bereits gesetzten Secret wird auch FLY_ACCESS_TOKEN als
+ *            Alias für ACCESS_TOKEN akzeptiert.
  * Subjects:  logs.<app_name>.<region>.<machine_id>
- * Auth:      FLY_NATS_TOKEN (wird von Fly.io automatisch als Env-Variable
- *            in jede Machine injiziert). Endpoint ist immer
- *            nats://fly-local-6pn:9292 (nur innerhalb des privaten Fly-Netzes
- *            erreichbar).
  *
- * Verhalten außerhalb von Fly.io:
- *  - Fehlt FLY_NATS_TOKEN (Lokal/Dev), bleibt das Modul inaktiv und meldet
- *    `isFlyLoggingActive() === false`. Die App läuft dann unverändert weiter,
- *    lediglich der "FLY"-Teil im Live-Log-Stream bleibt leer.
+ * Verhalten außerhalb von Fly.io / bei fehlenden Credentials:
+ *  - Fehlt FLY_ORG oder ACCESS_TOKEN/FLY_ACCESS_TOKEN, bleibt das Modul
+ *    inaktiv und meldet `isFlyLoggingActive() === false`. Die App läuft dann
+ *    unverändert weiter, lediglich der "FLY"-Teil im Live-Log-Stream bleibt
+ *    leer.
  */
 
 import { connect, type NatsConnection, type Msg, type Subscription } from "nats";
 
-// NATS-Endpoint des Fly.io-internen Log-Proxys (privat, nur im Fly-Netz).
-const FLY_NATS_URL = process.env.FLY_NATS_URL || "nats://fly-local-6pn:9292";
-// Subject-Kontext für die Suchfilter; "logs.>" = alle Log-Subjects.
-const FLY_LOG_SUBJECT = process.env.FLY_LOG_SUBJECT || "logs.>";
+// NATS-Endpoint des Fly.io-internen Log-Proxys (privat, nur im Fly-6PN-Netz
+// erreichbar). Dies ist die feste Adresse, die Fly.io für den Log-NATS-Proxy
+// dokumentiert – NICHT "fly-local-6pn" (das ist nur der DNS-Name der eigenen
+// Machine, nicht des Log-Proxys).
+const FLY_NATS_URL = process.env.FLY_NATS_URL || "nats://[fdaa::3]:4223";
+// Fly.io-Organisation (Username für die NATS-Auth). `fly orgs list` zeigt
+// den Slug; für Einzelaccounts meist "personal".
+const FLY_ORG = process.env.FLY_ORG || process.env.FLY_ORG_SLUG || "";
+// Read-Only Access Token (Passwort für die NATS-Auth). Unterstützt sowohl
+// den offiziellen Namen ACCESS_TOKEN als auch FLY_ACCESS_TOKEN als Alias.
+const FLY_ACCESS_TOKEN = process.env.ACCESS_TOKEN || process.env.FLY_ACCESS_TOKEN || "";
+// Subject-Kontext für die Suchfilter. Standard: eigene App-Logs, falls
+// FLY_APP_NAME bekannt ist (wird von Fly.io automatisch gesetzt); sonst alle
+// Logs der Org. "logs.>" = alle Log-Subjects, "*" erzwingt explizit alle.
+const FLY_LOG_SUBJECT = (() => {
+  const explicit = process.env.FLY_LOG_SUBJECT;
+  if (explicit) return explicit;
+  const flyApp = process.env.FLY_APP;
+  if (flyApp === "*") return "logs.>";
+  if (flyApp) return `logs.${flyApp}.>`;
+  if (process.env.FLY_APP_NAME) return `logs.${process.env.FLY_APP_NAME}.>`;
+  return "logs.>";
+})();
 
 /** Maximale Anzahl im Speicher gehaltener Fly-Log-Zeilen. */
 const FLY_LOG_MAX = 500;
@@ -143,20 +171,46 @@ function onFlyLog(msg: Msg): void {
 }
 
 async function connectAndSubscribe(): Promise<void> {
-  if (!process.env.FLY_NATS_TOKEN) {
-    letzterFehler = "FLY_NATS_TOKEN nicht gesetzt (lokal / außerhalb Fly.io).";
+  if (!FLY_ORG) {
+    letzterFehler = "FLY_ORG nicht gesetzt (Org-Slug, z.B. 'personal'; siehe `fly orgs list`).";
+    console.warn(`[fly-logs] ${letzterFehler}`);
+    return;
+  }
+  if (!FLY_ACCESS_TOKEN) {
+    letzterFehler = "ACCESS_TOKEN / FLY_ACCESS_TOKEN nicht gesetzt (Secret fehlt oder falscher Name).";
+    console.warn(`[fly-logs] ${letzterFehler}`);
     return;
   }
   try {
     nc = await connect({
       servers: FLY_NATS_URL,
-      token: process.env.FLY_NATS_TOKEN,
+      // Fly.io's NATS-Log-Proxy nutzt Username/Passwort-Auth, KEIN
+      // Bearer-Token: Username = Org-Slug, Passwort = Access-Token.
+      user: FLY_ORG,
+      pass: FLY_ACCESS_TOKEN,
       // Kurzer Timeout, damit ein nicht erreichbarer Proxy den Serverstart
       // nicht blockiert. Die Verbindung läuft im Hintergrund weiter.
-      timeout: 5000,
+      timeout: 10000,
+      reconnect: true,
+      maxReconnectAttempts: 5,
+      reconnectTimeWait: 2000,
     });
     sub = nc.subscribe(FLY_LOG_SUBJECT, { callback: onFlyLog });
     console.info(`[fly-logs] NATS verbunden (${FLY_NATS_URL}), Subject "${FLY_LOG_SUBJECT}".`);
+
+    // Verbindung sauber zurücksetzen, falls sie im Hintergrund geschlossen
+    // wird (z.B. Netzwerkfehler nach ausgeschöpften Reconnect-Versuchen),
+    // damit isFlyLoggingActive() den Status korrekt widerspiegelt.
+    nc.closed().then((err) => {
+      if (err) {
+        letzterFehler = err instanceof Error ? err.message : String(err);
+        console.warn(`[fly-logs] NATS-Verbindung mit Fehler geschlossen: ${letzterFehler}`);
+      } else {
+        console.info("[fly-logs] NATS-Verbindung geschlossen.");
+      }
+      nc = null;
+      sub = null;
+    });
   } catch (err) {
     letzterFehler = err instanceof Error ? err.message : String(err);
     console.warn(`[fly-logs] NATS-Verbindung fehlgeschlagen: ${letzterFehler}`);
