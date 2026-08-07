@@ -23,15 +23,15 @@ export async function GET() {
         }
       };
 
-      // Initial senden
+// Initial senden
       getSystemLogStream(20).then((log) => {
-        send("init", { log });
+        send("init", log);
       });
 
       const logInterval = setInterval(async () => {
         try {
           const log = await getSystemLogStream(20);
-          send("log", { log });
+          send("log", log);
         } catch (err) {
           send("error", { message: err instanceof Error ? err.message : String(err) });
         }

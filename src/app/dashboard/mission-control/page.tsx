@@ -51,11 +51,23 @@ export default function MissionControlPage() {
   // Live-Logs per SSE
   useEffect(() => {
     const es = new EventSource("/api/dashboard/log-stream");
+// Nimm das "log"-Feld robust aus dem SSE-Payload, um doppelte
+    // Verschachtelung (array-in-object) defensiv zu behandeln.
+    const extractLog = (data: Record<string, unknown>): { id: string; zeitpunkt: string; text: string; typ: string }[] => {
+      const raw = data.log;
+      if (Array.isArray(raw)) return raw as { id: string; zeitpunkt: string; text: string; typ: string }[];
+      // Falls verschachtelt: { log: { log: [...] } }
+      if (raw && typeof raw === "object" && Array.isArray((raw as { log?: unknown }).log)) {
+        return (raw as { log: { id: string; zeitpunkt: string; text: string; typ: string }[] }).log;
+      }
+      return [];
+    };
     es.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
-        if (data.log) setLogs(data.log);
-        if (data.ts) setOverview(data.overview || overview);
+        const extracted = extractLog(data);
+        if (extracted.length > 0) setLogs(extracted);
+        if (data.overview) setOverview(data.overview);
       } catch {
         /* ignorieren */
       }
@@ -63,7 +75,8 @@ export default function MissionControlPage() {
     es.addEventListener("init", (ev) => {
       try {
         const data = JSON.parse((ev as MessageEvent).data);
-        setLogs(data.log || []);
+        const extracted = extractLog(data);
+        if (extracted.length > 0) setLogs(extracted);
       } catch {
         /* ignorieren */
       }
@@ -71,7 +84,8 @@ export default function MissionControlPage() {
     es.addEventListener("log", (ev) => {
       try {
         const data = JSON.parse((ev as MessageEvent).data);
-        setLogs(data.log || []);
+        const extracted = extractLog(data);
+        if (extracted.length > 0) setLogs(extracted);
       } catch {
         /* ignorieren */
       }
