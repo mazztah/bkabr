@@ -35,6 +35,7 @@ import {
   LayoutDashboard,
   ChevronDown,
   X,
+  Activity,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -54,7 +55,14 @@ interface NavGroup {
 const GROUPS: NavGroup[] = [
   {
     title: "Übersicht",
-    items: [{ href: "/dashboard", label: "Dashboard", icon: LayoutDashboard }],
+    items: [
+      { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      {
+        href: "/dashboard/mission-control",
+        label: "Mission Control",
+        icon: Activity,
+      },
+    ],
   },
   {
     title: "Struktur",
