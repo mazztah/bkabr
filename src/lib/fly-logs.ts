@@ -31,7 +31,7 @@
  *    leer.
  */
 
-import { connect, type NatsConnection, type Msg, type Subscription } from "nats";
+import { connect, type NatsConnection, type Msg, type Subscription, type NatsError } from "nats";
 
 // NATS-Endpoint des Fly.io-internen Log-Proxys (privat, nur im Fly-6PN-Netz
 // erreichbar). Dies ist die feste Adresse, die Fly.io für den Log-NATS-Proxy
@@ -177,13 +177,28 @@ function pushEntry(entry: FlyLogEintrag): void {
   state.buffer = [entry, ...state.buffer].slice(0, FLY_LOG_MAX);
 }
 
-/** Callback für eingehende NATS-Nachrichten. */
-function onFlyLog(msg: Msg): void {
+/**
+ * Callback für eingehende NATS-Nachrichten.
+ *
+ * WICHTIG: nats.js ruft Callbacks als `(err, msg) => void` auf – Fehler
+ * ZUERST, Message ZWEITENS (siehe SubOpts.callback in nats-base-client).
+ * Eine Signatur mit nur einem Parameter wie vorher `onFlyLog(msg: Msg)`
+ * bekommt bei jeder erfolgreichen Nachricht `null` (den Error-Wert)
+ * zugewiesen, nicht die echte Message – jeder Feldzugriff wirft dann einen
+ * TypeError, der still im try/catch landet. Das erklärte, warum trotz
+ * "NATS verbunden" nie ein einziger Eintrag im Ringpuffer ankam.
+ */
+function onFlyLog(err: NatsError | null, msg: Msg): void {
+  if (err) {
+    state.letzterFehler = err instanceof Error ? err.message : String(err);
+    console.warn(`[fly-logs] Fehler beim Empfang einer Nachricht: ${state.letzterFehler}`);
+    return;
+  }
   try {
     const parsed = parseFlyMessage(msg);
     pushEntry({ id: uidFly(), ...parsed });
-  } catch (err) {
-    state.letzterFehler = err instanceof Error ? err.message : String(err);
+  } catch (parseErr) {
+    state.letzterFehler = parseErr instanceof Error ? parseErr.message : String(parseErr);
   }
 }
 
