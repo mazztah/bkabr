@@ -59,7 +59,7 @@ Neue Marketing-Abschnitte sollten ausschließlich diese Bausteine verwenden stat
 
 Die Quell-HTML-Vorlagen (für Anpassungen/neue Formate) liegen unter `brand-assets/*.html` im Lieferpaket und lassen sich mit Playwright (`node render.js`) erneut als PNG rendern.
 
-## 7. Anwendungsbeispiele im Produkt
+## 7. Anwendungsbeispiele im  Produkt
 
 - **PDF-/Vorschau-Briefkopf:** `logo.png`, siehe `src/components/PreviewModal.tsx` & `src/lib/pdf.ts`
 - **Marketing-Navbar/Footer:** `logo-icon.png`, siehe `src/components/marketing/Navbar.tsx` & `Footer.tsx`
