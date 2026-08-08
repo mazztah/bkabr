@@ -181,6 +181,9 @@ async function connectAndSubscribe(): Promise<void> {
     console.warn(`[fly-logs] ${letzterFehler}`);
     return;
   }
+  console.info(
+    `[fly-logs] Verbindungsversuch → ${FLY_NATS_URL} (user="${FLY_ORG}", pass=${FLY_ACCESS_TOKEN.length} Zeichen, subject="${FLY_LOG_SUBJECT}")`
+  );
   try {
     nc = await connect({
       servers: FLY_NATS_URL,

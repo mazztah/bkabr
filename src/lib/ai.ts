@@ -16,6 +16,29 @@ import { mietRueckstand } from "./mietkonto";
 import { createChatCompletion, VISION_MODEL } from "./groq-client";
 
 /**
+ * Erkennt Small-Talk / triviale Nachrichten ("hallo", "danke", "ok" …), bei
+ * denen KEIN Portfolio-Kontext nötig ist. Grund: chatWithContext hat vorher
+ * bei JEDER Nachricht das komplette Portfolio (alle Liegenschaften → Gebäude
+ * → Wohnungen → Mieter inkl. Miete/Rückständen) + bis zu 40 Mietrückstände +
+ * bis zu 30 Abrechnungen in den System-Prompt gepackt. Bei einem größeren
+ * Bestand sind das schnell mehrere tausend Tokens – für "hallo" komplett
+ * verschwendet und laut Server-Logs regelmäßig der Grund, warum bereits der
+ * erste Modell-Versuch mit "Request too large" scheitert und die gesamte
+ * Fallback-Kette (7-8 Provider) durchlaufen wird, bevor überhaupt geantwortet
+ * werden kann.
+ */
+function isSmallTalk(message: string): boolean {
+  const m = message
+    .trim()
+    .toLowerCase()
+    .replace(/[!?.,;:]+$/g, "");
+  if (m.length > 40) return false; // längere Nachrichten haben fast immer fachlichen Bezug
+  return /^(hallo|hi|hey|servus|moin|guten\s*(morgen|tag|abend)|na|test|ok|okay|danke|dankeschön|super|top|passt|alles klar|verstanden|gut|cool|nice)\b/.test(
+    m
+  );
+}
+
+/**
  * Robustes JSON-Parsing aus LLM-Antworten.
  * Free-Tier-Modelle liefern gelegentlich abgeschnittenes JSON, Markdown-Fences
  * oder Text vor/nach dem Objekt – das hier abfangen, bevor der Upload scheitert.
@@ -950,6 +973,28 @@ ${JSON.stringify(overview, null, space)}`;
         content: h.content.length > 1500 ? h.content.slice(0, 1500) + "…" : h.content,
       }) as Groq.Chat.Completions.ChatCompletionMessageParam
   );
+
+  // Small-Talk ("hallo", "danke" …) braucht keinen Portfolio-Dump – spart
+  // pro Nachricht mehrere tausend Tokens und vermeidet unnötige
+  // Provider-Fallback-Ketten. Nur wenn KEINE Historie vorliegt, da sonst ein
+  // vorheriger fachlicher Turn den Kontext ggf. weiter braucht.
+  if (isSmallTalk(message) && hist.length === 0) {
+    try {
+      const completion = await createChatCompletion({
+        max_completion_tokens: 300,
+        messages: [
+          {
+            role: "system",
+            content: `${systemBase}\n\n(Kein Portfolio-Kontext geladen – das ist Small-Talk. Bei Bedarf kann der Nutzer gezielt nach Portfolio/Rückständen/Abrechnungen fragen, dann wird der volle Kontext geladen.)`,
+          },
+          { role: "user", content: message },
+        ],
+      });
+      return completion.choices[0]?.message?.content || "";
+    } catch {
+      // Bei Fehler ganz normal mit vollem Kontext weitermachen (unten).
+    }
+  }
 
   // 1. Versuch: normal kompakt (ohne Pretty-Print)
   try {

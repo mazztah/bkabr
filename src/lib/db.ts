@@ -1,5 +1,6 @@
 import { promises as fs } from "fs";
 import path from "path";
+import { pingProviderModel } from "./llm-observability";
 import {
   AblageDokument,
   Abrechnung,
