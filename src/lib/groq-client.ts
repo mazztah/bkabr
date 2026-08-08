@@ -127,6 +127,20 @@ const STRUCTURED_OUTPUT_UNSAFE_MODELS = new Set([
   "qwen/qwen3.6-27b", // in Praxis vereinzelt json_validate_failed bei strikter Extraktion
 ]);
 
+/**
+ * Groq-Modelle im On-Demand-Tier mit 8000-TPM-Limit (laut Fehlermeldungen in
+ * der Praxis beobachtet: "Limit 8000" für gpt-oss-120b, gpt-oss-20b und
+ * qwen3.6-27b). Wird das Tools-Schema allein schon zu groß für dieses Limit,
+ * werden diese Modelle übersprungen statt garantiert zu scheitern.
+ */
+const LOW_TPM_GROQ_MODELS = new Set([
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-20b",
+  "qwen/qwen3.6-27b",
+]);
+/** Schwelle (Tokens, nur Tools-Schema): ab hier bleibt zu wenig Spielraum für Nachricht+Antwort bei 8000 TPM. */
+const LOW_TPM_SKIP_THRESHOLD = 5500;
+
 export function getTextModels(): string[] {
   let models: string[];
   if (process.env.GROQ_TEXT_MODELS) {
@@ -607,9 +621,13 @@ function applyTokenBudget(model: string, params: ChatParams): ChatParams {
 
   // System + letzte User-Nachricht priorisieren; ältere Turns kürzen
   let inputTokens = estimateMessagesTokens(messages);
-  const toolsTax = params.tools?.length
-    ? Math.min(2000, estimateTokens(JSON.stringify(params.tools)))
-    : 0;
+  // Tools-Tax: echte Schätzung, NICHT künstlich gedeckelt. Der Agent-Pfad
+  // hängt bis zu 48 Tool-Definitionen an (~34.000 Zeichen Quelltext,
+  // real ca. 5000-9000 Tokens je nach Modell-Tokenizer) – ein Deckel bei
+  // 2000 hat das Budget systematisch schöngerechnet und dazu geführt, dass
+  // JEDE Anfrage mit Tools bei den kleinsten Modellen (8000 TPM) garantiert
+  // mit "Request too large" scheiterte, obwohl der Code "safe" meldete.
+  const toolsTax = params.tools?.length ? estimateTokens(JSON.stringify(params.tools)) : 0;
   inputTokens += toolsTax;
 
   // max completion so wählen, dass Input + Completion ≤ TPM_SAFE
@@ -721,6 +739,30 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
     if (needsStructuredOutput) {
       const filtered = models.filter((m) => !STRUCTURED_OUTPUT_UNSAFE_MODELS.has(m));
       if (filtered.length > 0) models = filtered;
+    }
+
+    // Groq-Modelle mit niedrigem TPM-Limit (8000, On-Demand-Tier) von
+    // vornherein überspringen, wenn allein das Tools-Schema (z.B. die 48
+    // Agent-Tools, ~5000-9000 Tokens je nach Tokenizer) schon nahe an dieses
+    // Limit heranreicht. Ohne diese Prüfung wird bei JEDEM Agent-Aufruf
+    // garantiert 2x "Request too large" produziert, bevor überhaupt ein
+    // Modell mit ausreichendem Kontingent versucht wird – kostet Zeit und
+    // unnötige Fehlerlogs, ändert aber nichts am Ergebnis.
+    if (params.tools?.length) {
+      const toolsEstimate = estimateTokens(JSON.stringify(params.tools));
+      if (toolsEstimate > LOW_TPM_SKIP_THRESHOLD) {
+        const before = models.length;
+        models = models.filter((m) => !LOW_TPM_GROQ_MODELS.has(m));
+        if (models.length === 0) {
+          // Alle Groq-Modelle rausgefiltert (keine Cerebras/Cloudflare/NVIDIA
+          // konfiguriert) – dann lieber doch versuchen als komplett leer.
+          models = groqModels;
+        } else if (models.length < before) {
+          console.warn(
+            `[groq] Tools-Schema ≈${toolsEstimate} Tokens: ${before - models.length} Groq-Modell(e) mit 8000-TPM-Limit übersprungen.`
+          );
+        }
+      }
     }
 
     // Cerebras als zusätzliche Fallback-Stufe anhängen (eigenes Kontingent).
