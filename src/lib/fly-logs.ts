@@ -70,13 +70,30 @@ export interface FlyLogEintrag {
   region?: string;
 }
 
-let nc: NatsConnection | null = null;
-let sub: Subscription | null = null;
-let started = false;
-let letzterFehler: string | null = null;
-
-/** Ringpuffer – neueste Einträge am Anfang. */
-let buffer: FlyLogEintrag[] = [];
+/**
+ * Next.js kompiliert `instrumentation.ts` (Server-Start-Hook) und API-Routes
+ * als SEPARATE Webpack-Bundles. Ganz normale `let`-Modulvariablen wie unten
+ * würden dadurch in JEDEM Bundle eine EIGENE Kopie bekommen: die
+ * Hintergrund-Verbindung (aus instrumentation.ts gestartet) lebt dann in
+ * einer Kopie, während `/api/dashboard/log-stream` beim Abfragen eine
+ * andere, leere Kopie sieht → Verbindung erfolgreich laut Server-Log, aber
+ * im Frontend dauerhaft "inaktiv". `globalThis` ist dagegen der einzige
+ * Ort, der über alle Bundles hinweg im selben Node-Prozess garantiert
+ * geteilt wird – deshalb hier als echter Singleton-Speicher genutzt.
+ */
+interface FlyLogsGlobalState {
+  nc: NatsConnection | null;
+  sub: Subscription | null;
+  started: boolean;
+  letzterFehler: string | null;
+  buffer: FlyLogEintrag[];
+}
+const globalKey = "__bkabr_flyLogsState__";
+const g = globalThis as unknown as Record<string, FlyLogsGlobalState | undefined>;
+if (!g[globalKey]) {
+  g[globalKey] = { nc: null, sub: null, started: false, letzterFehler: null, buffer: [] };
+}
+const state: FlyLogsGlobalState = g[globalKey]!;
 
 /** Generiert eine kurze, eindeutige ID für einen Log-Eintrag. */
 function uidFly(): string {
@@ -157,7 +174,7 @@ function normalizeFlyLevel(level: string): string {
 
 /** Fügt einen Eintrag in den Ringpuffer ein (neueste zuerst, begrenzt). */
 function pushEntry(entry: FlyLogEintrag): void {
-  buffer = [entry, ...buffer].slice(0, FLY_LOG_MAX);
+  state.buffer = [entry, ...state.buffer].slice(0, FLY_LOG_MAX);
 }
 
 /** Callback für eingehende NATS-Nachrichten. */
@@ -166,26 +183,36 @@ function onFlyLog(msg: Msg): void {
     const parsed = parseFlyMessage(msg);
     pushEntry({ id: uidFly(), ...parsed });
   } catch (err) {
-    letzterFehler = err instanceof Error ? err.message : String(err);
+    state.letzterFehler = err instanceof Error ? err.message : String(err);
   }
 }
 
 async function connectAndSubscribe(): Promise<void> {
   if (!FLY_ORG) {
-    letzterFehler = "FLY_ORG nicht gesetzt (Org-Slug, z.B. 'personal'; siehe `fly orgs list`).";
-    console.warn(`[fly-logs] ${letzterFehler}`);
+    state.letzterFehler = "FLY_ORG nicht gesetzt (Org-Slug, z.B. 'personal'; siehe `fly orgs list`).";
+    console.warn(`[fly-logs] ${state.letzterFehler}`);
     return;
   }
+  if (FLY_ORG.includes("@")) {
+    // Häufiger Stolperstein: FLY_ORG versehentlich auf die Fly.io-Login-
+    // E-Mail statt auf den Org-Slug gesetzt → NATS lehnt mit "Authorization
+    // Violation" ab. Der Slug (siehe `fly orgs list`) ist NIE eine E-Mail-
+    // Adresse, bei Einzelaccounts praktisch immer "personal".
+    console.warn(
+      `[fly-logs] FLY_ORG ("${FLY_ORG}") sieht wie eine E-Mail-Adresse aus, nicht wie ein Org-Slug. ` +
+        `Erwartet wird der Slug aus \`fly orgs list\` (bei Einzelaccounts meist "personal"). Verbindungsversuch trotzdem, wird aber vermutlich mit "Authorization Violation" scheitern.`
+    );
+  }
   if (!FLY_ACCESS_TOKEN) {
-    letzterFehler = "ACCESS_TOKEN / FLY_ACCESS_TOKEN nicht gesetzt (Secret fehlt oder falscher Name).";
-    console.warn(`[fly-logs] ${letzterFehler}`);
+    state.letzterFehler = "ACCESS_TOKEN / FLY_ACCESS_TOKEN nicht gesetzt (Secret fehlt oder falscher Name).";
+    console.warn(`[fly-logs] ${state.letzterFehler}`);
     return;
   }
   console.info(
     `[fly-logs] Verbindungsversuch → ${FLY_NATS_URL} (user="${FLY_ORG}", pass=${FLY_ACCESS_TOKEN.length} Zeichen, subject="${FLY_LOG_SUBJECT}")`
   );
   try {
-    nc = await connect({
+    state.nc = await connect({
       servers: FLY_NATS_URL,
       // Fly.io's NATS-Log-Proxy nutzt Username/Passwort-Auth, KEIN
       // Bearer-Token: Username = Org-Slug, Passwort = Access-Token.
@@ -198,26 +225,26 @@ async function connectAndSubscribe(): Promise<void> {
       maxReconnectAttempts: 5,
       reconnectTimeWait: 2000,
     });
-    sub = nc.subscribe(FLY_LOG_SUBJECT, { callback: onFlyLog });
+    state.sub = state.nc.subscribe(FLY_LOG_SUBJECT, { callback: onFlyLog });
     console.info(`[fly-logs] NATS verbunden (${FLY_NATS_URL}), Subject "${FLY_LOG_SUBJECT}".`);
 
     // Verbindung sauber zurücksetzen, falls sie im Hintergrund geschlossen
     // wird (z.B. Netzwerkfehler nach ausgeschöpften Reconnect-Versuchen),
     // damit isFlyLoggingActive() den Status korrekt widerspiegelt.
-    nc.closed().then((err) => {
+    state.nc.closed().then((err) => {
       if (err) {
-        letzterFehler = err instanceof Error ? err.message : String(err);
-        console.warn(`[fly-logs] NATS-Verbindung mit Fehler geschlossen: ${letzterFehler}`);
+        state.letzterFehler = err instanceof Error ? err.message : String(err);
+        console.warn(`[fly-logs] NATS-Verbindung mit Fehler geschlossen: ${state.letzterFehler}`);
       } else {
         console.info("[fly-logs] NATS-Verbindung geschlossen.");
       }
-      nc = null;
-      sub = null;
+      state.nc = null;
+      state.sub = null;
     });
   } catch (err) {
-    letzterFehler = err instanceof Error ? err.message : String(err);
-    console.warn(`[fly-logs] NATS-Verbindung fehlgeschlagen: ${letzterFehler}`);
-    nc = null;
+    state.letzterFehler = err instanceof Error ? err.message : String(err);
+    console.warn(`[fly-logs] NATS-Verbindung fehlgeschlagen: ${state.letzterFehler}`);
+    state.nc = null;
   }
 }
 
@@ -227,23 +254,23 @@ async function connectAndSubscribe(): Promise<void> {
  * passiert nichts Schädliches – nur der FLY-Teil bleibt leer.
  */
 export async function startFlyLogTicker(): Promise<void> {
-  if (started) return;
-  started = true;
+  if (state.started) return;
+  state.started = true;
   await connectAndSubscribe();
 }
 
 /** Liefert die zuletzt empfangenen Fly-Logs (neueste zuerst). */
 export function getRecentFlyLogs(limit = 50): FlyLogEintrag[] {
-  return buffer.slice(0, limit);
+  return state.buffer.slice(0, limit);
 }
 
 /** Status, ob das Fly-NATS-Streaming aktiv ist. */
 export function isFlyLoggingActive(): boolean {
-  return Boolean(nc && sub);
+  return Boolean(state.nc && state.sub);
 }
 
 /** Letzter Fehler (für UI-Hinweis) oder null. */
 export function getFlyLogError(): string | null {
-  return letzterFehler;
+  return state.letzterFehler;
 }
 
