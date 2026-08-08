@@ -87,8 +87,29 @@ interface DbShape {
   };
 }
 
-let cache: DbShape | null = null;
-let writeQueue: Promise<void> = Promise.resolve();
+/**
+ * Next.js kompiliert unterschiedliche Routen/Hooks (API-Routes,
+ * instrumentation.ts, Server Actions) als SEPARATE Webpack-Bundles. Normale
+ * `let`-Modulvariablen wie `cache`/`writeQueue` würden dadurch in JEDEM
+ * Bundle eine EIGENE Kopie bekommen: eine Route schreibt erfolgreich auf die
+ * Platte, eine ANDERE Route (mit eigenem, eingefrorenem In-Memory-Cache seit
+ * ihrem allerersten `readDb()`-Aufruf) sieht diese Schreibvorgänge nie und
+ * zeigt dauerhaft veraltete/leere Daten (z.B. "Calls: 0" im AI Observatory,
+ * obwohl tatsächlich laufend Aufrufe passieren). Exakt derselbe
+ * Bug-Mechanismus wie zuvor bei fly-logs.ts – `globalThis` ist der einzige
+ * Ort, der über alle Bundles hinweg im selben Node-Prozess garantiert
+ * geteilt wird, deshalb hier als echter Singleton-Speicher genutzt.
+ */
+interface DbGlobalState {
+  cache: DbShape | null;
+  writeQueue: Promise<void>;
+}
+const DB_GLOBAL_KEY = "__bkabr_dbState__";
+const dbGlobal = globalThis as unknown as Record<string, DbGlobalState | undefined>;
+if (!dbGlobal[DB_GLOBAL_KEY]) {
+  dbGlobal[DB_GLOBAL_KEY] = { cache: null, writeQueue: Promise.resolve() };
+}
+const dbState: DbGlobalState = dbGlobal[DB_GLOBAL_KEY]!;
 
 async function ensureDataDir() {
   await fs.mkdir(DATA_DIR, { recursive: true });
@@ -125,27 +146,27 @@ aiUsageLog: db.aiUsageLog || [],
 }
 
 async function readDb(): Promise<DbShape> {
-  if (cache) return cache;
+  if (dbState.cache) return dbState.cache;
   await ensureDataDir();
   try {
     const raw = await fs.readFile(DB_FILE, "utf-8");
-    cache = withDefaults(JSON.parse(raw) as Partial<DbShape>);
+    dbState.cache = withDefaults(JSON.parse(raw) as Partial<DbShape>);
   } catch {
-    cache = withDefaults({});
-    await writeDb(cache);
+    dbState.cache = withDefaults({});
+    await writeDb(dbState.cache);
   }
-  return cache!;
+  return dbState.cache!;
 }
 
 async function writeDb(db: DbShape) {
-  cache = db;
-  writeQueue = writeQueue.then(async () => {
+  dbState.cache = db;
+  dbState.writeQueue = dbState.writeQueue.then(async () => {
     await ensureDataDir();
     const tmp = DB_FILE + ".tmp";
     await fs.writeFile(tmp, JSON.stringify(db, null, 2), "utf-8");
     await fs.rename(tmp, DB_FILE);
   });
-  await writeQueue;
+  await dbState.writeQueue;
 }
 
 /**

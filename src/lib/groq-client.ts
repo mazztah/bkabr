@@ -822,6 +822,28 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
           model,
         });
       }
+      // "Erfolgreich, aber leer" ist KEIN echter Erfolg: manche Modelle
+      // (v.a. die schwächeren Fallback-Stufen wie glm-4.7-flash) liefern
+      // gelegentlich HTTP 200 mit leerem content zurück, ohne dass ein Fehler
+      // geworfen wird. Ohne diese Prüfung wird das als "Erfolg" akzeptiert
+      // und an den Nutzer als "(Keine Antwort)" durchgereicht, obwohl noch
+      // weitere Fallback-Stufen verfügbar wären. Bei echten Tool-Calls ist
+      // leerer content dagegen normal (das Modell antwortet dann über
+      // tool_calls statt Text) – das wird hier bewusst nicht als leer gewertet.
+      const replyMsg = completion.choices?.[0]?.message as
+        | { content?: string | null; tool_calls?: unknown[] }
+        | undefined;
+      const hasToolCalls = Boolean(replyMsg?.tool_calls?.length);
+      const isBlankReply = !hasToolCalls && !String(replyMsg?.content ?? "").trim();
+      const hasMoreForBlank = i < models.length - 1;
+      if (isBlankReply && hasMoreForBlank) {
+        const next = models[i + 1];
+        console.warn(
+          `[${providerNameOf(model)}] Modell ${stripProviderPrefix(model)} lieferte leere Antwort (HTTP ok, aber kein content). Fallback → ${stripProviderPrefix(next)}`
+        );
+        continue;
+      }
+
       // Sichtbares Erfolgs-Log, sobald NICHT das primäre Modell verwendet wurde –
       // sonst bleibt bei einem Fallback (insb. Cerebras/Cloudflare/NVIDIA) unklar, ob
       // der Request überhaupt durchgekommen ist ("kein Feedback von der Cloudflare API").
