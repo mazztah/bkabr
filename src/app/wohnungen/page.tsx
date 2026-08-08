@@ -91,34 +91,60 @@ export default function WohnungenPage() {
         ) : data.wohnungen.length === 0 ? (
           <p className="p-4 text-sm text-muted-foreground">Noch keine Wohnungen angelegt.</p>
         ) : (
-          <div className="space-y-0.5 p-2">
-            {data.wohnungen.map((w) => {
-              const geb = data.gebaeude.find((g) => g.id === w.gebaeudeId);
-              const mieterAnzahl = data.mieter.filter((m) => m.wohnungId === w.id).length;
-              const active = selection?.type === "wohnung" && selection.id === w.id;
-              return (
-                <button
-                  key={w.id}
-                  onClick={() => setSelection({ type: "wohnung", id: w.id })}
-                  style={{ borderLeft: "3px solid #0ea5e9" }}
-                  className={cn(
-                    "block w-full rounded px-2 py-2 text-left text-sm",
-                    active ? "bg-primary text-primary-foreground" : "hover:bg-muted"
-                  )}
-                >
-                  <div className="truncate font-medium">🏢 {w.bezeichnung}</div>
-                  <div
+          <>
+            {(() => {
+              const leerAnzahl = data.wohnungen.filter(
+                (w) => !data.mieter.some((m) => m.wohnungId === w.id)
+              ).length;
+              return leerAnzahl > 0 ? (
+                <div className="border-b border-border bg-[var(--destructive)]/10 px-4 py-2 text-xs font-medium text-[var(--destructive)]">
+                  ⚠️ {leerAnzahl} von {data.wohnungen.length} Wohnungen ohne Mieter (Leerstand)
+                </div>
+              ) : null;
+            })()}
+            <div className="space-y-0.5 p-2">
+              {data.wohnungen.map((w) => {
+                const geb = data.gebaeude.find((g) => g.id === w.gebaeudeId);
+                const mieterAnzahl = data.mieter.filter((m) => m.wohnungId === w.id).length;
+                const active = selection?.type === "wohnung" && selection.id === w.id;
+                return (
+                  <button
+                    key={w.id}
+                    onClick={() => setSelection({ type: "wohnung", id: w.id })}
+                    style={{ borderLeft: "3px solid #0ea5e9" }}
                     className={cn(
-                      "truncate text-xs",
-                      active ? "text-primary-foreground/80" : "text-muted-foreground"
+                      "block w-full rounded px-2 py-2 text-left text-sm",
+                      active ? "bg-primary text-primary-foreground" : "hover:bg-muted"
                     )}
                   >
-                    {geb?.name || "ohne Gebäude"} · {mieterAnzahl > 0 ? `${mieterAnzahl} Mieter` : "leer"}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+                    <div className="flex items-center gap-1.5 truncate font-medium">
+                      🏢 {w.bezeichnung}
+                      {mieterAnzahl === 0 && (
+                        <span
+                          className={cn(
+                            "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold leading-none",
+                            active
+                              ? "bg-primary-foreground/20 text-primary-foreground"
+                              : "bg-[var(--destructive)]/15 text-[var(--destructive)]"
+                          )}
+                        >
+                          LEER
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      className={cn(
+                        "truncate text-xs",
+                        active ? "text-primary-foreground/80" : "text-muted-foreground"
+                      )}
+                    >
+                      {geb?.name || "ohne Gebäude"} · {mieterAnzahl > 0 ? `${mieterAnzahl} Mieter` : "kein Mieter zugeordnet"}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </>
         )}
       </aside>
 

@@ -63,6 +63,30 @@ function baseCapabilities() {
 }
 
 /**
+ * Bekannte Free-Tier-Limits (TPM/TPD), NUR für Modelle, bei denen die exakten
+ * Werte tatsächlich aus realen Fehlermeldungen des jeweiligen Providers
+ * beobachtet wurden (siehe Server-Logs) – bewusst KEINE geschätzten/
+ * erfundenen Werte für andere Modelle, um im Dashboard keine falsche
+ * Sicherheit vorzutäuschen. Fehlt ein Eintrag, zeigt das UI "unbekannt".
+ *
+ * groq/compound und groq/compound-mini sind Meta-Modelle: Groq routet sie
+ * intern an llama-4-scout-17b-16e-instruct bzw. llama-3.3-70b-versatile –
+ * die Limits gelten für DIESE zugrunde liegenden Modelle, nicht für
+ * "compound" selbst.
+ */
+export const KNOWN_FREE_TIER_LIMITS: Record<
+  string,
+  { tpm?: number; tpd?: number; hinweis?: string }
+> = {
+  "groq:openai/gpt-oss-120b": { tpm: 8000, tpd: 200000 },
+  "groq:openai/gpt-oss-20b": { tpm: 8000 },
+  "groq:qwen/qwen3.6-27b": { tpm: 8000 },
+  "groq:groq/compound-mini": { tpd: 100000, hinweis: "Limit gilt für llama-3.3-70b-versatile (intern genutzt)" },
+  "groq:groq/compound": { tpm: 30000, hinweis: "Limit gilt für llama-4-scout-17b-16e-instruct (intern genutzt)" },
+  "groq:meta-llama/llama-4-scout-17b-16e-instruct": { tpm: 30000 },
+};
+
+/**
  * Statischer Modell-Katalog. Die `health`-Felder werden zur Laufzeit durch
  * db.ts (Ping-Ergebnisse, Rate-Limits) überschrieben bzw. ergänzt – hier
  * stehen die Stammdaten (Firma, Release, Context, Links).

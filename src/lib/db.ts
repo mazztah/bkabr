@@ -495,6 +495,12 @@ export async function getDashboardUebersicht(): Promise<DashboardUebersicht> {
   // -- Objekte / Belegung --
   const mieterAktiv = db.mieter.filter((m) => (m.status || "aktiv") === "aktiv").length;
   const belegungsquote = db.wohnungen.length > 0 ? mieterAktiv / db.wohnungen.length : null;
+  // Echte Leerstands-Zählung je Einheit (nicht nur das Mieter/Wohnungen-
+  // Verhältnis, das bei mehreren Mietern pro Wohnung verzerren würde):
+  // eine Wohnung zählt als leer, wenn ihr KEIN aktiver Mieter zugeordnet ist.
+  const wohnungenLeer = db.wohnungen.filter(
+    (w) => !db.mieter.some((m) => m.wohnungId === w.id && (m.status || "aktiv") === "aktiv")
+  ).length;
 
   const objekte = {
     liegenschaften: db.liegenschaften.length,
@@ -502,6 +508,7 @@ export async function getDashboardUebersicht(): Promise<DashboardUebersicht> {
     wohnungen: db.wohnungen.length,
     mieterAktiv,
     belegungsquote,
+    wohnungenLeer,
   };
 
   // -- Abrechnungen nach Status --
@@ -1527,6 +1534,25 @@ export async function getObservabilityOverview(): Promise<ObservabilityOverview>
     }
     return entry;
   });
+
+  // Tokens aus aiUsageLog je Modell aufsummieren und einspielen (gleiche
+  // ID-Bildung "{provider}:{model}" wie im Katalog, siehe recordAiUsage-
+  // Aufruf in groq-client.ts).
+  const tokensProModell = new Map<string, { promptTokens: number; completionTokens: number }>();
+  for (const e of db.aiUsageLog) {
+    const key = `${e.provider}:${e.model}`;
+    const agg = tokensProModell.get(key) || { promptTokens: 0, completionTokens: 0 };
+    agg.promptTokens += e.promptTokens;
+    agg.completionTokens += e.completionTokens;
+    tokensProModell.set(key, agg);
+  }
+  for (const entry of modelCatalog) {
+    const tok = tokensProModell.get(entry.id);
+    if (tok) {
+      entry.health.promptTokens = tok.promptTokens;
+      entry.health.completionTokens = tok.completionTokens;
+    }
+  }
 
   // Provider-Health in die Health-Werte einfließen lassen aus konfigurierten Keys
   const hasGroq = Boolean(process.env.GROQ_API_KEY);

@@ -39,6 +39,55 @@ function isSmallTalk(message: string): boolean {
 }
 
 /**
+ * Kontext-Engineering: klassifiziert, welchen DATENUMFANG eine Anfrage
+ * tatsächlich braucht, statt bei jeder Nachricht denselben vollen
+ * Portfolio-Dump (alle Liegenschaften→Gebäude→Wohnungen→Mieter inkl.
+ * Finanzdaten, Rückstände, Abrechnungen) mitzuschicken. Das war der
+ * Hauptgrund, warum selbst einfache Fragen ("welche Liegenschaften haben
+ * wir") die Free-Tier-TPM-Limits mehrerer Modelle in der Fallback-Kette
+ * gesprengt haben.
+ *
+ * Bewusst KONSERVATIV: Sobald ein Begriff auftaucht, der auf Finanzen,
+ * Abrechnungen, Verträge oder Mieter-Details hindeutet, wird "voll"
+ * zurückgegeben (aktuelles, bewährtes Verhalten). Die leichten Stufen
+ * greifen nur bei eindeutig eng umrissenen Struktur-/Belegungsfragen.
+ * Lieber einmal zu viel Kontext als eine falsche/unvollständige Antwort in
+ * einer Hausverwaltungs-App.
+ */
+type KontextBedarf = "adressen" | "belegung" | "rueckstaende" | "voll";
+
+function klassifiziereKontextbedarf(message: string): KontextBedarf {
+  const m = message.toLowerCase();
+
+  const hatFinanzBezug =
+    /miete\b|kaltmiete|nebenkosten|kosten|saldo|guthaben|nachzahlung|zahlung|betrag|summe|\beuro\b|€|vertrag|kündig/.test(
+      m
+    );
+  const hatAbrechnungsBezug = /abrechnung|beleg|position/.test(m);
+  const hatRueckstandsBezug =
+    /rückstand|rueckstand|säumig|saeumig|schulden|offene?\s*(miete|forderung)|mahnung/.test(m);
+  const hatMieterDetailBezug = /\bmieter\b.*(kontakt|telefon|email|e-mail|wer\b)|kontakt|telefon|e-?mail/.test(m);
+
+  // Finanz-/Abrechnungs-/Vertragsfragen und Mieter-Detailfragen sind stark
+  // verflochten – hier lieber der bewährte volle Kontext.
+  if (hatAbrechnungsBezug || hatFinanzBezug || hatMieterDetailBezug) return "voll";
+  if (hatRueckstandsBezug) return "rueckstaende";
+
+  // Reine Bestands-/Struktur-Fragen ohne Wohnungs-/Belegungsbezug:
+  // "welche Liegenschaften haben wir", "wie viele Gebäude" …
+  if (/liegenschaft|gebäude|gebaeude|\bobjekt(e)?\b|adresse|\bbestand\b/.test(m) && !/wohnung|einheit|leerstand|frei|belegt/.test(m)) {
+    return "adressen";
+  }
+
+  // Belegungs-/Leerstandsfragen: wie viele Wohnungen, Leerstände, frei/belegt
+  if (/leerstand|leer\s*steh|unbelegt|\bbelegt\b|\bfrei\b|wohnung|einheit/.test(m)) {
+    return "belegung";
+  }
+
+  return "voll";
+}
+
+/**
  * Robustes JSON-Parsing aus LLM-Antworten.
  * Free-Tier-Modelle liefern gelegentlich abgeschnittenes JSON, Markdown-Fences
  * oder Text vor/nach dem Objekt – das hier abfangen, bevor der Upload scheitert.
@@ -918,6 +967,54 @@ export async function chatWithContext(params: {
     .sort((a, b) => b.rs - a.rs)
     .slice(0, 40);
 
+  // ---- Leichte Kontext-Stufen (Kontext-Engineering) ----
+
+  // Stufe "adressen": nur Name/Adresse/Anzahl je Liegenschaft – keine
+  // Wohnungs- oder Mieter-Details. Für reine Bestandsfragen.
+  const bestandAdressen = liegenschaften.map((lg) => {
+    const lgGebaeude = gebaeude.filter((g) => g.liegenschaftId === lg.id);
+    const wohnungenAnzahl = lgGebaeude.reduce(
+      (s, g) => s + wohnungen.filter((w) => w.gebaeudeId === g.id).length,
+      0
+    );
+    return {
+      id: lg.id,
+      name: lg.name,
+      adr: `${lg.strasse} ${lg.hausnummer}, ${lg.plz} ${lg.ort}`,
+      gebaeude: lgGebaeude.length,
+      wohnungen: wohnungenAnzahl,
+    };
+  });
+
+  // Stufe "belegung": Wohnungen mit belegt/frei-Status je Gebäude – ohne
+  // Mieter-Namen oder Finanzdaten. Für Leerstands-/Belegungsfragen.
+  const belegungsUebersicht = liegenschaften.map((lg) => {
+    const lgGebaeude = gebaeude.filter((g) => g.liegenschaftId === lg.id);
+    return {
+      id: lg.id,
+      name: lg.name,
+      adr: `${lg.strasse} ${lg.hausnummer}`,
+      geb: lgGebaeude.map((g) => {
+        const gWohnungen = wohnungen.filter((w) => w.gebaeudeId === g.id);
+        return {
+          name: g.name,
+          eh: gWohnungen.map((w) => ({
+            bez: w.bezeichnung,
+            belegt: mieter.some((m) => m.wohnungId === w.id),
+          })),
+        };
+      }),
+    };
+  });
+  const leerstandGesamt = belegungsUebersicht.reduce(
+    (s, lg) => s + lg.geb.reduce((s2, g) => s2 + g.eh.filter((e) => !e.belegt).length, 0),
+    0
+  );
+  const einheitenGesamt = belegungsUebersicht.reduce(
+    (s, lg) => s + lg.geb.reduce((s2, g) => s2 + g.eh.length, 0),
+    0
+  );
+
   const currentKurz = current
     ? {
         id: current.id,
@@ -942,7 +1039,8 @@ Seite: ${pageLabel} (${path})
 
 Regeln:
 - Für Liegenschaften/Mieter/Rückstände NUR "portfolio" und "mietrueckstaende" nutzen – NICHT "abrechnungen" (Belege).
-- Wenn portfolio leer: das sagen, nicht raten.
+- Falls stattdessen "bestand" (nur Adressen/Anzahl) oder "belegung" (nur belegt/frei je Einheit, keine Namen) mitgeschickt wird: das ist bewusst ein reduzierter Kontext für diese enge Frage – die Angaben darin sind vollständig und aktuell, kein Hinweis auf fehlende Daten nötig.
+- Wenn portfolio/bestand/belegung leer: das sagen, nicht raten.
 - Knapp, Deutsch, Listen ok.
 - Behaupte NIEMALS, du hättest keine Schreibrechte oder könntest Stammdaten nicht ändern.
 - Aufträge wie „Stammdaten nachtragen“, „Befunde bereinigen“, Mahnungen: der Server-Agent führt sie aus (Tools). Wenn der Nutzer das will, formuliere klar, dass er denselben Satz nochmal senden kann – ideal: „Stammdaten aus Mietverträgen nachtragen“.
@@ -993,6 +1091,39 @@ ${JSON.stringify(overview, null, space)}`;
       return completion.choices[0]?.message?.content || "";
     } catch {
       // Bei Fehler ganz normal mit vollem Kontext weitermachen (unten).
+    }
+  }
+
+  // Kontext-Engineering: bei klar eng umrissenen Fragen (Bestand, Belegung,
+  // Rückstände) nur den dafür nötigen Datenausschnitt schicken statt des
+  // vollen Portfolios. Nur ohne Historie (siehe Small-Talk oben – bei einem
+  // Folge-Turn könnte der vorherige Kontext noch gebraucht werden). Liefert
+  // die reduzierte Anfrage eine leere Antwort oder wirft einen Fehler, wird
+  // unten regulär mit vollem Kontext weiterprobiert – nie stillschweigend
+  // eine unvollständige Antwort riskieren.
+  const kontextBedarf = klassifiziereKontextbedarf(message);
+  if (kontextBedarf !== "voll" && hist.length === 0) {
+    let leichterBody = "";
+    if (kontextBedarf === "adressen") {
+      leichterBody = `bestand:${JSON.stringify(bestandAdressen)}\n\n(Reduzierter Kontext: nur Bestandsliste – für Details zu Wohnungen/Mietern/Finanzen bitte gezielt nachfragen.)`;
+    } else if (kontextBedarf === "belegung") {
+      leichterBody = `belegung:${JSON.stringify(belegungsUebersicht)}\nleerstand_gesamt:${leerstandGesamt}\neinheiten_gesamt:${einheitenGesamt}\n\n(Reduzierter Kontext: nur Belegungsstatus je Einheit – KEINE Mieternamen oder Finanzdaten enthalten.)`;
+    } else if (kontextBedarf === "rueckstaende") {
+      leichterBody = `rs:${JSON.stringify(mietrueckstaende)}\n\n(Reduzierter Kontext: nur Mietrückstände – für Portfolio-Struktur oder Abrechnungen bitte gezielt nachfragen.)`;
+    }
+    try {
+      const completion = await createChatCompletion({
+        max_completion_tokens: 700,
+        messages: [
+          { role: "system", content: `${systemBase}\n\n${leichterBody}` },
+          { role: "user", content: message },
+        ],
+      });
+      const reply = completion.choices[0]?.message?.content || "";
+      if (reply.trim()) return reply;
+      // Leere Antwort → unten mit vollem Kontext weiterprobieren.
+    } catch {
+      // Fehler → unten mit vollem Kontext weiterprobieren.
     }
   }
 

@@ -229,6 +229,12 @@ function BusinessCockpit({ data }: { data: DashboardUebersicht }) {
       value: `${objekte.liegenschaften} / ${objekte.gebaeude} / ${objekte.wohnungen}`,
       href: "/liegenschaften",
     },
+    {
+      label: "Leerstände",
+      value: `${objekte.wohnungenLeer} von ${objekte.wohnungen}`,
+      href: "/wohnungen",
+      tone: objekte.wohnungenLeer > 0 ? "destructive" : "success",
+    },
     { label: "Aktive Mieter", value: String(objekte.mieterAktiv), href: "/mieter" },
     {
       label: "Abrechnungen (Rohdaten / Validierung / Fertig)",

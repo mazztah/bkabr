@@ -1112,6 +1112,8 @@ export interface DashboardObjektUebersicht {
   mieterAktiv: number;
   /** aktive Mieter / Wohnungen, 0..1 (null wenn keine Wohnungen vorhanden) */
   belegungsquote: number | null;
+  /** Anzahl Wohnungen ohne aktiven Mieter (echte Zählung je Einheit, nicht nur Verhältnis) */
+  wohnungenLeer: number;
 }
 
 export interface DashboardAbrechnungsUebersicht {
@@ -1466,6 +1468,9 @@ export interface ModelCatalogEntry {
     rateLimitCount: number;
     totalCalls: number;
     successCalls: number;
+    /** Summierte Tokens aus aiUsageLog (nur echte Aufrufe, kein Ping) */
+    promptTokens?: number;
+    completionTokens?: number;
   };
   /** Free-Tier-Info */
   freeTier?: {

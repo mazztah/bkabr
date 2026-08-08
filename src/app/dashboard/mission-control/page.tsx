@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { cn, fetchJson, formatDate } from "@/lib/utils";
+import { KNOWN_FREE_TIER_LIMITS } from "@/lib/llm-observability";
 import type {
   LedEntry,
   ModelCatalogEntry,
@@ -475,13 +476,24 @@ function CostObservatory({
   const totalCalls = models.reduce((s, m) => s + m.health.totalCalls, 0);
   const totalRateLimits = rateLimits.length;
   const freeTierExceeded = models.reduce((s, m) => s + m.health.freeTierExceededCount, 0);
+  const totalPromptTokens = models.reduce((s, m) => s + (m.health.promptTokens || 0), 0);
+  const totalCompletionTokens = models.reduce((s, m) => s + (m.health.completionTokens || 0), 0);
 
   return (
     <div>
-      <div className="mb-3 grid grid-cols-3 gap-3">
+      <p className="mb-3 text-xs text-muted-foreground">
+        Zählt jeden echten Modell-Aufruf (Erfolg oder Fehlschlag) seit dem letzten Server-Neustart.
+        „Rate-Limits" = 429/413-Antworten des Providers (TPM/TPD-Deckel erreicht), „Free-Tier-Exceed" =
+        402-Antworten (Guthaben/Kontingent aufgebraucht). TPM/TPD-Werte je Modell sind die zuletzt in
+        echten Fehlermeldungen beobachteten Provider-Limits – „unbekannt", wenn dazu noch keine
+        Fehlermeldung vorlag.
+      </p>
+      <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
         <SummaryTile label="Gesamtaufrufe" value={String(totalCalls)} />
         <SummaryTile label="Rate-Limits" value={String(totalRateLimits)} />
         <SummaryTile label="Free-Tier-Überschreitungen" value={String(freeTierExceeded)} />
+        <SummaryTile label="Prompt-Tokens" value={totalPromptTokens.toLocaleString("de-DE")} />
+        <SummaryTile label="Completion-Tokens" value={totalCompletionTokens.toLocaleString("de-DE")} />
       </div>
       <h2 className="mb-2 text-sm font-semibold">💰 Cost & Model Observatory</h2>
       <div className="rounded-lg border border-border bg-card">
@@ -489,6 +501,8 @@ function CostObservatory({
           {models.map((m) => {
             const h = m.health;
             const rateLimitProzent = h.totalCalls > 0 ? h.rateLimitCount / h.totalCalls : 0;
+            const limits = KNOWN_FREE_TIER_LIMITS[m.id];
+            const gesamtTokens = (h.promptTokens || 0) + (h.completionTokens || 0);
             return (
               <div
                 key={m.id}
@@ -499,8 +513,22 @@ function CostObservatory({
                   <div className="text-[10px] text-muted-foreground">
                     {m.provider} · Stufe {m.fallbackPriority}
                   </div>
+                  <div className="mt-0.5 text-[10px] text-muted-foreground">
+                    Limit: {limits?.tpm ? `${limits.tpm.toLocaleString("de-DE")} TPM` : ""}
+                    {limits?.tpm && limits?.tpd ? " · " : ""}
+                    {limits?.tpd ? `${limits.tpd.toLocaleString("de-DE")} TPD` : ""}
+                    {!limits?.tpm && !limits?.tpd ? "unbekannt" : ""}
+                  </div>
                 </div>
                 <div className="flex items-center gap-3 text-right">
+                  <div>
+                    <div className="text-[10px] text-muted-foreground">Tokens (in/out)</div>
+                    <div className="tabular-nums">
+                      {gesamtTokens > 0
+                        ? `${(h.promptTokens || 0).toLocaleString("de-DE")} / ${(h.completionTokens || 0).toLocaleString("de-DE")}`
+                        : "—"}
+                    </div>
+                  </div>
                   <div>
                     <div className="text-[10px] text-muted-foreground">Calls</div>
                     <div className="tabular-nums">{h.totalCalls}</div>
