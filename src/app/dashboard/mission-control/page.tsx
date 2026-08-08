@@ -95,7 +95,7 @@ const extractLog = (data: Record<string, unknown>): { id: string; zeitpunkt: str
       const extractedFly = extractFlyLog(data);
       if (extractedFly.length > 0) setFlyLogs(extractedFly);
       applyFlyStatus(data);
-      if (data.overview) setOverview(data.overview);
+      if (data.overview) setOverview(data.overview as ObservabilityOverview);
     };
     es.onmessage = (ev) => {
       try {

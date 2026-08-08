@@ -3,7 +3,9 @@ import type {
   ChatCompletion,
   ChatCompletionCreateParamsNonStreaming,
 } from "groq-sdk/resources/chat/completions";
-import { recordAiUsage } from "./db";
+import { recordAiUsage, recordModelCallStats, recordRateLimitEvent } from "./db";
+import type { RateLimitEvent, RateLimitKategorie } from "./types";
+import { uid } from "./utils";
 import type { AiProvider } from "./types";
 
 /**
@@ -252,6 +254,82 @@ export function getGroqClient(): Groq {
   return client;
 }
 
+/**
+ * Extrahiert Rate-Limit-Details aus Groq/Cerebras/Cloudflare-Fehlermeldungen
+ * für die "Letzte Rate-Limits"-Liste im Dashboard. Groq-Fehler haben ein
+ * erkennbares Muster wie:
+ *   "... on tokens per minute (TPM): Limit 8000, Requested 8123 ..."
+ *   "... on tokens per day (TPD): Limit 100000, Used 96525, Requested 8224.
+ *        Please try again in 1h8m23.13...s"
+ * Liefert `null`, wenn keine der bekannten Kategorien (TPM/TPD/RPM/RPD)
+ * gefunden wird (z.B. bei 402 Payment-required, das separat als
+ * "Free-Tier-Exceed" gezählt wird statt als Rate-Limit-Event).
+ */
+function parseRateLimitDetails(errMessage: string): {
+  kategorie: RateLimitKategorie;
+  limit: number;
+  used: number;
+  requested: number;
+  warteSekunden: number;
+} | null {
+  const m = String(errMessage || "");
+  const katMatch = m.match(/\b(TPM|TPD|RPM|RPD)\b/);
+  if (!katMatch) return null;
+  const kategorie = katMatch[1] as RateLimitKategorie;
+  const limit = Number(m.match(/Limit\s+(\d+)/)?.[1] ?? 0);
+  const used = Number(m.match(/Used\s+(\d+)/)?.[1] ?? 0);
+  const requested = Number(m.match(/Requested\s+(\d+)/)?.[1] ?? 0);
+  let warteSekunden = 0;
+  const waitMatch = m.match(/try again in\s+([\dhms.]+)/i);
+  if (waitMatch) {
+    const wait = waitMatch[1];
+    const h = Number(wait.match(/(\d+(?:\.\d+)?)h/)?.[1] ?? 0);
+    const min = Number(wait.match(/(\d+(?:\.\d+)?)m(?!s)/)?.[1] ?? 0);
+    const s = Number(wait.match(/(\d+(?:\.\d+)?)s/)?.[1] ?? 0);
+    warteSekunden = Math.round(h * 3600 + min * 60 + s);
+  }
+  return { kategorie, limit, used, requested, warteSekunden };
+}
+
+/** Baut die Katalog-ID im Format "{provider}:{modell}" (siehe llm-observability.ts). */
+function toCatalogModelId(model: string): string {
+  return `${providerNameOf(model)}:${stripProviderPrefix(model)}`;
+}
+
+/**
+ * Erfasst einen Modell-Aufruf für die Cost & Rate-Limits-Übersicht
+ * (fire-and-forget, darf den Response-Pfad nie beeinträchtigen).
+ */
+function trackModelCall(
+  model: string,
+  outcome: { success: boolean; rateLimited?: boolean; freeTierExceeded?: boolean },
+  errMessage?: string,
+  fallbackInfo?: { fallbackTo: string; fallbackStufe: number; gesamteKette: number }
+): void {
+  try {
+    const modelId = toCatalogModelId(model);
+    void recordModelCallStats(modelId, outcome).catch(() => {});
+    if (outcome.rateLimited && errMessage) {
+      const details = parseRateLimitDetails(errMessage);
+      if (details) {
+        const event: RateLimitEvent = {
+          id: uid(),
+          zeitpunkt: new Date().toISOString(),
+          provider: providerNameOf(model),
+          model: stripProviderPrefix(model),
+          ...details,
+          fallbackTo: fallbackInfo ? stripProviderPrefix(fallbackInfo.fallbackTo) : "",
+          fallbackStufe: fallbackInfo?.fallbackStufe ?? 0,
+          gesamteKette: fallbackInfo?.gesamteKette ?? 0,
+        };
+        void recordRateLimitEvent(event).catch(() => {});
+      }
+    }
+  } catch {
+    // Tracking darf den Response-Pfad nie beeinträchtigen.
+  }
+}
+
 function isRetryableModelError(err: any): boolean {
   const status = err?.status ?? err?.statusCode ?? err?.response?.status;
   const msg = String(err?.message || err || "").toLowerCase();
@@ -294,6 +372,18 @@ function isCloudflareModel(model: string): boolean {
 
 function isNvidiaModel(model: string): boolean {
   return model.startsWith(NVIDIA_PREFIX);
+}
+
+/**
+ * Zuvor eine lokale Funktion innerhalb von createChatCompletion – dadurch
+ * für andere Top-Level-Funktionen (z.B. trackModelCall) nicht erreichbar.
+ * Auf Modulebene verschoben, damit sie überall im File nutzbar ist.
+ */
+function providerNameOf(model: string): string {
+  if (isCerebrasModel(model)) return "cerebras";
+  if (isCloudflareModel(model)) return "cloudflare";
+  if (isNvidiaModel(model)) return "nvidia";
+  return "groq";
 }
 
 function stripCerebrasPrefix(model: string): string {
@@ -787,13 +877,6 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
   let lastError: any;
   const groq = process.env.GROQ_API_KEY ? getGroqClient() : null;
 
-  function providerNameOf(model: string): string {
-    if (isCerebrasModel(model)) return "cerebras";
-    if (isCloudflareModel(model)) return "cloudflare";
-    if (isNvidiaModel(model)) return "nvidia";
-    return "groq";
-  }
-
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
     const budgeted = applyTokenBudget(model, params);
@@ -841,6 +924,7 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
         console.warn(
           `[${providerNameOf(model)}] Modell ${stripProviderPrefix(model)} lieferte leere Antwort (HTTP ok, aber kein content). Fallback → ${stripProviderPrefix(next)}`
         );
+        trackModelCall(model, { success: false });
         continue;
       }
 
@@ -850,6 +934,7 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
       if (i > 0) {
         console.info(`[${providerNameOf(model)}] Modell ${stripProviderPrefix(model)} erfolgreich (Fallback-Stufe ${i + 1}/${models.length}).`);
       }
+      trackModelCall(model, { success: true });
       // AI Cost & Model Observatory (Durchgang 6): jeder erfolgreiche Aufruf
       // wird protokolliert (Tokens exakt aus completion.usage, sonst
       // geschätzt). Bewusst fire-and-forget mit eigenem try/catch — ein
@@ -877,11 +962,25 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
     } catch (err: any) {
       lastError = err;
       const hasMore = i < models.length - 1;
+      // 402 = Payment required → Free-Tier-Kontingent/Guthaben aufgebraucht.
+      // 429 = klassisches Rate-Limit. 413 = "Request too large", bei Groqs
+      // Free-Tier faktisch auch ein TPM-Rate-Limit (siehe applyTokenBudget).
+      const status = Number(err?.status) || 0;
+      const errMsg = String(err?.message || err || "");
+      const freeTierExceeded = status === 402;
+      const rateLimited =
+        !freeTierExceeded &&
+        (status === 429 || status === 413 || /rate_limit_exceeded|tokens per (minute|day)|requests per (minute|day)/i.test(errMsg));
       if (hasMore && isRetryableModelError(err)) {
         const next = models[i + 1];
         console.warn(
           `[${providerNameOf(model)}] Modell ${stripProviderPrefix(model)} fehlgeschlagen (${err?.status || ""} ${err?.message || err}). Fallback → ${stripProviderPrefix(next)}`
         );
+        trackModelCall(model, { success: false, rateLimited, freeTierExceeded }, errMsg, {
+          fallbackTo: next,
+          fallbackStufe: i + 1,
+          gesamteKette: models.length,
+        });
         continue;
       }
       // Wenn Groq ohne Key und nur noch andere Provider übrig: weiter versuchen
@@ -890,8 +989,14 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
         console.warn(
           `[llm] Modell ${stripProviderPrefix(model)} fehlgeschlagen (${err?.status || ""} ${err?.message || err}). Fallback → ${stripProviderPrefix(next)}`
         );
+        trackModelCall(model, { success: false, rateLimited, freeTierExceeded }, errMsg, {
+          fallbackTo: next,
+          fallbackStufe: i + 1,
+          gesamteKette: models.length,
+        });
         continue;
       }
+      trackModelCall(model, { success: false, rateLimited, freeTierExceeded }, errMsg);
       throw err;
     }
   }

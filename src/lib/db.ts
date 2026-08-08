@@ -1331,6 +1331,40 @@ export async function updateModelHealth(
 }
 
 /**
+ * Zählt einen echten LLM-Aufruf (Erfolg ODER Fehlschlag) für die
+ * Cost & Rate-Limits-Übersicht im Dashboard. Wird von createChatCompletion
+ * in groq-client.ts nach JEDEM Modell-Versuch aufgerufen (fire-and-forget).
+ *
+ * Vorher wurden `totalCalls`, `rateLimitCount` und `freeTierExceededCount`
+ * zwar im Datentyp und im Dashboard-UI erwartet, aber im gesamten Code nie
+ * inkrementiert — nur bei ihrer Initialisierung auf 0 gesetzt. Das
+ * Dashboard zeigte deshalb dauerhaft Nullen, unabhängig vom In-Memory-Cache-
+ * Bug (der zusätzlich bestand und separat behoben wurde).
+ */
+export async function recordModelCallStats(
+  modelId: string,
+  outcome: { success: boolean; rateLimited?: boolean; freeTierExceeded?: boolean }
+): Promise<void> {
+  const db = await readDb();
+  const current = db.modelHealth[modelId] || {
+    status: "unknown" as const,
+    freeTierExceededCount: 0,
+    rateLimitCount: 0,
+    totalCalls: 0,
+    successCalls: 0,
+  };
+  db.modelHealth[modelId] = {
+    ...current,
+    totalCalls: current.totalCalls + 1,
+    successCalls: current.successCalls + (outcome.success ? 1 : 0),
+    rateLimitCount: current.rateLimitCount + (outcome.rateLimited ? 1 : 0),
+    freeTierExceededCount: current.freeTierExceededCount + (outcome.freeTierExceeded ? 1 : 0),
+    ...(outcome.success ? { lastSuccessAt: new Date().toISOString() } : {}),
+  };
+  await writeDb(db);
+}
+
+/**
  * Protokolliert eine Agent-Aktion im Audit-Log.
  * Agent-Aktionen sind: Ping, Monthly-Update, Rate-Limit-Detection,
  * Plausibilitäts-Check, Fun-Mode-Wechsel, etc.
