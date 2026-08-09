@@ -173,7 +173,10 @@ const extractLog = (data: Record<string, unknown>): { id: string; zeitpunkt: str
   return (
     <div className="h-full overflow-y-auto p-6">
       <div className="mb-6">
-        <h1 className="mb-1 text-xl font-bold">🛰️ LLM Mission Control</h1>
+        <h1 className="mb-1 flex items-center gap-2 text-xl font-bold">
+          <span aria-hidden>🛰️</span> LLM Mission Control
+          <span className="mc-live-dot" title="Live-Betrieb" />
+        </h1>
         <p className="text-sm text-muted-foreground">
           Super Spielekind-Agent · Observability- & Operations-Zentrale für System, LLMs,
           Rate-Limits und Hausverwaltung.
@@ -217,9 +220,9 @@ const extractLog = (data: Record<string, unknown>): { id: string; zeitpunkt: str
             key={key}
             onClick={() => setAktiverTab(key)}
             className={cn(
-              "rounded-t-md border-b-2 px-3 py-1.5 text-xs",
+              "rounded-t-md border-b-2 px-3 py-1.5 text-xs transition-colors duration-200",
               aktiverTab === key
-                ? "border-primary font-medium text-primary"
+                ? "border-primary font-medium text-primary shadow-[0_1px_0_0_var(--glow-primary)]"
                 : "border-transparent text-muted-foreground hover:bg-muted"
             )}
           >
@@ -269,8 +272,8 @@ function StatusDot({ status }: { status: ModelCatalogEntry["health"]["status"] }
     status === "green" ? "var(--success)" : status === "gray" ? "#6b7280" : "#f59e0b";
   return (
     <span
-      className="inline-block h-2.5 w-2.5 rounded-full"
-      style={{ backgroundColor: color, boxShadow: `0 0 0 2px ${color}22` }}
+      className={cn("mc-led inline-block h-2.5 w-2.5", status === "gray" && "mc-led--off")}
+      style={{ "--led-color": color } as React.CSSProperties}
       title={status}
     />
   );
@@ -403,15 +406,21 @@ function LiveLogs({
         <p className="text-xs text-muted-foreground">
           Fly.io-artiger Live-Stream (SSE) · aktualisiert alle 3 Sekunden ·{" "}
           {flyLogStatus.active ? (
-            <span className="text-emerald-400">🌐 Fly.io-NATS verbunden</span>
+            <span className="inline-flex items-center gap-1.5 text-emerald-400">
+              <span className="mc-live-dot" />
+              🌐 Fly.io-NATS verbunden
+            </span>
           ) : (
             <span className="text-white/50">🌐 Fly.io-Logs inaktiv (lokal/kein Token)</span>
           )}
         </p>
       </div>
-      <div className="rounded-lg border border-border bg-black p-3 font-mono text-[11px] leading-relaxed">
+      <div className="glow-ring-accent rounded-lg border border-border bg-black p-3 font-mono text-[11px] leading-relaxed">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-white/40">
-          <span>$ fly logs -a bkabr ← LLM Mission Control Live-Stream</span>
+          <span>
+            $ fly logs -a bkabr ← LLM Mission Control Live-Stream
+            {flyLogStatus.active && <span className="mc-cursor ml-1" />}
+          </span>
           <span className="flex items-center gap-2">
             <span className="rounded bg-white/10 px-1.5 py-0.5 text-[9px]">📦 SYS</span>
             <span className="rounded bg-cyan-500/20 px-1.5 py-0.5 text-[9px] text-cyan-300">✈️ FLY</span>
@@ -497,16 +506,17 @@ function CostObservatory({
       </div>
       <h2 className="mb-2 text-sm font-semibold">💰 Cost & Model Observatory</h2>
       <div className="rounded-lg border border-border bg-card">
-        <div className="divide-y divide-border">
+        <div className="mc-stagger divide-y divide-border">
           {models.map((m) => {
             const h = m.health;
             const rateLimitProzent = h.totalCalls > 0 ? h.rateLimitCount / h.totalCalls : 0;
+            const barColor = rateLimitProzent > 0.5 ? "var(--destructive)" : "#f59e0b";
             const limits = KNOWN_FREE_TIER_LIMITS[m.id];
             const gesamtTokens = (h.promptTokens || 0) + (h.completionTokens || 0);
             return (
               <div
                 key={m.id}
-                className="flex flex-wrap items-center justify-between gap-2 p-2.5 text-xs"
+                className="interactive flex flex-wrap items-center justify-between gap-2 p-2.5 text-xs"
               >
                 <div className="min-w-0">
                   <div className="truncate font-medium">{m.label}</div>
@@ -531,7 +541,9 @@ function CostObservatory({
                   </div>
                   <div>
                     <div className="text-[10px] text-muted-foreground">Calls</div>
-                    <div className="tabular-nums">{h.totalCalls}</div>
+                    <div className="tabular-nums">
+                      <AnimatedNumber value={String(h.totalCalls)} />
+                    </div>
                   </div>
                   <div>
                     <div className="text-[10px] text-muted-foreground">Rate-Limits</div>
@@ -559,10 +571,12 @@ function CostObservatory({
                     <div className="mb-1 text-[10px] text-muted-foreground">Fehlerquote</div>
                     <div className="h-1.5 w-full overflow-hidden rounded bg-muted">
                       <div
-                        className="h-full"
+                        key={`${m.id}-${rateLimitProzent}`}
+                        className="mc-bar-fill h-full rounded"
                         style={{
                           width: `${Math.min(100, rateLimitProzent * 100)}%`,
-                          backgroundColor: rateLimitProzent > 0.5 ? "var(--destructive)" : "#f59e0b",
+                          backgroundColor: barColor,
+                          boxShadow: rateLimitProzent > 0 ? `0 0 6px 0 color-mix(in srgb, ${barColor} 70%, transparent)` : "none",
                         }}
                       />
                     </div>
@@ -605,10 +619,49 @@ function CostObservatory({
 
 function SummaryTile({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-border bg-card p-3 text-center">
+    <div className="mc-led-panel rounded-lg border border-border p-3 text-center">
       <div className="text-[10px] text-muted-foreground">{label}</div>
-      <div className="text-base font-bold tabular-nums">{value}</div>
+      <div className="text-base font-bold tabular-nums">
+        <AnimatedNumber value={value} />
+      </div>
     </div>
+  );
+}
+
+/**
+ * Zählt eine Zahl beim ersten Erscheinen (Mount) sanft von 0 hoch statt sie
+ * statisch anzuzeigen – passend zum "Live-Messwert"-Charakter von Mission
+ * Control. Nicht-numerische Werte (z.B. "8 / 3 / 12") werden unverändert
+ * dargestellt, nur mit dem dezenten Erscheinungs-Fade (.mc-number).
+ * Respektiert prefers-reduced-motion über die CSS-Regel auf .mc-number.
+ */
+function AnimatedNumber({ value }: { value: string }) {
+  const numeric = Number(value.replace(/\./g, "").replace(/,/g, "."));
+  const isPlainNumber = value.trim() !== "" && Number.isFinite(numeric) && String(Math.trunc(numeric)).length === value.replace(/[^0-9]/g, "").length;
+  const [display, setDisplay] = useState(isPlainNumber ? 0 : numeric);
+  const startRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!isPlainNumber) return;
+    startRef.current = null;
+    const durationMs = 600;
+    let raf = 0;
+    const tick = (ts: number) => {
+      if (startRef.current === null) startRef.current = ts;
+      const progress = Math.min(1, (ts - startRef.current) / durationMs);
+      const eased = 1 - Math.pow(1 - progress, 3); // ease-out-cubic
+      setDisplay(Math.round(numeric * eased));
+      if (progress < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  return (
+    <span key={value} className="mc-number">
+      {isPlainNumber ? display.toLocaleString("de-DE") : value}
+    </span>
   );
 }
 
@@ -679,28 +732,30 @@ function LedWall({ leds }: { leds: LedEntry[] }) {
 
   return (
     <div>
-      <div className="mb-3">
-        <h2 className="text-sm font-semibold">💡 LED-Wall</h2>
-        <p className="text-xs text-muted-foreground">
-          System- & Hausverwaltungs-Status auf einen Blick (Mission Control).
-        </p>
+      <div className="mb-3 flex items-center gap-2">
+        <div>
+          <h2 className="text-sm font-semibold">💡 LED-Wall</h2>
+          <p className="text-xs text-muted-foreground">
+            System- & Hausverwaltungs-Status auf einen Blick (Mission Control).
+          </p>
+        </div>
       </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 mc-stagger sm:grid-cols-3 lg:grid-cols-4">
         {leds.map((led) => (
           <div
             key={led.id}
             title={led.tooltip}
             className={cn(
-              "flex items-center gap-2 rounded-lg border border-border bg-card p-2.5 text-xs",
+              "mc-led-panel interactive flex items-center gap-2.5 rounded-lg border border-border p-2.5 text-xs",
               led.href && "cursor-pointer hover:border-primary/50"
             )}
           >
             <span
               className={cn(
-                "inline-block h-2.5 w-2.5 shrink-0 rounded-full",
-                led.blinker && "animate-pulse"
+                "mc-led h-3 w-3 shrink-0",
+                led.status === "gray" ? "mc-led--off" : led.blinker && "mc-led--blink"
               )}
-              style={{ backgroundColor: colorMap[led.status] }}
+              style={{ "--led-color": colorMap[led.status] } as React.CSSProperties}
             />
             <span className="min-w-0 truncate">{led.label}</span>
           </div>
@@ -826,7 +881,7 @@ function InfoTile({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-border/60 bg-muted/30 p-2">
       <div className="text-[10px] text-muted-foreground">{label}</div>
-      <div className="truncate font-medium">{value}</div>
+      <div className="mc-number truncate font-medium">{value}</div>
     </div>
   );
 }
