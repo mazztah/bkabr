@@ -1096,26 +1096,31 @@ ${JSON.stringify(overview, null, space)}`;
 
   // Kontext-Engineering: bei klar eng umrissenen Fragen (Bestand, Belegung,
   // Rückstände) nur den dafür nötigen Datenausschnitt schicken statt des
-  // vollen Portfolios. Nur ohne Historie (siehe Small-Talk oben – bei einem
-  // Folge-Turn könnte der vorherige Kontext noch gebraucht werden). Liefert
-  // die reduzierte Anfrage eine leere Antwort oder wirft einen Fehler, wird
+  // vollen Portfolios – UNABHÄNGIG von der Historie. Vorher galt das nur für
+  // die allererste Nachricht eines Chats (hist.length === 0); da so gut wie
+  // jede Nachricht ab der zweiten schon Historie hat, hat das die
+  // Kontext-Reduktion in der Praxis fast nie greifen lassen. Damit trotzdem
+  // kein Kontext aus vorherigen Turns verloren geht, wird die (bereits auf
+  // die letzten 6 Turns begrenzte) Historie mitgeschickt. Liefert die
+  // reduzierte Anfrage eine leere Antwort oder wirft einen Fehler, wird
   // unten regulär mit vollem Kontext weiterprobiert – nie stillschweigend
   // eine unvollständige Antwort riskieren.
   const kontextBedarf = klassifiziereKontextbedarf(message);
-  if (kontextBedarf !== "voll" && hist.length === 0) {
+  if (kontextBedarf !== "voll") {
     let leichterBody = "";
     if (kontextBedarf === "adressen") {
-      leichterBody = `bestand:${JSON.stringify(bestandAdressen)}\n\n(Reduzierter Kontext: nur Bestandsliste – für Details zu Wohnungen/Mietern/Finanzen bitte gezielt nachfragen.)`;
+      leichterBody = `bestand:${JSON.stringify(bestandAdressen)}\n\n(Reduzierter Kontext: "bestand" enthält ALLE Liegenschaften vollständig – das Array ist NICHT leer, auch wenn es kurz aussieht. Für Details zu Wohnungen/Mietern/Finanzen bitte gezielt nachfragen.)`;
     } else if (kontextBedarf === "belegung") {
-      leichterBody = `belegung:${JSON.stringify(belegungsUebersicht)}\nleerstand_gesamt:${leerstandGesamt}\neinheiten_gesamt:${einheitenGesamt}\n\n(Reduzierter Kontext: nur Belegungsstatus je Einheit – KEINE Mieternamen oder Finanzdaten enthalten.)`;
+      leichterBody = `belegung:${JSON.stringify(belegungsUebersicht)}\nleerstand_gesamt:${leerstandGesamt}\neinheiten_gesamt:${einheitenGesamt}\n\n(Reduzierter Kontext: "belegung" enthält ALLE Einheiten vollständig – KEINE Mieternamen oder Finanzdaten enthalten, das ist normal und kein fehlender Datensatz.)`;
     } else if (kontextBedarf === "rueckstaende") {
-      leichterBody = `rs:${JSON.stringify(mietrueckstaende)}\n\n(Reduzierter Kontext: nur Mietrückstände – für Portfolio-Struktur oder Abrechnungen bitte gezielt nachfragen.)`;
+      leichterBody = `rs:${JSON.stringify(mietrueckstaende)}\n\n(Reduzierter Kontext: "rs" enthält ALLE Rückstände vollständig, auch wenn leer = keine Rückstände. Für Portfolio-Struktur oder Abrechnungen bitte gezielt nachfragen.)`;
     }
     try {
       const completion = await createChatCompletion({
-        max_completion_tokens: 700,
+        max_completion_tokens: 900,
         messages: [
           { role: "system", content: `${systemBase}\n\n${leichterBody}` },
+          ...hist,
           { role: "user", content: message },
         ],
       });

@@ -330,6 +330,59 @@ function trackModelCall(
   }
 }
 
+/**
+ * Cooldown-Speicher: Modelle, die GERADE als rate-limitiert/erschöpft
+ * bekannt sind, werden für die Dauer des Cooldowns übersprungen statt bei
+ * JEDER Nachricht erneut angefragt und erneut abgelehnt zu werden.
+ *
+ * Vorher: jede einzelne Chat-Nachricht hat brav wieder alle 10
+ * TPD-erschöpften/402-gesperrten Modelle in Folge angefragt, obwohl der
+ * Provider Sekunden vorher schon "erst in 31 Minuten wieder" gesagt hatte –
+ * das kostete bei JEDER Nachricht ~10 unnötige Requests und mehrere Sekunden
+ * Latenz, bevor überhaupt ein funktionierendes Modell (meist NVIDIA, Stufe
+ * 11/13) erreicht wurde.
+ *
+ * globalThis-basiert aus demselben Grund wie bei fly-logs.ts/db.ts: separate
+ * Next.js-Webpack-Bundles dürfen hier keine eigenen, isolierten Kopien
+ * bekommen (siehe providerNameOf-Bug, der genau daran lag).
+ */
+const COOLDOWN_GLOBAL_KEY = "__bkabr_modelCooldowns__";
+const cooldownGlobal = globalThis as unknown as Record<string, Map<string, number> | undefined>;
+if (!cooldownGlobal[COOLDOWN_GLOBAL_KEY]) {
+  cooldownGlobal[COOLDOWN_GLOBAL_KEY] = new Map();
+}
+const modelCooldowns: Map<string, number> = cooldownGlobal[COOLDOWN_GLOBAL_KEY]!;
+
+/** Cooldown setzen (Timestamp in ms, ab wann das Modell wieder versucht werden darf). */
+function setModelCooldown(model: string, seconds: number): void {
+  modelCooldowns.set(model, Date.now() + seconds * 1000);
+}
+
+/** true, wenn das Modell aktuell im Cooldown ist (noch nicht wieder versuchen). */
+function isInCooldown(model: string): boolean {
+  const until = modelCooldowns.get(model);
+  return typeof until === "number" && until > Date.now();
+}
+
+/** Cooldown-Dauer aus einer Fehlermeldung ableiten. Fallback-Werte, wenn der Provider keine genaue Wartezeit nennt. */
+function cooldownSecondsFor(err: any, status: number): number {
+  const msg = String(err?.message || err || "");
+  const waitMatch = msg.match(/try again in\s+([\dhms.]+)/i);
+  if (waitMatch) {
+    const wait = waitMatch[1];
+    const h = Number(wait.match(/(\d+(?:\.\d+)?)h/)?.[1] ?? 0);
+    const min = Number(wait.match(/(\d+(?:\.\d+)?)m(?!s)/)?.[1] ?? 0);
+    const s = Number(wait.match(/(\d+(?:\.\d+)?)s/)?.[1] ?? 0);
+    const total = h * 3600 + min * 60 + s;
+    if (total > 0) return Math.ceil(total) + 5; // kleiner Sicherheitsabstand
+  }
+  // Kein genauer Wert genannt:
+  if (status === 402) return 30 * 60; // Free-Tier/Guthaben aufgebraucht – selten kurzfristig behoben, aber Konto könnte aufgeladen werden
+  if (status === 403) return 6 * 60 * 60; // Plan-/Freigabe-Problem (z.B. "not available on Workers Free plan") – strukturell, lange Pause
+  if (status === 413) return 2 * 60; // "Request too large" – kann bei kleinerer nächster Anfrage schon wieder klappen
+  return 60; // generischer Fallback
+}
+
 function isRetryableModelError(err: any): boolean {
   const status = err?.status ?? err?.statusCode ?? err?.response?.status;
   const msg = String(err?.message || err || "").toLowerCase();
@@ -664,10 +717,22 @@ function messageHasImages(params: ChatParams): boolean {
  * optional auf Cerebras gemma-4-31b bzw. Cloudflare gemma-4-26b (vision-fähig).
  */
 
-/** Grobe Token-Schätzung (DE/EN): ~4 Zeichen ≈ 1 Token. */
+/**
+ * Grobe Token-Schätzung (DE/EN): ~2,2 Zeichen ≈ 1 Token.
+ *
+ * War vorher 4 Zeichen/Token – das hat den realen Verbrauch bei diesem
+ * deutschen + JSON-strukturierten Content-Mix systematisch um ~1.7-2x
+ * unterschätzt (Beleg aus Produktionslogs: geschätzt "input≈4616, safe=5000",
+ * real vom Provider abgelehnt mit "Requested 8415-10203"). Die Folge: das
+ * Budget hielt sich selbst für "safe", obwohl es nie sicher war, und die
+ * beiden kleinsten Modelle (8000 TPM) sind dadurch faktisch IMMER an
+ * "Request too large" gescheitert, unabhängig vom tatsächlichen
+ * Kontextumfang. 2,2 Zeichen/Token liegt bewusst am unteren (=strengeren)
+ * Ende, lieber leicht überschätzen als erneut zu knapp kalkulieren.
+ */
 function estimateTokens(text: string): number {
   if (!text) return 0;
-  return Math.ceil(String(text).length / 4);
+  return Math.ceil(String(text).length / 2.2);
 }
 
 function estimateMessagesTokens(messages: ChatParams["messages"]): number {
@@ -874,6 +939,19 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
     }
   }
 
+  // Modelle im aktuellen Cooldown (kürzlich als rate-limitiert/gesperrt
+  // erkannt) überspringen, statt sie erneut anzufragen und erneut abgelehnt
+  // zu werden. Bleibt dadurch nichts mehr übrig (z.B. alles gleichzeitig im
+  // Cooldown), lieber die volle Liste behalten als gar nichts zu versuchen.
+  const nichtGekuehlt = models.filter((m) => !isInCooldown(m));
+  if (nichtGekuehlt.length > 0) {
+    const uebersprungen = models.length - nichtGekuehlt.length;
+    if (uebersprungen > 0) {
+      console.info(`[llm] ${uebersprungen} Modell(e) im Cooldown übersprungen, starte bei "${stripProviderPrefix(nichtGekuehlt[0])}".`);
+    }
+    models = nichtGekuehlt;
+  }
+
   let lastError: any;
   const groq = process.env.GROQ_API_KEY ? getGroqClient() : null;
 
@@ -935,6 +1013,7 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
         console.info(`[${providerNameOf(model)}] Modell ${stripProviderPrefix(model)} erfolgreich (Fallback-Stufe ${i + 1}/${models.length}).`);
       }
       trackModelCall(model, { success: true });
+      modelCooldowns.delete(model);
       // AI Cost & Model Observatory (Durchgang 6): jeder erfolgreiche Aufruf
       // wird protokolliert (Tokens exakt aus completion.usage, sonst
       // geschätzt). Bewusst fire-and-forget mit eigenem try/catch — ein
@@ -971,6 +1050,14 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
       const rateLimited =
         !freeTierExceeded &&
         (status === 429 || status === 413 || /rate_limit_exceeded|tokens per (minute|day)|requests per (minute|day)/i.test(errMsg));
+
+      // Cooldown setzen, damit nachfolgende Nachrichten dieses Modell nicht
+      // sofort wieder anfragen und erneut abgelehnt bekommen (siehe
+      // setModelCooldown-Dokumentation oben).
+      if (status === 402 || status === 403 || status === 413 || status === 429) {
+        setModelCooldown(model, cooldownSecondsFor(err, status));
+      }
+
       if (hasMore && isRetryableModelError(err)) {
         const next = models[i + 1];
         console.warn(
