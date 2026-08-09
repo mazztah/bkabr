@@ -3,11 +3,50 @@ import { AgentSchedule, AgentScheduleLauf } from "./types";
 import { computeNextRun } from "./schedule";
 import { runAgent } from "./agent";
 
-let tickerStarted = false;
-let running = false;
+/**
+ * `tickerStarted`/`running` als globalThis-Singleton statt normaler
+ * Modul-Variablen – aus demselben Grund wie bei fly-logs.ts/db.ts/
+ * groq-client.ts: Next.js kompiliert instrumentation.ts (startet den
+ * 30s-Ticker) und API-Routes (z.B. /api/kalender/[id]/run, der manuelle
+ * "Jetzt ausführen"-Button) als SEPARATE Webpack-Bundles. Mit normalen
+ * `let`-Variablen bekäme jedes Bundle seine EIGENE Kopie von `running` –
+ * der Überlappungs-Schutz in runDueAgentSchedules() würde dann NICHT
+ * verhindern, dass ein manueller Klick zeitgleich mit einem Ticker-Tick
+ * dasselbe (oder ein anderes) Schedule parallel ausführt. Zwei parallele
+ * Agent-Läufe bedeuten zwei parallele 13-stufige LLM-Fallback-Ketten
+ * gleichzeitig – ein plausibler Beitrag zu Lastspitzen/Health-Check-
+ * Ausfällen und dem beobachteten NVIDIA-Concurrency-Fehler.
+ */
+interface SchedulerGlobalState {
+  tickerStarted: boolean;
+  running: boolean;
+  /** IDs von Schedules, die GERADE ausführen – egal ob vom Ticker oder vom manuellen "Jetzt ausführen"-Button (api/kalender/[id]/run). Verhindert, dass dasselbe Schedule zweimal parallel läuft. */
+  runningScheduleIds: Set<string>;
+}
+const SCHEDULER_GLOBAL_KEY = "__bkabr_schedulerState__";
+const schedulerGlobal = globalThis as unknown as Record<string, SchedulerGlobalState | undefined>;
+if (!schedulerGlobal[SCHEDULER_GLOBAL_KEY]) {
+  schedulerGlobal[SCHEDULER_GLOBAL_KEY] = { tickerStarted: false, running: false, runningScheduleIds: new Set() };
+}
+const schedulerState: SchedulerGlobalState = schedulerGlobal[SCHEDULER_GLOBAL_KEY]!;
 
 /** Führt eine einzelne Kalender-Aufgabe sofort aus (z.B. "Jetzt ausführen"-Button oder Fälligkeit). */
 export async function executeAgentSchedule(schedule: AgentSchedule): Promise<AgentScheduleLauf> {
+  if (schedulerState.runningScheduleIds.has(schedule.id)) {
+    // Läuft bereits (Ticker ODER ein anderer manueller Aufruf) – nicht
+    // doppelt starten. Zwei parallele Läufe desselben Schedules bedeuten
+    // zwei parallele, bis zu 13-stufige LLM-Fallback-Ketten gleichzeitig.
+    throw new Error(`Aufgabe „${schedule.name}" läuft bereits – bitte kurz warten.`);
+  }
+  schedulerState.runningScheduleIds.add(schedule.id);
+  try {
+    return await executeAgentScheduleInner(schedule);
+  } finally {
+    schedulerState.runningScheduleIds.delete(schedule.id);
+  }
+}
+
+async function executeAgentScheduleInner(schedule: AgentSchedule): Promise<AgentScheduleLauf> {
   const zeitpunkt = new Date().toISOString();
   let lauf: AgentScheduleLauf;
   try {
@@ -43,17 +82,23 @@ export async function executeAgentSchedule(schedule: AgentSchedule): Promise<Age
 
 /** Führt alle aktuell fälligen Aufgaben nacheinander aus (vom Ticker bzw. manuell aufrufbar). */
 export async function runDueAgentSchedules(): Promise<void> {
-  if (running) return; // keine überlappenden Läufe, falls ein Tick länger dauert als das Intervall
-  running = true;
+  if (schedulerState.running) return; // keine überlappenden Ticker-Läufe, falls ein Tick länger dauert als das Intervall
+  schedulerState.running = true;
   try {
     const due = await dueAgentSchedules();
     for (const schedule of due) {
-      await executeAgentSchedule(schedule);
+      try {
+        await executeAgentSchedule(schedule);
+      } catch (err) {
+        // z.B. "läuft bereits" durch parallelen manuellen Klick – einzelnes
+        // Schedule überspringen, restliche fällige Aufgaben trotzdem prüfen.
+        console.warn("[kalender] Schedule übersprungen:", err instanceof Error ? err.message : err);
+      }
     }
   } catch (err) {
     console.error("[kalender] Fehler beim Prüfen fälliger Aufgaben:", err);
   } finally {
-    running = false;
+    schedulerState.running = false;
   }
 }
 
@@ -63,8 +108,8 @@ export async function runDueAgentSchedules(): Promise<void> {
  * `tickerStarted`-Guard verhindert Mehrfachstarts bei Hot-Reload im Dev-Modus.
  */
 export function startAgentScheduler(): void {
-  if (tickerStarted) return;
-  tickerStarted = true;
+  if (schedulerState.tickerStarted) return;
+  schedulerState.tickerStarted = true;
   const INTERVAL_MS = 30_000;
   setInterval(() => {
     runDueAgentSchedules().catch((err) =>

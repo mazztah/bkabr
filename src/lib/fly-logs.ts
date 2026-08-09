@@ -172,9 +172,21 @@ function normalizeFlyLevel(level: string): string {
   return l;
 }
 
-/** Fügt einen Eintrag in den Ringpuffer ein (neueste zuerst, begrenzt). */
+/**
+ * Fügt einen Eintrag in den Ringpuffer ein (neueste zuerst, begrenzt).
+ *
+ * Vorher: `state.buffer = [entry, ...state.buffer].slice(0, FLY_LOG_MAX)` –
+ * das kopiert bei JEDER einzelnen eingehenden Log-Zeile das komplette
+ * 500-Element-Array neu. Da jede Server-Logzeile (inkl. der ausführlichen
+ * LLM-Fallback-Logs) über die eigene NATS-Verbindung zurück in die App
+ * fließt, passierte das am häufigsten GENAU dann, wenn wegen einer langen
+ * Fallback-Kette (viele Log-Zeilen kurz hintereinander) ohnehin schon
+ * CPU-Druck bestand. `unshift` + In-Place-Kürzung vermeidet die wiederholte
+ * Vollkopie.
+ */
 function pushEntry(entry: FlyLogEintrag): void {
-  state.buffer = [entry, ...state.buffer].slice(0, FLY_LOG_MAX);
+  state.buffer.unshift(entry);
+  if (state.buffer.length > FLY_LOG_MAX) state.buffer.length = FLY_LOG_MAX;
 }
 
 /**
