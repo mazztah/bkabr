@@ -140,8 +140,13 @@ const LOW_TPM_GROQ_MODELS = new Set([
   "openai/gpt-oss-20b",
   "qwen/qwen3.6-27b",
 ]);
-/** Schwelle (Tokens, nur Tools-Schema): ab hier bleibt zu wenig Spielraum für Nachricht+Antwort bei 8000 TPM. */
-const LOW_TPM_SKIP_THRESHOLD = 5500;
+/**
+ * Schwelle in Tokens für System-Prompt + Tools-Schema zusammen (siehe
+ * irreducibleEstimate weiter unten). Ab hier bleibt bei 8000 TPM zu wenig
+ * Spielraum für die letzte Nachricht + Antwort übrig, selbst nach hartem
+ * Kürzen durch applyTokenBudget – also lieber gleich überspringen.
+ */
+const LOW_TPM_SKIP_THRESHOLD = 6500;
 
 export function getTextModels(): string[] {
   let models: string[];
@@ -503,6 +508,9 @@ async function createCerebrasChatCompletion(
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    // Ohne Timeout kann ein hängender Provider einen Request (und damit die
+    // gesamte Fallback-Kette + den Node-Event-Loop) beliebig lange blockieren.
+    signal: AbortSignal.timeout(15_000),
   });
 
   const rawText = await res.text();
@@ -584,6 +592,7 @@ async function createCloudflareChatCompletion(
       Authorization: `Bearer ${apiToken}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
   });
 
   const rawText = await res.text();
@@ -669,6 +678,7 @@ async function createNvidiaChatCompletion(
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
   });
 
   const rawText = await res.text();
@@ -903,9 +913,25 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
     // garantiert 2x "Request too large" produziert, bevor überhaupt ein
     // Modell mit ausreichendem Kontingent versucht wird – kostet Zeit und
     // unnötige Fehlerlogs, ändert aber nichts am Ergebnis.
-    if (params.tools?.length) {
-      const toolsEstimate = estimateTokens(JSON.stringify(params.tools));
-      if (toolsEstimate > LOW_TPM_SKIP_THRESHOLD) {
+    {
+      // WICHTIG: nicht nur die Tools-Schema-Größe zählen, sondern System-Prompt
+      // + Verlauf + Tools zusammen. applyTokenBudget() weiter unten kann NUR
+      // den Nachrichtenverlauf kürzen und die letzte Nachricht hart
+      // abschneiden – System-Prompt und Tools-Schema bleiben immer
+      // vollständig erhalten. Sind die beiden zusammen schon größer als das
+      // 8000-TPM-Limit dieser Modelle, bleibt "Request too large" garantiert
+      // bestehen, egal wie sehr der Verlauf getrimmt wird (in der Praxis
+      // beobachtet: "Token-Budget angepasst (input≈14205 ... safe=5000)"
+      // gefolgt von "Requested 9544" – das Trimmen greift, kommt aber wegen
+      // System+Tools allein nie unter das Limit).
+      const systemEstimate = estimateMessagesTokens(
+        (params.messages || []).filter((m: any) => m?.role === "system")
+      );
+      const toolsEstimate = params.tools?.length
+        ? estimateTokens(JSON.stringify(params.tools))
+        : 0;
+      const irreducibleEstimate = systemEstimate + toolsEstimate;
+      if (irreducibleEstimate > LOW_TPM_SKIP_THRESHOLD) {
         const before = models.length;
         models = models.filter((m) => !LOW_TPM_GROQ_MODELS.has(m));
         if (models.length === 0) {
@@ -914,7 +940,7 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
           models = groqModels;
         } else if (models.length < before) {
           console.warn(
-            `[groq] Tools-Schema ≈${toolsEstimate} Tokens: ${before - models.length} Groq-Modell(e) mit 8000-TPM-Limit übersprungen.`
+            `[groq] System+Tools ≈${irreducibleEstimate} Tokens (System ${systemEstimate} + Tools ${toolsEstimate}): ${before - models.length} Groq-Modell(e) mit 8000-TPM-Limit übersprungen.`
           );
         }
       }
@@ -978,10 +1004,13 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
           throw err;
         }
         const { model: _ignored, ...rest } = budgeted;
-        completion = await groq.chat.completions.create({
-          ...rest,
-          model,
-        });
+        completion = await groq.chat.completions.create(
+          {
+            ...rest,
+            model,
+          },
+          { timeout: 15_000 }
+        );
       }
       // "Erfolgreich, aber leer" ist KEIN echter Erfolg: manche Modelle
       // (v.a. die schwächeren Fallback-Stufen wie glm-4.7-flash) liefern
@@ -1051,11 +1080,24 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
         !freeTierExceeded &&
         (status === 429 || status === 413 || /rate_limit_exceeded|tokens per (minute|day)|requests per (minute|day)/i.test(errMsg));
 
+      // 400 mit "nicht unterstützt"/"not supported" ist bei diesen Providern
+      // keine transiente Rate-Limit-Meldung, sondern eine strukturelle
+      // Fähigkeits-Lücke des Modells (z.B. groq/compound(-mini) unterstützt
+      // grundsätzlich kein Tool-Calling). STRUCTURED_OUTPUT_UNSAFE_MODELS
+      // filtert bekannte Fälle bereits vorher raus – dieser Cooldown ist das
+      // Sicherheitsnetz für alle anderen/zukünftigen Modelle mit demselben
+      // Fehlerbild, damit sie nicht bei JEDER Nachricht erneut ~15-20s lang
+      // garantiert erfolglos probiert werden.
+      const structurallyUnsupported =
+        status === 400 && /not supported|nicht unterstützt/i.test(errMsg);
+
       // Cooldown setzen, damit nachfolgende Nachrichten dieses Modell nicht
       // sofort wieder anfragen und erneut abgelehnt bekommen (siehe
       // setModelCooldown-Dokumentation oben).
       if (status === 402 || status === 403 || status === 413 || status === 429) {
         setModelCooldown(model, cooldownSecondsFor(err, status));
+      } else if (structurallyUnsupported) {
+        setModelCooldown(model, 12 * 60 * 60); // strukturell, ändert sich nicht kurzfristig – 12h Pause
       }
 
       if (hasMore && isRetryableModelError(err)) {
