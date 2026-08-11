@@ -1512,6 +1512,8 @@ export interface LedEntry {
   blinker?: boolean;
   tooltip?: string;
   href?: string;
+  /** Zusätzliche Key-Value-Zeilen für das Detail-Popover (Hover/Tap auf der LED-Wall). */
+  detail?: { label: string; value: string }[];
 }
 
 /** Observability-Gesamtübersicht (für API) */

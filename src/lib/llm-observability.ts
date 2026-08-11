@@ -593,32 +593,205 @@ export function buildLedWall(input: {
   hasDocuments: boolean;
   hasPruefLaeufe: boolean;
   rateLimitCount: number;
+  /** Anzahl Dokumente in der Ablage (für Detail-Popover). */
+  documentCount?: number;
+  /** Anzahl protokollierter Agent-Aktionen. */
+  auditCount?: number;
+  /** Zeitpunkt des letzten monatlichen Modell-Updates. */
+  lastMonthlyUpdateAt?: string | null;
+  /** Fun-Mode aktiv? */
+  funMode?: boolean;
+  /** Aggregierte Call-Statistik je Provider, aus dem Modellkatalog berechnet. */
+  providerStats?: Record<
+    string,
+    { totalCalls: number; successCalls: number; rateLimitCount: number }
+  >;
 }): LedEntry[] {
   const ly = (yellow: boolean): "green" | "yellow" => (yellow ? "yellow" : "green");
+  const stats = input.providerStats || {};
+
+  /** Baut die Standard-Detailzeilen für ein Provider-LED (Groq/Cerebras/Cloudflare/NVIDIA). */
+  const providerDetail = (
+    hasKey: boolean,
+    providerId: string
+  ): { label: string; value: string }[] => {
+    const s = stats[providerId];
+    if (!hasKey) return [{ label: "Status", value: "Kein API-Key gesetzt" }];
+    if (!s || s.totalCalls === 0) {
+      return [
+        { label: "Status", value: "Konfiguriert, noch keine Aufrufe" },
+      ];
+    }
+    const failed = s.totalCalls - s.successCalls;
+    const quote = s.totalCalls > 0 ? `${((failed / s.totalCalls) * 100).toFixed(0)}%` : "—";
+    return [
+      { label: "Aufrufe gesamt", value: String(s.totalCalls) },
+      { label: "Erfolgreich", value: String(s.successCalls) },
+      { label: "Fehlgeschlagen", value: String(failed) },
+      { label: "Fehlerquote", value: quote },
+      { label: "Rate-Limits", value: String(s.rateLimitCount) },
+    ];
+  };
+
+  const hasGroq = Boolean(process.env.GROQ_API_KEY);
+  const hasCerebras = Boolean(process.env.CEREBRAS_API_KEY);
+  const hasCloudflare = Boolean(
+    process.env.CLOUDFLARE_ACCOUNT_ID && (process.env.CLOUDFLARE_API_TOKEN || process.env.CLOUDFLARE_API_KEY)
+  );
+  const hasNvidia = Boolean(process.env.NVIDIA_API_KEY);
+
   return [
-    { id: "fly", label: "Fly.io", status: "green", blinker: true, tooltip: "Deployment-Plattform", href: "/dashboard" },
-    { id: "sqlite", label: "SQLite / JSON-DB", status: "green", tooltip: "Datenspeicher aktiv" },
-    { id: "supabase", label: "Supabase", status: process.env.SUPABASE_URL ? "green" : "gray", tooltip: process.env.SUPABASE_URL ? "Verfügbar" : "Nicht konfiguriert" },
-    { id: "groq", label: "Groq", status: process.env.GROQ_API_KEY ? "green" : "gray", tooltip: "Primärkette" },
-    { id: "cerebras", label: "Cerebras", status: process.env.CEREBRAS_API_KEY ? "green" : "gray", tooltip: "Fallback" },
-    { id: "cloudflare", label: "Cloudflare", status: process.env.CLOUDFLARE_ACCOUNT_ID && (process.env.CLOUDFLARE_API_TOKEN || process.env.CLOUDFLARE_API_KEY) ? "green" : "gray", tooltip: "Workers AI Fallback" },
-    { id: "nvidia", label: "NVIDIA", status: process.env.NVIDIA_API_KEY ? "green" : "gray", tooltip: "Fallback" },
-    { id: "github", label: "GitHub", status: "green", tooltip: "Repo: mazztah/bkabr" },
-    { id: "scheduler", label: "Scheduler", status: "green", tooltip: "30s-Ticker aktiv" },
-    { id: "agent", label: "KI-Agent", status: "green", tooltip: "Super Spielekind-Agent" },
-    { id: "sse", label: "SSE Live-Logs", status: "green", tooltip: "Server-Sent Events" },
-    { id: "cron", label: "Cron / 30-Tage", status: "green", tooltip: "Monatlicher Modell-Update" },
-    { id: "memory", label: "Memory", status: process.env.SUPABASE_URL ? "green" : "gray", tooltip: "Agent-Gedächtnis" },
-    { id: "api_keys", label: "API-Keys", status: process.env.GROQ_API_KEY ? "green" : "yellow", tooltip: "Basis-Keys gesetzt" },
-    { id: "billing", label: "Billing", status: ly(input.rateLimitCount > 20), tooltip: `${input.rateLimitCount} Rate-Limits beobachtet` },
-    { id: "dokumente", label: "Dokumente", status: input.hasDocuments ? "green" : "gray", tooltip: "Dokumenten-Eingang" },
+    {
+      id: "fly",
+      label: "Fly.io",
+      status: "green",
+      blinker: true,
+      tooltip: "Deployment-Plattform",
+      href: "/dashboard",
+      detail: [
+        { label: "Region", value: "fra (Frankfurt)" },
+        { label: "Rolle", value: "Hosting & Reverse-Proxy" },
+      ],
+    },
+    {
+      id: "sqlite",
+      label: "SQLite / JSON-DB",
+      status: "green",
+      tooltip: "Datenspeicher aktiv",
+      detail: [{ label: "Speicherort", value: "/data/db.json (Fly-Volume)" }],
+    },
+    {
+      id: "supabase",
+      label: "Supabase",
+      status: process.env.SUPABASE_URL ? "green" : "gray",
+      tooltip: process.env.SUPABASE_URL ? "Verfügbar" : "Nicht konfiguriert",
+      detail: [
+        { label: "Status", value: process.env.SUPABASE_URL ? "Verbunden" : "Nicht konfiguriert" },
+        { label: "Verwendung", value: "Observability / Agent-Gedächtnis" },
+      ],
+    },
+    {
+      id: "groq",
+      label: "Groq",
+      status: hasGroq ? "green" : "gray",
+      tooltip: "Primärkette",
+      detail: [{ label: "Rolle", value: "Primäre Fallback-Kette" }, ...providerDetail(hasGroq, "groq")],
+    },
+    {
+      id: "cerebras",
+      label: "Cerebras",
+      status: hasCerebras ? "green" : "gray",
+      tooltip: "Fallback",
+      detail: [{ label: "Rolle", value: "Fallback-Stufe" }, ...providerDetail(hasCerebras, "cerebras")],
+    },
+    {
+      id: "cloudflare",
+      label: "Cloudflare",
+      status: hasCloudflare ? "green" : "gray",
+      tooltip: "Workers AI Fallback",
+      detail: [{ label: "Rolle", value: "Workers-AI-Fallback" }, ...providerDetail(hasCloudflare, "cloudflare")],
+    },
+    {
+      id: "nvidia",
+      label: "NVIDIA",
+      status: hasNvidia ? "green" : "gray",
+      tooltip: "Fallback",
+      detail: [{ label: "Rolle", value: "Fallback-Stufe" }, ...providerDetail(hasNvidia, "nvidia")],
+    },
+    {
+      id: "github",
+      label: "GitHub",
+      status: "green",
+      tooltip: "Repo: mazztah/bkabr",
+      detail: [{ label: "Repository", value: "github.com/mazztah/bkabr" }],
+    },
+    {
+      id: "scheduler",
+      label: "Scheduler",
+      status: "green",
+      tooltip: "30s-Ticker aktiv",
+      detail: [
+        { label: "Intervall", value: "30 Sekunden" },
+        { label: "Aufgabe", value: "Prüft fällige Agent-Kalendereinträge" },
+      ],
+    },
+    {
+      id: "agent",
+      label: "KI-Agent",
+      status: "green",
+      tooltip: "Super Spielekind-Agent",
+      detail: [
+        { label: "Protokollierte Aktionen", value: String(input.auditCount ?? 0) },
+        {
+          label: "Letztes Modell-Update",
+          value: input.lastMonthlyUpdateAt ? new Date(input.lastMonthlyUpdateAt).toLocaleString("de-DE") : "noch nie",
+        },
+      ],
+    },
+    {
+      id: "sse",
+      label: "SSE Live-Logs",
+      status: "green",
+      tooltip: "Server-Sent Events",
+      detail: [{ label: "Polling-Intervall", value: "3 Sekunden" }],
+    },
+    {
+      id: "cron",
+      label: "Cron / 30-Tage",
+      status: "green",
+      tooltip: "Monatlicher Modell-Update",
+      detail: [
+        { label: "Letzter Lauf", value: input.lastMonthlyUpdateAt ? new Date(input.lastMonthlyUpdateAt).toLocaleString("de-DE") : "noch nie" },
+      ],
+    },
+    {
+      id: "memory",
+      label: "Memory",
+      status: process.env.SUPABASE_URL ? "green" : "gray",
+      tooltip: "Agent-Gedächtnis",
+    },
+    {
+      id: "api_keys",
+      label: "API-Keys",
+      status: hasGroq ? "green" : "yellow",
+      tooltip: "Basis-Keys gesetzt",
+      detail: [
+        { label: "Groq", value: hasGroq ? "gesetzt" : "fehlt" },
+        { label: "Cerebras", value: hasCerebras ? "gesetzt" : "fehlt" },
+        { label: "Cloudflare", value: hasCloudflare ? "gesetzt" : "fehlt" },
+        { label: "NVIDIA", value: hasNvidia ? "gesetzt" : "fehlt" },
+      ],
+    },
+    {
+      id: "billing",
+      label: "Billing",
+      status: ly(input.rateLimitCount > 20),
+      tooltip: `${input.rateLimitCount} Rate-Limits beobachtet`,
+      detail: [
+        { label: "Rate-Limits gesamt", value: String(input.rateLimitCount) },
+        { label: "Schwelle für Gelb", value: "> 20" },
+      ],
+    },
+    {
+      id: "dokumente",
+      label: "Dokumente",
+      status: input.hasDocuments ? "green" : "gray",
+      tooltip: "Dokumenten-Eingang",
+      detail: [{ label: "Dokumente in Ablage", value: String(input.documentCount ?? 0) }],
+    },
     { id: "ocr_queue", label: "OCR-Queue", status: "green", tooltip: "Tesseract/Vision bereit" },
     { id: "bk_bearbeitung", label: "BK-Abrechnungen", status: "green", tooltip: "Betriebskosten-Modul" },
     { id: "eigentuemerwechsel", label: "Eigentümerwechsel", status: "green", tooltip: "Vollmachten/Wechsel" },
     { id: "mieterwechsel", label: "Mieterwechsel", status: "green", tooltip: "Ein-/Auszüge" },
     { id: "mahnlauf", label: "Mahnlauf", status: "green", tooltip: "Schriftverkehr/Mahnwesen" },
     { id: "export", label: "Export (PDF/Excel)", status: "green", tooltip: "DATEV/PDF/Excel" },
-    { id: "db_backup", label: "DB-Backup", status: "green", tooltip: "JSON-DB persistiert" },
+    {
+      id: "db_backup",
+      label: "DB-Backup",
+      status: "green",
+      tooltip: "JSON-DB persistiert",
+      detail: [{ label: "Persistenz", value: "Fly-Volume, atomarer Write (rename)" }],
+    },
     { id: "sync_extern", label: "Externe Sync", status: "green", tooltip: "Schnittstellen" },
   ];
 }

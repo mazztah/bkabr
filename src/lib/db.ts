@@ -1575,11 +1575,27 @@ export async function getObservabilityOverview(): Promise<ObservabilityOverview>
 
   const recentRateLimits = db.rateLimitEvents.slice(0, 50);
 
+  // Provider-Statistiken für die LED-Wall-Detailansicht aggregieren
+  // (Groq/Cerebras/Cloudflare/NVIDIA je einmal über alle ihre Modelle summiert).
+  const providerStats: Record<string, { totalCalls: number; successCalls: number; rateLimitCount: number }> = {};
+  for (const entry of modelCatalog) {
+    const agg = providerStats[entry.provider] || { totalCalls: 0, successCalls: 0, rateLimitCount: 0 };
+    agg.totalCalls += entry.health.totalCalls;
+    agg.successCalls += entry.health.successCalls;
+    agg.rateLimitCount += entry.health.rateLimitCount;
+    providerStats[entry.provider] = agg;
+  }
+
   // LED-Wall bauen
   const ledWall = buildLedWall({
     hasDocuments: db.ablage.length > 0,
     hasPruefLaeufe: db.pruefLaeufe.length > 0,
     rateLimitCount: db.rateLimitEvents.length,
+    documentCount: db.ablage.length,
+    auditCount: db.agentAudit.length,
+    lastMonthlyUpdateAt: db.observabilityMeta.lastMonthlyUpdateAt,
+    funMode: db.observabilityMeta.funMode,
+    providerStats,
   });
 
   const recentAudit = db.agentAudit.slice(0, 30);

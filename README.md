@@ -47,6 +47,7 @@ Mit mehr Budget ginge noch mehr (bessere Modelle, echte Multi-User-DB, OCR-Hardw
 | 🤖 **Agentic Assistant** | Derselbe Bot führt auf natürlichsprachlichen Auftrag hin **mehrstufige Workflows selbstständig aus** – 23 Tools, bis zu 20 verkettete Schritte, siehe [eigener Abschnitt](#-agentic-assistant-system--der-ki-agent-mit-23-tools) |
 | ⚖️ **Recht-Check** | Einschätzung auf Basis BetrKV, HeizkostenV, § 556 BGB inkl. Quellen |
 | 📊 **Export** | PDF (pdf-lib), CSV, Excel (xlsx) – ohne Extra-Cloud |
+| 🛰️ **LLM Mission Control** | Eigenes Observability-Dashboard für die KI-Schicht selbst: Live-Modell-Health, Cost & Rate-Limits inkl. KI-generierter Empfehlungen, Live-Logs, LED-Wall – siehe [eigener Abschnitt](#-llm-mission-control--observability-dashboard-dashboardmission-control) |
 
 ---
 
@@ -296,13 +297,42 @@ Was fehlt, ist eher **Breite als Grundgerüst**: Anbindung an Zahlungsverkehr/Ko
 
 ---
 
-| Schicht | Technologie |
+## 🛰️ LLM Mission Control – Observability-Dashboard (`/dashboard/mission-control`)
+
+Ein eigenes Cockpit – nicht für die Hausverwaltung, sondern für den Betrieb der **KI-Schicht selbst**. Fünf Tabs:
+
+| Tab | Inhalt |
+|-----|--------|
+| 🔭 **Observatory** | Alle Modelle im Fallback-Katalog mit Live-Health-Status, Capabilities, Preisen, Mini-Links (API/Docs/Playground) |
+| 🪵 **Live-Logs** | Server-Sent-Events-Stream aller App- und Fly.io-Logs im Terminal-Look, aktualisiert alle 3 Sekunden |
+| 💰 **Cost & Rate-Limits** | Aufrufe, Erfolgs-/Fehlerquote und Tokens je Modell. Ein ⓘ-Icon (Hover am Desktop, Tap am Touchscreen) erklärt, wie die Fehlerquote berechnet wird; ein **🤖 Empfehlung**-Button je Modell schickt die aktuelle Statistik an die LLM-Kette und zeigt in einem kleinen Terminal-Fenster eine konkrete Empfehlung, wie sich die Fehlerquote senken lässt |
+| 📋 **Agent-Audit** | Protokollierte Aktionen des Agenten, inkl. anstoßbarem monatlichem Modell-Update |
+| 💡 **LED-Wall** | Systemstatus auf einen Blick (Fly, Groq, Cerebras, Cloudflare, NVIDIA, Scheduler, OCR-Queue, Mahnlauf, …). Über eine LED hovern (Maus) oder tippen (Touch) öffnet ein Detail-Popover, z. B. Aufrufe/Erfolg/Fehler je Provider oder Anzahl protokollierter Dokumente |
+
+### Die Multi-Provider-LLM-Fallback-Kette
+
+Jeder KI-Aufruf (Chat, Agent, Klassifikation, Extraktion) läuft nicht gegen ein einzelnes festes Modell, sondern gegen eine mehrstufige Fallback-Kette über vier Provider:
+
+```
+Groq (primär, mehrere Modelle) → Cerebras → Cloudflare Workers AI → NVIDIA
+```
+
+Eingebaute Schutzmechanismen, damit die Kette bei Rate-Limits oder Ausfällen einzelner Provider nicht unnötig Zeit verliert:
+
+- **TPM-bewusstes Überspringen:** Modelle mit niedrigem Tokens-pro-Minute-Limit werden übersprungen, wenn System-Prompt + Tools-Schema bereits absehbar über deren Limit liegen, statt garantiert (und langsam) zu scheitern.
+- **Cooldowns:** Modelle, die mit Rate-Limit (429/413), Zahlungsproblem (402) oder strukturell fehlender Fähigkeit (z. B. kein Tool-Calling) scheitern, werden für eine Zeit lang übersprungen statt bei jeder neuen Nachricht erneut erfolglos angefragt zu werden.
+- **Per-Versuch-Timeout:** Jeder einzelne Provider-Aufruf hat ein Zeitlimit, damit ein langsamer/hängender Provider nicht die gesamte Kette blockiert.
+- Jeder Versuch – erfolgreich oder nicht – wird geloggt und fließt live in die Cost-&-Rate-Limits-Statistik des Mission-Control-Dashboards ein.
+
+---
+
+
 |---------|-------------|
 | Framework | **Next.js 15** (App Router), React 19 |
 | Sprache | **TypeScript 5** |
 | UI | **Tailwind CSS 4**, Framer Motion, Lucide |
 | State | **Zustand** |
-| KI | **Groq** (Vision + Text, u. a. Llama 4 Scout / multimodale Modelle) |
+| KI | **Multi-Provider-Fallback-Kette**: Groq (primär, Vision + Text, u. a. Llama 4 Scout) → Cerebras → Cloudflare Workers AI → NVIDIA – TPM-bewusstes Skip, Cooldowns, Per-Versuch-Timeouts (Details [oben](#-llm-mission-control--observability-dashboard-dashboardmission-control)) |
 | OCR | tesseract.js + pdf-parse + Vision-Fallback |
 | PDF | **pdf-lib** (Export, Briefkopf) |
 | Excel | eigenes minimales XLSX (kein schweres Extra-Dependency-Zwang) |
@@ -350,15 +380,36 @@ fly deploy
 
 Optional: GitHub Action mit `FLY_API_TOKEN` für Deploy bei Push auf `main`.
 
+> ⚠️ **Vor dem Hochskalieren auf mehrere Maschinen lesen:** Die Persistenz liegt aktuell in einer
+> JSON-Datei (`db.json`) auf einem einzelnen Fly-Volume. Ein Volume hängt immer nur an **einer**
+> Maschine gleichzeitig. Ein einfaches `fly scale count 2` gibt der zweiten Maschine damit **kein**
+> eigenes, synchronisiertes Volume – die Folge sind zwei divergierende Datenstände statt echter
+> Redundanz, nicht mehr Verfügbarkeit. Vor echtem Multi-Machine-Betrieb müsste die Kerndaten-
+> Persistenz erst auf eine geteilte Datenbank umziehen (z. B. Supabase/Postgres – die Anbindung
+> für Observability-Daten existiert in `src/lib/supabase.ts` bereits als Grundgerüst).
+>
+> Für mehr **Stabilität auf einer einzigen Maschine** hat sich `performance-1x` (dedizierte vCPU)
+> in der Praxis deutlich zuverlässiger gezeigt als `shared-cpu-1x`: Bei geteilten vCPUs kann ein
+> anderer Fly-Kunde auf demselben Host kurzzeitig CPU-Zeit wegnehmen ("Steal Time") – das ist von
+> innerhalb der eigenen VM aus in den Metriken **nicht sichtbar** (CPU-Auslastung wirkt niedrig),
+> kann aber Health-Checks unregelmäßig scheitern lassen. In `fly.toml`:
+> ```toml
+> [[vm]]
+>   size = "performance-1x"
+>   memory = "2gb"
+>   cpu_kind = "performance"
+>   cpus = 1
+> ```
+
 ---
 
 ## 💡 Warum 0 € – und trotzdem viel möglich?
 
 | Kostenpunkt | Hier gelöst durch |
 |-------------|-------------------|
-| KI-Inferenz | Groq Free / Developer Tier (schnell, Vision-fähig) |
-| Datenbank | JSON-Dateien + Volume – kein Managed-DB-Abo |
-| Hosting | Fly.io Free/Hobby-tauglich, auto-stop Machines |
+| KI-Inferenz | Groq Free/Developer Tier als Primärkette, mit Cerebras/Cloudflare Workers AI/NVIDIA als kostenlose Fallback-Stufen bei Rate-Limits |
+| Datenbank | JSON-Dateien + Volume – kein Managed-DB-Abo (Achtung: dadurch an eine einzelne Maschine gebunden, siehe Deployment-Hinweis oben) |
+| Hosting | Fly.io Free/Hobby-tauglich mit `shared-cpu-1x`, auto-stop Machines; `performance-1x` kostet mehr, ist aber deutlich stabiler (kein Shared-CPU-Steal-Time) |
 | OCR | tesseract.js + pdf-parse lokal im Container |
 | Auth / Multi-Tenant | bewusst noch schlank – Erweiterung willkommen |
 | Design-System | Tailwind + eigene Marketing-Komponenten |

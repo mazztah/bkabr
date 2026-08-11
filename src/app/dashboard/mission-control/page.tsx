@@ -507,84 +507,9 @@ function CostObservatory({
       <h2 className="mb-2 text-sm font-semibold">💰 Cost & Model Observatory</h2>
       <div className="rounded-lg border border-border bg-card">
         <div className="mc-stagger divide-y divide-border">
-          {models.map((m) => {
-            const h = m.health;
-            const rateLimitProzent = h.totalCalls > 0 ? h.rateLimitCount / h.totalCalls : 0;
-            const barColor = rateLimitProzent > 0.5 ? "var(--destructive)" : "#f59e0b";
-            const limits = KNOWN_FREE_TIER_LIMITS[m.id];
-            const gesamtTokens = (h.promptTokens || 0) + (h.completionTokens || 0);
-            return (
-              <div
-                key={m.id}
-                className="interactive flex flex-wrap items-center justify-between gap-2 p-2.5 text-xs"
-              >
-                <div className="min-w-0">
-                  <div className="truncate font-medium">{m.label}</div>
-                  <div className="text-[10px] text-muted-foreground">
-                    {m.provider} · Stufe {m.fallbackPriority}
-                  </div>
-                  <div className="mt-0.5 text-[10px] text-muted-foreground">
-                    Limit: {limits?.tpm ? `${limits.tpm.toLocaleString("de-DE")} TPM` : ""}
-                    {limits?.tpm && limits?.tpd ? " · " : ""}
-                    {limits?.tpd ? `${limits.tpd.toLocaleString("de-DE")} TPD` : ""}
-                    {!limits?.tpm && !limits?.tpd ? "unbekannt" : ""}
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 text-right">
-                  <div>
-                    <div className="text-[10px] text-muted-foreground">Tokens (in/out)</div>
-                    <div className="tabular-nums">
-                      {gesamtTokens > 0
-                        ? `${(h.promptTokens || 0).toLocaleString("de-DE")} / ${(h.completionTokens || 0).toLocaleString("de-DE")}`
-                        : "—"}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] text-muted-foreground">Calls</div>
-                    <div className="tabular-nums">
-                      <AnimatedNumber value={String(h.totalCalls)} />
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] text-muted-foreground">Rate-Limits</div>
-                    <div
-                      className={cn(
-                        "tabular-nums",
-                        h.rateLimitCount > 0 ? "text-amber-400" : "text-muted-foreground"
-                      )}
-                    >
-                      {h.rateLimitCount}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] text-muted-foreground">Free-Tier-Exceed</div>
-                    <div
-                      className={cn(
-                        "tabular-nums",
-                        h.freeTierExceededCount > 0 ? "text-red-400" : "text-muted-foreground"
-                      )}
-                    >
-                      {h.freeTierExceededCount}
-                    </div>
-                  </div>
-                  <div className="hidden w-24 sm:block">
-                    <div className="mb-1 text-[10px] text-muted-foreground">Fehlerquote</div>
-                    <div className="h-1.5 w-full overflow-hidden rounded bg-muted">
-                      <div
-                        key={`${m.id}-${rateLimitProzent}`}
-                        className="mc-bar-fill h-full rounded"
-                        style={{
-                          width: `${Math.min(100, rateLimitProzent * 100)}%`,
-                          backgroundColor: barColor,
-                          boxShadow: rateLimitProzent > 0 ? `0 0 6px 0 color-mix(in srgb, ${barColor} 70%, transparent)` : "none",
-                        }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+          {models.map((m) => (
+            <CostModelRow key={m.id} model={m} />
+          ))}
         </div>
       </div>
 
@@ -613,6 +538,231 @@ function CostObservatory({
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/** Eine Zeile der Cost-&-Model-Observatory-Tabelle: Stats + Fehlerquote-Erklärung + KI-Empfehlung. */
+function CostModelRow({ model: m }: { model: ModelCatalogEntry }) {
+  const h = m.health;
+  const failedCalls = Math.max(0, h.totalCalls - h.successCalls);
+  // Echte Gesamt-Fehlerquote (alle Fehlschläge), nicht nur Rate-Limits – siehe Hinweistext im Info-Icon.
+  const fehlerQuote = h.totalCalls > 0 ? failedCalls / h.totalCalls : 0;
+  const barColor = fehlerQuote > 0.5 ? "var(--destructive)" : "#f59e0b";
+  const limits = KNOWN_FREE_TIER_LIMITS[m.id];
+  const gesamtTokens = (h.promptTokens || 0) + (h.completionTokens || 0);
+
+  const [rec, setRec] = useState<{ status: "idle" | "loading" | "done" | "error"; text: string }>({
+    status: "idle",
+    text: "",
+  });
+
+  const empfehlungAnfordern = useCallback(async () => {
+    setRec({ status: "loading", text: "" });
+    try {
+      const data = await fetchJson<{ recommendation: string }>(
+        `/api/dashboard/cost-recommendation?modelId=${encodeURIComponent(m.id)}`,
+        25000
+      );
+      setRec({ status: "done", text: data.recommendation });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setRec({ status: "error", text: message || "Konnte keine Empfehlung abrufen." });
+    }
+  }, [m.id]);
+
+  return (
+    <div className="interactive p-2.5 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate font-medium">{m.label}</div>
+          <div className="text-[10px] text-muted-foreground">
+            {m.provider} · Stufe {m.fallbackPriority}
+          </div>
+          <div className="mt-0.5 text-[10px] text-muted-foreground">
+            Limit: {limits?.tpm ? `${limits.tpm.toLocaleString("de-DE")} TPM` : ""}
+            {limits?.tpm && limits?.tpd ? " · " : ""}
+            {limits?.tpd ? `${limits.tpd.toLocaleString("de-DE")} TPD` : ""}
+            {!limits?.tpm && !limits?.tpd ? "unbekannt" : ""}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 text-right">
+          <div>
+            <div className="text-[10px] text-muted-foreground">Tokens (in/out)</div>
+            <div className="tabular-nums">
+              {gesamtTokens > 0
+                ? `${(h.promptTokens || 0).toLocaleString("de-DE")} / ${(h.completionTokens || 0).toLocaleString("de-DE")}`
+                : "—"}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-muted-foreground">Calls</div>
+            <div className="tabular-nums">
+              <AnimatedNumber value={String(h.totalCalls)} />
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-muted-foreground">Erfolgreich</div>
+            <div className="tabular-nums text-emerald-400">{h.successCalls}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-muted-foreground">Fehlgeschlagen</div>
+            <div className={cn("tabular-nums", failedCalls > 0 ? "text-red-400" : "text-muted-foreground")}>
+              {failedCalls}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-muted-foreground">Rate-Limits</div>
+            <div
+              className={cn(
+                "tabular-nums",
+                h.rateLimitCount > 0 ? "text-amber-400" : "text-muted-foreground"
+              )}
+            >
+              {h.rateLimitCount}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-muted-foreground">Free-Tier-Exceed</div>
+            <div
+              className={cn(
+                "tabular-nums",
+                h.freeTierExceededCount > 0 ? "text-red-400" : "text-muted-foreground"
+              )}
+            >
+              {h.freeTierExceededCount}
+            </div>
+          </div>
+          <div className="hidden w-24 sm:block">
+            <div className="mb-1 flex items-center gap-1 text-[10px] text-muted-foreground">
+              <span>Fehlerquote</span>
+              <HoverTapInfo
+                title={`Fehlerquote: ${(fehlerQuote * 100).toFixed(0)}%`}
+                lines={[
+                  { label: "Formel", value: "Fehlgeschlagen ÷ Aufrufe gesamt" },
+                  { label: "Fehlgeschlagen", value: String(failedCalls) },
+                  { label: "Aufrufe gesamt", value: String(h.totalCalls) },
+                  { label: "Davon Rate-Limits", value: String(h.rateLimitCount) },
+                ]}
+              />
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded bg-muted">
+              <div
+                key={`${m.id}-${fehlerQuote}`}
+                className="mc-bar-fill h-full rounded"
+                style={{
+                  width: `${Math.min(100, fehlerQuote * 100)}%`,
+                  backgroundColor: barColor,
+                  boxShadow: fehlerQuote > 0 ? `0 0 6px 0 color-mix(in srgb, ${barColor} 70%, transparent)` : "none",
+                }}
+              />
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={empfehlungAnfordern}
+            disabled={rec.status === "loading" || h.totalCalls === 0}
+            className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+            title={h.totalCalls === 0 ? "Noch keine Aufrufe für dieses Modell" : "KI-Empfehlung zur Fehlerquote anfordern"}
+          >
+            {rec.status === "loading" ? "🤖 …" : "🤖 Empfehlung"}
+          </button>
+        </div>
+      </div>
+
+      {rec.status !== "idle" && (
+        <RecommendationTerminal state={rec} onClose={() => setRec({ status: "idle", text: "" })} />
+      )}
+    </div>
+  );
+}
+
+/** Kleines ⓘ-Icon: zeigt Erklärungstext beim Hovern (Maus) oder Tippen (Touch). */
+function HoverTapInfo({
+  title,
+  lines,
+}: {
+  title?: string;
+  lines?: { label: string; value: string }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent | TouchEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    document.addEventListener("touchstart", handler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("touchstart", handler);
+    };
+  }, [open]);
+
+  return (
+    <div
+      ref={ref}
+      className="relative inline-block"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((o) => !o);
+        }}
+        className="flex h-3.5 w-3.5 items-center justify-center rounded-full border border-muted-foreground/50 text-[9px] leading-none text-muted-foreground hover:border-primary hover:text-primary"
+        aria-label="Erklärung anzeigen"
+      >
+        i
+      </button>
+      {open && (title || lines?.length) && (
+        <div className="absolute right-0 top-full z-40 mt-1 w-64 rounded-lg border border-border bg-card p-2.5 text-left text-[11px] normal-case shadow-2xl">
+          {title && <div className="mb-1.5 font-medium">{title}</div>}
+          {lines?.map((l) => (
+            <div key={l.label} className="flex items-center justify-between gap-3 py-0.5">
+              <span className="text-muted-foreground">{l.label}</span>
+              <span className="tabular-nums font-medium">{l.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Terminal-artiges Fenster für die KI-Empfehlung zur Fehlerquote (im Stil des Live-Log-Streams). */
+function RecommendationTerminal({
+  state,
+  onClose,
+}: {
+  state: { status: "idle" | "loading" | "done" | "error"; text: string };
+  onClose: () => void;
+}) {
+  return (
+    <div className="glow-ring-accent mt-2 rounded-lg border border-border bg-black p-3 font-mono text-[11px] leading-relaxed">
+      <div className="mb-2 flex items-center justify-between gap-2 text-[10px] text-white/40">
+        <span>
+          $ analyze --fehlerquote --recommend
+          {state.status === "loading" && <span className="mc-cursor ml-1" />}
+        </span>
+        <button type="button" onClick={onClose} className="text-white/40 hover:text-white/80">
+          ✕
+        </button>
+      </div>
+      <div className="whitespace-pre-wrap">
+        {state.status === "loading" && <span className="text-white/50">Werte Fehlerquote aus…</span>}
+        {state.status === "error" && <span className="text-red-400">{state.text}</span>}
+        {state.status === "done" && (
+          <span className="text-emerald-300">
+            {state.text}
+            <span className="mc-cursor ml-0.5" />
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -723,6 +873,25 @@ function AgentAudit({
 }
 
 function LedWall({ leds }: { leds: LedEntry[] }) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  const wallRef = useRef<HTMLDivElement>(null);
+
+  // Schließt das offene Popover, wenn außerhalb der LED-Wall geklickt/getippt wird.
+  useEffect(() => {
+    if (!openId) return;
+    const handler = (e: MouseEvent | TouchEvent) => {
+      if (wallRef.current && !wallRef.current.contains(e.target as Node)) {
+        setOpenId(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    document.addEventListener("touchstart", handler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("touchstart", handler);
+    };
+  }, [openId]);
+
   const colorMap: Record<LedEntry["status"], string> = {
     green: "var(--success)",
     yellow: "#f59e0b",
@@ -736,30 +905,53 @@ function LedWall({ leds }: { leds: LedEntry[] }) {
         <div>
           <h2 className="text-sm font-semibold">💡 LED-Wall</h2>
           <p className="text-xs text-muted-foreground">
-            System- & Hausverwaltungs-Status auf einen Blick (Mission Control).
+            System- & Hausverwaltungs-Status auf einen Blick. Zum Anzeigen von Details über eine LED
+            hovern (Maus) oder tippen (Touch).
           </p>
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-2 mc-stagger sm:grid-cols-3 lg:grid-cols-4">
-        {leds.map((led) => (
-          <div
-            key={led.id}
-            title={led.tooltip}
-            className={cn(
-              "mc-led-panel interactive flex items-center gap-2.5 rounded-lg border border-border p-2.5 text-xs",
-              led.href && "cursor-pointer hover:border-primary/50"
-            )}
-          >
-            <span
-              className={cn(
-                "mc-led h-3 w-3 shrink-0",
-                led.status === "gray" ? "mc-led--off" : led.blinker && "mc-led--blink"
+      <div ref={wallRef} className="grid grid-cols-2 gap-2 mc-stagger sm:grid-cols-3 lg:grid-cols-4">
+        {leds.map((led) => {
+          const isOpen = openId === led.id;
+          const hasInfo = Boolean(led.tooltip || led.detail?.length);
+          return (
+            <div key={led.id} className="relative">
+              <div
+                onMouseEnter={() => hasInfo && setOpenId(led.id)}
+                onMouseLeave={() => setOpenId((cur) => (cur === led.id ? null : cur))}
+                onClick={() => hasInfo && setOpenId((cur) => (cur === led.id ? null : led.id))}
+                className={cn(
+                  "mc-led-panel interactive flex items-center gap-2.5 rounded-lg border border-border p-2.5 text-xs",
+                  (hasInfo || led.href) && "cursor-pointer hover:border-primary/50",
+                  isOpen && "border-primary/60 ring-1 ring-primary/30"
+                )}
+              >
+                <span
+                  className={cn(
+                    "mc-led h-3 w-3 shrink-0",
+                    led.status === "gray" ? "mc-led--off" : led.blinker && "mc-led--blink"
+                  )}
+                  style={{ "--led-color": colorMap[led.status] } as React.CSSProperties}
+                />
+                <span className="min-w-0 truncate">{led.label}</span>
+              </div>
+              {isOpen && hasInfo && (
+                <div className="absolute left-0 top-full z-40 mt-1 w-60 rounded-lg border border-border bg-card p-2.5 text-xs shadow-2xl">
+                  {led.tooltip && <div className="mb-1.5 font-medium">{led.tooltip}</div>}
+                  {led.detail?.map((d) => (
+                    <div
+                      key={d.label}
+                      className="flex items-center justify-between gap-3 py-0.5 text-[11px]"
+                    >
+                      <span className="text-muted-foreground">{d.label}</span>
+                      <span className="tabular-nums font-medium">{d.value}</span>
+                    </div>
+                  ))}
+                </div>
               )}
-              style={{ "--led-color": colorMap[led.status] } as React.CSSProperties}
-            />
-            <span className="min-w-0 truncate">{led.label}</span>
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
