@@ -33,8 +33,8 @@ primary_region = "fra"
     path = "/api/health"
 
 [[vm]]
-  size = "shared-cpu-1x"
+  size = "performance-1x"
   memory = "2gb"
-  cpu_kind = "shared"
+  cpu_kind = "performance"
   cpus = 1
   processes = ["app"]
