@@ -1074,6 +1074,111 @@ export interface SchriftverkehrDokument {
   updatedAt: string;
 }
 
+// -------- Investoren (Kontaktsammlung + Recherche/Anschreiben/Strategie) --------
+// Eigenständiges Modul, bewusst nicht an die Liegenschaftshierarchie gekoppelt:
+// Investoren sind externe Kontakte (Startup/VC, Private Equity, IT/KI, Real
+// Estate, Property-/Facility-/Asset-Management), die der Agent selbstständig
+// per Websuche recherchiert, anhand von INVESTOR_KRITERIEN (siehe lib/investoren.ts)
+// bewertet und – nach Freigabe – in die Stammdatenliste übernimmt. Anschreiben
+// und Strategie-Berichte hängen jeweils per investorId an einem Datensatz.
+
+export type InvestorStatus =
+  | "vorschlag" // von der (Web-)Recherche vorgeschlagen, wartet auf Freigabe
+  | "freigegeben"
+  | "kontaktiert"
+  | "in_gespraech"
+  | "abgelehnt";
+
+export const INVESTOR_STATUS_LABEL: Record<InvestorStatus, string> = {
+  vorschlag: "Vorschlag (Freigabe offen)",
+  freigegeben: "Freigegeben",
+  kontaktiert: "Kontaktiert",
+  in_gespraech: "In Gespräch",
+  abgelehnt: "Abgelehnt",
+};
+
+/** Bewusst als String statt strikter Union: KI-recherchierte Sektoren sollen nicht an
+ *  einer starren Enum-Prüfung scheitern. INVESTOR_SEKTOR_VORSCHLAEGE (lib/investoren.ts)
+ *  liefert die Vorschlagsliste fürs UI (Startup/VC, Private Equity, IT/Software, KI/AI,
+ *  Real Estate, Property/Facility/Asset Management, …). */
+export type InvestorSektor = string;
+
+export interface InvestorKriteriumErgebnis {
+  /** ID aus INVESTOR_KRITERIEN, z.B. "quelle_verifizierbar" */
+  kriteriumId: string;
+  erfuellt: boolean;
+  begruendung?: string;
+}
+
+export interface Investor {
+  id: string;
+  nummer?: string;
+  firma: string;
+  ansprechpartnerName?: string;
+  ansprechpartnerRolle?: string;
+  email?: string;
+  telefon?: string;
+  webseite?: string;
+  linkedinUrl?: string;
+  xingUrl?: string;
+  land: string;
+  /** Wissenshub/Standort, z.B. "Silicon Valley", "Berlin" */
+  hub?: string;
+  sektoren: InvestorSektor[];
+  /** Kurzer Lebenslauf/Profil-Text des Kontakts bzw. der Firma */
+  kurzprofil?: string;
+  tickeGroesse?: string;
+  sprache?: string;
+  /** Wo der Kontakt herkommt (URL/Quelle), Pflicht für DSGVO-Nachweis bei Agent-Recherchen */
+  quelle?: string;
+  quelleDatum?: string;
+  status: InvestorStatus;
+  /** 0-10, aus kriterienErgebnis abgeleitet */
+  score?: number;
+  kriterienErgebnis?: InvestorKriteriumErgebnis[];
+  notizen?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type InvestorAnschreibenStatus = "Entwurf" | "Versandbereit" | "Versendet" | "Archiviert";
+
+export interface InvestorAnschreiben {
+  id: string;
+  nummer?: string;
+  investorId: string;
+  investorFirma: string;
+  betreff: string;
+  text: string;
+  status: InvestorAnschreibenStatus;
+  quelle: "manuell" | "agent";
+  // Finale, per "Fertigstellen" erzeugte PDF-Version inkl. Corporate-Design-Briefkopf
+  finalStoredFileName?: string;
+  finalDateiName?: string;
+  finalisiertAm?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InvestorStrategiePunkt {
+  titel: string;
+  beschreibung: string;
+}
+
+export interface InvestorStrategieBericht {
+  id: string;
+  nummer?: string;
+  investorId: string;
+  investorFirma: string;
+  /** Wirtschaftliche Ziele/Kontext, der dem Bericht zugrunde lag (freier Nutzertext) */
+  wirtschaftlicheZiele?: string;
+  zusammenfassung: string;
+  /** Mind. 20 individualisierte Strategiepunkte */
+  punkte: InvestorStrategiePunkt[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 // -------- News-Widget (RSS-Feed-Aggregator, Durchgang 8a) --------
 
 export type NewsKategorie = "Allgemein" | "KI & Tech" | "Immobilien";

@@ -11,6 +11,9 @@ const recentToolCalls = new Map<string, { at: number; result: unknown }>();
 const IDEMPOTENZ_FENSTER_MS = 5000;
 import {
   Gebaeude,
+  Investor,
+  InvestorStatus,
+  KalenderKategorie,
   Liegenschaft,
   Mieter,
   PruefBefund,
@@ -20,12 +23,17 @@ import {
 import {
   ablageDb,
   abrechnungskreiseDb,
+  agentSchedulesDb,
   berechneAbrechnungskreisSplit,
   buchungenDb,
   buchungErstellen,
   buchungStornieren,
   deleteAbrechnung,
   gebaeudeDb,
+  investorAnschreibenDb,
+  investorenDb,
+  investorStrategieBerichteDb,
+  kalenderEreignisseDb,
   liegenschaftenDb,
   listAbrechnungen,
   logEvent,
@@ -48,7 +56,19 @@ import {
   renderBrief,
 } from "./schriftverkehr";
 import { createChatCompletion } from "./groq-client";
-import { deleteStoredFile } from "./storage";
+import { deleteStoredFile, storeFile } from "./storage";
+import { computeNextRun, validateRecurrence } from "./schedule";
+import { webSearch } from "./websearch";
+import {
+  evaluateInvestorKriterien,
+  generateInvestorAnschreiben,
+  generateInvestorStrategieBericht,
+} from "./ai";
+import {
+  buildInvestorBriefText,
+  empfehlungAusScore,
+  INVESTOR_KRITERIEN,
+} from "./investoren";
 import {
   cascadeDeleteLiegenschaft,
   cascadeDeleteGebaeude,
@@ -1029,6 +1049,358 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
       },
     },
   },
+
+  // -------- Investoren (Recherche, Bewertung, Anschreiben, Strategie, Cronjobs) --------
+  {
+    type: "function",
+    function: {
+      name: "list_investoren",
+      description:
+        "Listet Investoren-Kontakte, optional gefiltert nach Status, Sektor, Land oder Freitext-Suche (Firma/Ansprechpartner).",
+      parameters: {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            enum: ["vorschlag", "freigegeben", "kontaktiert", "in_gespraech", "abgelehnt"],
+          },
+          sektor: { type: "string", description: "z.B. 'KI / AI' oder 'Real Estate'" },
+          land: { type: "string" },
+          query: { type: "string", description: "Freitext-Suche in Firma/Ansprechpartner/Kurzprofil" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_investor",
+      description: "Liefert die vollständigen Stammdaten inkl. Kriterien-Bewertung eines einzelnen Investors.",
+      parameters: {
+        type: "object",
+        properties: { investor_id: { type: "string" } },
+        required: ["investor_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_investoren_web",
+      description:
+        "Durchsucht das Web nach Investoren-Kandidaten (z.B. 'top KI-Investoren Berlin 2026' oder 'active real estate private equity funds India'). " +
+        "Liefert rohe Treffer (Titel/URL/Snippet) zurück – DICH als Agent musst daraus die eigentlichen Kandidaten " +
+        "(Firma, Ansprechpartner, Kontakt, Land, Sektor) extrahieren und anschließend evaluate_investor_kriterien + create_investor nutzen. " +
+        "Für eine gute Trefferquote mehrere gezielte Suchen (pro Sektor/Region) statt einer sehr breiten Anfrage.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Suchanfrage, z.B. 'active AI venture capital investors Silicon Valley 2026'" },
+          max_results: { type: "number", description: "Standard 5, max 10" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "evaluate_investor_kriterien",
+      description:
+        "Bewertet einen Investoren-Kandidaten anhand der 10 festen Aufnahme-Kriterien (siehe list_investor_kriterien) auf Basis der " +
+        "übergebenen Stammdaten + Recherche-Kontext (Websuche-Snippets). Liefert Score (0-10), Empfehlung (aufnehmen/ablehnen) und " +
+        "Begründung je Kriterium – nutze das Ergebnis für create_investor (kriterien_ergebnis, score, status).",
+      parameters: {
+        type: "object",
+        properties: {
+          firma: { type: "string" },
+          land: { type: "string" },
+          sektoren: { type: "array", items: { type: "string" } },
+          kurzprofil: { type: "string" },
+          webseite: { type: "string" },
+          hub: { type: "string" },
+          ticke_groesse: { type: "string" },
+          recherche_kontext: {
+            type: "string",
+            description: "Roher Text aus search_investoren_web-Ergebnissen (Titel/URL/Snippet), der die Bewertung stützt.",
+          },
+        },
+        required: ["firma"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_investor_kriterien",
+      description: "Listet die 10 festen Aufnahme-Kriterien für Investoren-Kandidaten inkl. Beschreibung.",
+      parameters: { type: "object", properties: { "_": { type: "string", description: "Optional, ignorieren" } } },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_investor",
+      description:
+        "Legt einen Investoren-Kontakt in der Stammdatenliste an. Bei per Websuche recherchierten Kandidaten: status='vorschlag' setzen " +
+        "(wartet auf Freigabe durch den Nutzer) und quelle (URL) + quelle_datum angeben – niemals ohne verifizierbare Quelle direkt 'freigegeben' setzen.",
+      parameters: {
+        type: "object",
+        properties: {
+          firma: { type: "string" },
+          ansprechpartner_name: { type: "string" },
+          ansprechpartner_rolle: { type: "string" },
+          email: { type: "string" },
+          telefon: { type: "string" },
+          webseite: { type: "string" },
+          linkedin_url: { type: "string" },
+          xing_url: { type: "string" },
+          land: { type: "string" },
+          hub: { type: "string", description: "z.B. 'Silicon Valley', 'Berlin'" },
+          sektoren: { type: "array", items: { type: "string" } },
+          kurzprofil: { type: "string", description: "Kurzer Lebenslauf/Profil-Text" },
+          ticke_groesse: { type: "string" },
+          sprache: { type: "string" },
+          quelle: { type: "string", description: "URL/Quelle der Recherche (Pflicht bei Websuche-Kandidaten)" },
+          quelle_datum: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["vorschlag", "freigegeben", "kontaktiert", "in_gespraech", "abgelehnt"],
+          },
+          score: { type: "number" },
+          kriterien_ergebnis: {
+            type: "array",
+            description: "Ergebnis von evaluate_investor_kriterien (kriteriumId/erfuellt/begruendung je Kriterium)",
+            items: {
+              type: "object",
+              properties: {
+                kriterium_id: { type: "string" },
+                erfuellt: { type: "boolean" },
+                begruendung: { type: "string" },
+              },
+            },
+          },
+          notizen: { type: "string" },
+        },
+        required: ["firma", "land"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_investor",
+      description: "Aktualisiert Stammdaten, Status oder Notizen eines bestehenden Investors.",
+      parameters: {
+        type: "object",
+        properties: {
+          investor_id: { type: "string" },
+          firma: { type: "string" },
+          ansprechpartner_name: { type: "string" },
+          ansprechpartner_rolle: { type: "string" },
+          email: { type: "string" },
+          telefon: { type: "string" },
+          webseite: { type: "string" },
+          linkedin_url: { type: "string" },
+          xing_url: { type: "string" },
+          land: { type: "string" },
+          hub: { type: "string" },
+          sektoren: { type: "array", items: { type: "string" } },
+          kurzprofil: { type: "string" },
+          ticke_groesse: { type: "string" },
+          notizen: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["vorschlag", "freigegeben", "kontaktiert", "in_gespraech", "abgelehnt"],
+          },
+        },
+        required: ["investor_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "approve_investoren",
+      description:
+        "Gibt einen oder mehrere Investoren-Vorschläge frei (Status → 'freigegeben'), z.B. nach manueller Prüfung durch den Nutzer " +
+        "oder wenn der Nutzer explizit automatische Freigabe für eine Suche gewünscht hat. investor_ids ODER alle_vorschlaege=true nutzen.",
+      parameters: {
+        type: "object",
+        properties: {
+          investor_ids: { type: "array", items: { type: "string" } },
+          alle_vorschlaege: { type: "boolean", description: "true = alle Investoren mit status='vorschlag' freigeben" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "reject_investor",
+      description: "Lehnt einen Investoren-Kandidaten ab (Status → 'abgelehnt').",
+      parameters: {
+        type: "object",
+        properties: {
+          investor_id: { type: "string" },
+          grund: { type: "string" },
+        },
+        required: ["investor_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_investor",
+      description: "Löscht einen Investoren-Kontakt endgültig. Erfordert user_confirmed=true nach Rückfrage.",
+      parameters: {
+        type: "object",
+        properties: {
+          investor_id: { type: "string" },
+          user_confirmed: { type: "boolean" },
+        },
+        required: ["investor_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "generate_investor_anschreiben",
+      description:
+        "Erstellt per KI ein proaktives Anschreiben an einen Investor (Vorstellung Person/Philosophie/App, Offenheit für " +
+        "Zusammenarbeit/Kaufangebote/Stellenangebote) im Corporate Design und speichert es als Entwurf im Anschreiben-Verlauf des Investors.",
+      parameters: {
+        type: "object",
+        properties: {
+          investor_id: { type: "string" },
+          philosophie: { type: "string", description: "Optional: individuelle Philosophie/Botschaft statt Standardtext" },
+          anlass: { type: "string", description: "Optional: konkreter Anlass, falls abweichend von einer Erstansprache" },
+          absender_name: { type: "string" },
+        },
+        required: ["investor_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_investor_anschreiben",
+      description: "Listet die gespeicherten Anschreiben eines Investors (Entwürfe + fertiggestellte PDFs).",
+      parameters: {
+        type: "object",
+        properties: { investor_id: { type: "string" } },
+        required: ["investor_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "generate_investor_strategie_bericht",
+      description:
+        "Erstellt per KI einen individuellen Strategie-Bericht (mind. 20 konkrete Strategiepunkte) für die Ansprache/Verhandlung mit " +
+        "einem bestimmten Investor, abgestimmt auf die wirtschaftlichen Ziele des Nutzers.",
+      parameters: {
+        type: "object",
+        properties: {
+          investor_id: { type: "string" },
+          wirtschaftliche_ziele: { type: "string", description: "Freitext: Ziele/Kontext des Eigentümers für diesen Bericht" },
+        },
+        required: ["investor_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_investoren_ablage_liste",
+      description:
+        "Legt eine Liste von Investoren-Kandidaten (z.B. die neuesten 10 Top-Treffer einer Websuche) als Textdokument in der Ablage ab " +
+        "(sichtbar unter /ablage). Nutze das typischerweise am Ende eines Recherche-Durchlaufs, bevor du create_kalender_ereignis für die Freigabe aufrufst.",
+      parameters: {
+        type: "object",
+        properties: {
+          titel: { type: "string", description: "z.B. 'Top 10 KI-Investoren – 12.08.2026'" },
+          investor_ids: { type: "array", items: { type: "string" }, description: "IDs der zuvor mit create_investor angelegten Kandidaten" },
+        },
+        required: ["titel", "investor_ids"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_kalender_ereignis",
+      description:
+        "Legt einen Kalendereintrag an (z.B. 'Neue Investoren warten auf Freigabe'). Kategorie meist 'Aufgabe' für Freigabe-Hinweise.",
+      parameters: {
+        type: "object",
+        properties: {
+          titel: { type: "string" },
+          beschreibung: { type: "string" },
+          datum: { type: "string", description: "ISO-Datum/-Zeit, Standard: jetzt" },
+          kategorie: { type: "string", enum: ["Termin", "Frist", "Aufgabe", "Erinnerung"] },
+        },
+        required: ["titel"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_agent_schedule",
+      description:
+        "Legt einen wiederkehrenden Agent-Auftrag (Cronjob) an, z.B. 'alle 2 Tage neue KI- und Real-Estate-Investoren suchen'. " +
+        "Der prompt wird bei Fälligkeit automatisch als Nachricht an dich selbst geschickt (mit vollem Tool-Zugriff, inkl. search_investoren_web/create_investor/…).",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          prompt: { type: "string", description: "Vollständiger Auftrag, den der Agent bei Fälligkeit ausführen soll" },
+          intervall_minuten: { type: "number", description: "Für wiederkehrend alle X Minuten, z.B. 2880 für alle 2 Tage" },
+          taeglich_uhrzeit: { type: "string", description: "Alternative: 'HH:MM' für täglich" },
+          woechentlich_wochentag: { type: "number", description: "0=So..6=Sa, zusammen mit woechentlich_uhrzeit" },
+          woechentlich_uhrzeit: { type: "string" },
+          aktiv: { type: "boolean" },
+        },
+        required: ["name", "prompt"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_agent_schedules_batch",
+      description:
+        "Legt mehrere (bis zu 10) wiederkehrende Agent-Aufträge auf einmal an, z.B. wenn der Nutzer '10 Cronjobs für neue Investorenkontakte' bestellt.",
+      parameters: {
+        type: "object",
+        properties: {
+          schedules: {
+            type: "array",
+            maxItems: 10,
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                prompt: { type: "string" },
+                intervall_minuten: { type: "number" },
+                taeglich_uhrzeit: { type: "string" },
+                woechentlich_wochentag: { type: "number" },
+                woechentlich_uhrzeit: { type: "string" },
+              },
+              required: ["name", "prompt"],
+            },
+          },
+        },
+        required: ["schedules"],
+      },
+    },
+  },
 ];
 
 // -------- Kontext-Helfer --------
@@ -1140,6 +1512,20 @@ async function buildAndSaveBrief(params: {
 }
 
 // -------- Tool-Ausführung --------
+
+/** Baut eine AgentScheduleRecurrence aus den flachen Tool-Argumenten (intervall_minuten ODER taeglich_uhrzeit ODER woechentlich_*). */
+function parseRecurrenceFromToolArgs(a: Record<string, unknown>): { recurrence: import("./types").AgentScheduleRecurrence } | { error: string } {
+  if (typeof a.intervall_minuten === "number") {
+    return { recurrence: { art: "intervall", minuten: a.intervall_minuten } };
+  }
+  if (typeof a.taeglich_uhrzeit === "string" && a.taeglich_uhrzeit) {
+    return { recurrence: { art: "taeglich", uhrzeit: a.taeglich_uhrzeit } };
+  }
+  if (typeof a.woechentlich_uhrzeit === "string" && a.woechentlich_uhrzeit && typeof a.woechentlich_wochentag === "number") {
+    return { recurrence: { art: "woechentlich", wochentag: a.woechentlich_wochentag, uhrzeit: a.woechentlich_uhrzeit } };
+  }
+  return { error: "Wiederholung fehlt: intervall_minuten ODER taeglich_uhrzeit ODER (woechentlich_wochentag + woechentlich_uhrzeit) angeben." };
+}
 
 async function executeTool(
   name: string,
@@ -3047,6 +3433,409 @@ async function executeTool(
       return { ok: true, mietvertrag: { id: updated.id, status: updated.status } };
     }
 
+    // -------- Investoren --------
+
+    case "list_investoren": {
+      const items = await investorenDb.list();
+      const status = args.status ? String(args.status) : undefined;
+      const sektor = args.sektor ? String(args.sektor).toLowerCase() : undefined;
+      const land = args.land ? String(args.land).toLowerCase() : undefined;
+      const query = args.query ? String(args.query).toLowerCase() : undefined;
+      const gefiltert = items.filter((inv) => {
+        if (status && inv.status !== status) return false;
+        if (sektor && !inv.sektoren.some((s) => s.toLowerCase().includes(sektor))) return false;
+        if (land && !inv.land.toLowerCase().includes(land)) return false;
+        if (query) {
+          const hay = `${inv.firma} ${inv.ansprechpartnerName || ""} ${inv.kurzprofil || ""}`.toLowerCase();
+          if (!hay.includes(query)) return false;
+        }
+        return true;
+      });
+      return {
+        anzahl: gefiltert.length,
+        investoren: gefiltert.map((inv) => ({
+          id: inv.id,
+          nummer: inv.nummer,
+          firma: inv.firma,
+          land: inv.land,
+          sektoren: inv.sektoren,
+          status: inv.status,
+          score: inv.score,
+        })),
+      };
+    }
+
+    case "get_investor": {
+      const inv = await investorenDb.get(String(args.investor_id || ""));
+      if (!inv) return { error: "Investor nicht gefunden" };
+      return { investor: inv };
+    }
+
+    case "search_investoren_web": {
+      const query = String(args.query || "");
+      if (!query) return { error: "query erforderlich" };
+      try {
+        const treffer = await webSearch(query, {
+          maxResults: typeof args.max_results === "number" ? args.max_results : 5,
+        });
+        return { anzahl: treffer.length, treffer };
+      } catch (err: any) {
+        return { error: err?.message || "Websuche fehlgeschlagen" };
+      }
+    }
+
+    case "evaluate_investor_kriterien": {
+      const firma = String(args.firma || "");
+      if (!firma) return { error: "firma erforderlich" };
+      const ergebnisse = await evaluateInvestorKriterien(
+        {
+          firma,
+          land: args.land ? String(args.land) : "",
+          sektoren: Array.isArray(args.sektoren) ? (args.sektoren as string[]) : [],
+          kurzprofil: args.kurzprofil ? String(args.kurzprofil) : undefined,
+          webseite: args.webseite ? String(args.webseite) : undefined,
+          hub: args.hub ? String(args.hub) : undefined,
+          tickeGroesse: args.ticke_groesse ? String(args.ticke_groesse) : undefined,
+        },
+        args.recherche_kontext ? String(args.recherche_kontext) : undefined
+      );
+      const { score, empfehlung } = empfehlungAusScore(ergebnisse);
+      return { kriterien_ergebnis: ergebnisse, score, empfehlung };
+    }
+
+    case "list_investor_kriterien": {
+      return { kriterien: INVESTOR_KRITERIEN };
+    }
+
+    case "create_investor": {
+      const firma = String(args.firma || "").trim();
+      const land = String(args.land || "").trim();
+      if (!firma || !land) return { error: "firma und land erforderlich" };
+      const now = new Date().toISOString();
+      const kriterienErgebnisRoh = Array.isArray(args.kriterien_ergebnis)
+        ? (args.kriterien_ergebnis as Record<string, unknown>[])
+        : [];
+      const kriterienErgebnis = kriterienErgebnisRoh.length
+        ? kriterienErgebnisRoh
+            .filter((k) => k && k.kriterium_id)
+            .map((k) => ({
+              kriteriumId: String(k.kriterium_id),
+              erfuellt: Boolean(k.erfuellt),
+              begruendung: k.begruendung ? String(k.begruendung) : undefined,
+            }))
+        : undefined;
+      const investor: Investor = {
+        id: uuidv4(),
+        firma,
+        ansprechpartnerName: args.ansprechpartner_name ? String(args.ansprechpartner_name) : undefined,
+        ansprechpartnerRolle: args.ansprechpartner_rolle ? String(args.ansprechpartner_rolle) : undefined,
+        email: args.email ? String(args.email) : undefined,
+        telefon: args.telefon ? String(args.telefon) : undefined,
+        webseite: args.webseite ? String(args.webseite) : undefined,
+        linkedinUrl: args.linkedin_url ? String(args.linkedin_url) : undefined,
+        xingUrl: args.xing_url ? String(args.xing_url) : undefined,
+        land,
+        hub: args.hub ? String(args.hub) : undefined,
+        sektoren: Array.isArray(args.sektoren) ? (args.sektoren as string[]) : [],
+        kurzprofil: args.kurzprofil ? String(args.kurzprofil) : undefined,
+        tickeGroesse: args.ticke_groesse ? String(args.ticke_groesse) : undefined,
+        sprache: args.sprache ? String(args.sprache) : undefined,
+        quelle: args.quelle ? String(args.quelle) : undefined,
+        quelleDatum: args.quelle_datum ? String(args.quelle_datum) : undefined,
+        status: (args.status as InvestorStatus) || "vorschlag",
+        score: typeof args.score === "number" ? args.score : undefined,
+        kriterienErgebnis,
+        notizen: args.notizen ? String(args.notizen) : undefined,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const saved = await investorenDb.create(investor);
+      await logEvent("anlage", `Investor „${saved.firma}" angelegt (Status: ${saved.status}).`, {
+        art: "Investor",
+        id: saved.id,
+      });
+      return { ok: true, investor: { id: saved.id, firma: saved.firma, status: saved.status, score: saved.score } };
+    }
+
+    case "update_investor": {
+      const id = String(args.investor_id || "");
+      if (!id) return { error: "investor_id erforderlich" };
+      const patch: Record<string, unknown> = {};
+      const feldMap: Record<string, keyof Investor> = {
+        firma: "firma",
+        ansprechpartner_name: "ansprechpartnerName",
+        ansprechpartner_rolle: "ansprechpartnerRolle",
+        email: "email",
+        telefon: "telefon",
+        webseite: "webseite",
+        linkedin_url: "linkedinUrl",
+        xing_url: "xingUrl",
+        land: "land",
+        hub: "hub",
+        kurzprofil: "kurzprofil",
+        ticke_groesse: "tickeGroesse",
+        notizen: "notizen",
+        status: "status",
+      };
+      for (const [argKey, feld] of Object.entries(feldMap)) {
+        if (args[argKey] !== undefined) patch[feld] = args[argKey];
+      }
+      if (Array.isArray(args.sektoren)) patch.sektoren = args.sektoren;
+      const updated = await investorenDb.update(id, patch as Partial<Investor>);
+      if (!updated) return { error: "Investor nicht gefunden" };
+      await logEvent("aenderung", `Investor „${updated.firma}" vom Agent aktualisiert.`, { art: "Investor", id });
+      return { ok: true, investor: { id: updated.id, firma: updated.firma, status: updated.status } };
+    }
+
+    case "approve_investoren": {
+      let targets: string[] = Array.isArray(args.investor_ids) ? (args.investor_ids as string[]) : [];
+      if (args.alle_vorschlaege) {
+        const alle = await investorenDb.list();
+        targets = alle.filter((i) => i.status === "vorschlag").map((i) => i.id);
+      }
+      if (targets.length === 0) return { error: "Keine investor_ids übergeben und alle_vorschlaege nicht gesetzt" };
+      let anzahl = 0;
+      for (const id of targets) {
+        const updated = await investorenDb.update(id, { status: "freigegeben" as InvestorStatus });
+        if (updated) anzahl++;
+      }
+      await logEvent("aenderung", `${anzahl} Investor(en) freigegeben.`, { art: "Investor" });
+      return { ok: true, freigegeben: anzahl };
+    }
+
+    case "reject_investor": {
+      const id = String(args.investor_id || "");
+      if (!id) return { error: "investor_id erforderlich" };
+      const inv = await investorenDb.get(id);
+      if (!inv) return { error: "Investor nicht gefunden" };
+      const grund = args.grund ? `Abgelehnt: ${String(args.grund)}` : undefined;
+      const updated = await investorenDb.update(id, {
+        status: "abgelehnt" as InvestorStatus,
+        notizen: grund ? [inv.notizen, grund].filter(Boolean).join("\n") : inv.notizen,
+      });
+      return { ok: true, investor: { id: updated!.id, firma: updated!.firma, status: updated!.status } };
+    }
+
+    case "delete_investor": {
+      const id = String(args.investor_id || "");
+      if (!id) return { error: "investor_id erforderlich" };
+      const inv = await investorenDb.get(id);
+      if (!inv) return { error: "Investor nicht gefunden" };
+      if (!args.user_confirmed) {
+        return {
+          needsConfirmation: true,
+          frage: `Investor „${inv.firma}" wirklich endgültig löschen?`,
+          investor_id: id,
+        };
+      }
+      await investorenDb.remove(id);
+      await logEvent("loeschung", `Investor „${inv.firma}" gelöscht.`, { art: "Investor", id });
+      return { ok: true };
+    }
+
+    case "generate_investor_anschreiben": {
+      const investorId = String(args.investor_id || "");
+      const inv = await investorenDb.get(investorId);
+      if (!inv) return { error: "Investor nicht gefunden" };
+      const { betreff, body } = await generateInvestorAnschreiben(inv, {
+        absenderName: args.absender_name ? String(args.absender_name) : undefined,
+        philosophie: args.philosophie ? String(args.philosophie) : undefined,
+        anlass: args.anlass ? String(args.anlass) : undefined,
+      });
+      const text = buildInvestorBriefText(inv, betreff, body);
+      const now = new Date().toISOString();
+      const doc = await investorAnschreibenDb.create({
+        id: uuidv4(),
+        investorId: inv.id,
+        investorFirma: inv.firma,
+        betreff,
+        text,
+        status: "Entwurf",
+        quelle: "agent",
+        createdAt: now,
+        updatedAt: now,
+      });
+      await logEvent("anlage", `Anschreiben-Entwurf für Investor „${inv.firma}" erstellt.`, {
+        art: "InvestorAnschreiben",
+        id: doc.id,
+      });
+      return { ok: true, anschreiben: { id: doc.id, betreff: doc.betreff, text: doc.text } };
+    }
+
+    case "list_investor_anschreiben": {
+      const investorId = String(args.investor_id || "");
+      const items = await investorAnschreibenDb.list({ investorId });
+      return {
+        anzahl: items.length,
+        anschreiben: items.map((d) => ({ id: d.id, betreff: d.betreff, status: d.status, createdAt: d.createdAt })),
+      };
+    }
+
+    case "generate_investor_strategie_bericht": {
+      const investorId = String(args.investor_id || "");
+      const inv = await investorenDb.get(investorId);
+      if (!inv) return { error: "Investor nicht gefunden" };
+      const ziele = args.wirtschaftliche_ziele ? String(args.wirtschaftliche_ziele) : undefined;
+      const { zusammenfassung, punkte } = await generateInvestorStrategieBericht(inv, ziele);
+      const now = new Date().toISOString();
+      const bericht = await investorStrategieBerichteDb.create({
+        id: uuidv4(),
+        investorId: inv.id,
+        investorFirma: inv.firma,
+        wirtschaftlicheZiele: ziele,
+        zusammenfassung,
+        punkte,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await logEvent(
+        "anlage",
+        `Strategie-Bericht für Investor „${inv.firma}" erstellt (${punkte.length} Punkte).`,
+        { art: "InvestorStrategieBericht", id: bericht.id }
+      );
+      return {
+        ok: true,
+        bericht_id: bericht.id,
+        anzahl_punkte: punkte.length,
+        zusammenfassung,
+        hinweis: punkte.length < 20 ? "Weniger als 20 Punkte erhalten – ggf. erneut generieren." : undefined,
+      };
+    }
+
+    case "create_investoren_ablage_liste": {
+      const titel = String(args.titel || "Investoren-Liste");
+      const ids = Array.isArray(args.investor_ids) ? (args.investor_ids as string[]) : [];
+      if (ids.length === 0) return { error: "investor_ids erforderlich" };
+      const alle = await investorenDb.list();
+      const gewaehlt = alle.filter((i) => ids.includes(i.id));
+      if (gewaehlt.length === 0) return { error: "Keiner der investor_ids gefunden" };
+      const zeilen = gewaehlt.map(
+        (i, idx) =>
+          `${idx + 1}. ${i.firma} (${i.land}${i.hub ? `, ${i.hub}` : ""}) – Sektoren: ${
+            i.sektoren.join(", ") || "–"
+          } – Score: ${i.score ?? "–"} – Status: ${i.status}\n   Kontakt: ${
+            i.email || i.webseite || i.linkedinUrl || "–"
+          }\n   Quelle: ${i.quelle || "–"}`
+      );
+      const inhalt = `# ${titel}\n\nErstellt: ${new Date().toLocaleString("de-DE")}\n\n${zeilen.join("\n\n")}\n`;
+      const buffer = Buffer.from(inhalt, "utf-8");
+      const dateiName = `${
+        titel.replace(/[^\wäöüÄÖÜß \-]+/g, "").trim().replace(/\s+/g, "_").slice(0, 80) || "Investoren-Liste"
+      }.md`;
+      const docId = uuidv4();
+      const storedFileName = await storeFile(docId, dateiName, buffer);
+      const now = new Date().toISOString();
+      const ablageDoc = await ablageDb.create({
+        id: docId,
+        dateiName,
+        storedFileName,
+        mimeType: "text/markdown",
+        groesse: buffer.length,
+        hochgeladenAm: now,
+        status: "neu",
+        extraktText: inhalt,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await logEvent(
+        "anlage",
+        `Investoren-Liste „${titel}" (${gewaehlt.length} Kandidaten) in der Ablage abgelegt.`,
+        { art: "Ablage", id: ablageDoc.id }
+      );
+      return { ok: true, ablage_id: ablageDoc.id, dateiName, anzahl: gewaehlt.length };
+    }
+
+    case "create_kalender_ereignis": {
+      const titel = String(args.titel || "");
+      if (!titel) return { error: "titel erforderlich" };
+      const now = new Date().toISOString();
+      const ereignis = await kalenderEreignisseDb.create({
+        id: uuidv4(),
+        titel,
+        beschreibung: args.beschreibung ? String(args.beschreibung) : undefined,
+        datum: args.datum ? String(args.datum) : now,
+        ganztaegig: false,
+        kategorie: (args.kategorie as KalenderKategorie) || "Aufgabe",
+        dokumentIds: [],
+        erstelltVon: "Agent",
+        createdAt: now,
+        updatedAt: now,
+      });
+      await logEvent("anlage", `Kalendereintrag „${titel}" vom Agent angelegt.`, {
+        art: "KalenderEreignis",
+        id: ereignis.id,
+      });
+      return { ok: true, ereignis_id: ereignis.id };
+    }
+
+    case "create_agent_schedule": {
+      const name = String(args.name || "").trim();
+      const prompt = String(args.prompt || "").trim();
+      if (!name || !prompt) return { error: "name und prompt erforderlich" };
+      const parsed = parseRecurrenceFromToolArgs(args);
+      if ("error" in parsed) return { error: parsed.error };
+      const validationError = validateRecurrence(parsed.recurrence);
+      if (validationError) return { error: validationError };
+      const now = new Date().toISOString();
+      const schedule = await agentSchedulesDb.create({
+        id: uuidv4(),
+        name,
+        prompt,
+        recurrence: parsed.recurrence,
+        aktiv: args.aktiv !== false,
+        nextRunAt: computeNextRun(parsed.recurrence).toISOString(),
+        historie: [],
+        createdAt: now,
+        updatedAt: now,
+      });
+      await logEvent("anlage", `Cronjob-Auftrag „${name}" vom Agent angelegt.`, { art: "AgentSchedule", id: schedule.id });
+      return { ok: true, schedule_id: schedule.id, nextRunAt: schedule.nextRunAt };
+    }
+
+    case "create_agent_schedules_batch": {
+      const specs = Array.isArray(args.schedules) ? (args.schedules as Record<string, unknown>[]) : [];
+      if (specs.length === 0) return { error: "schedules erforderlich" };
+      if (specs.length > 10) return { error: "Maximal 10 Aufträge auf einmal" };
+      const ergebnisse: { name: string; ok: boolean; schedule_id?: string; error?: string }[] = [];
+      for (const spec of specs.slice(0, 10)) {
+        const name = String(spec.name || "").trim();
+        const prompt = String(spec.prompt || "").trim();
+        if (!name || !prompt) {
+          ergebnisse.push({ name: name || "(ohne Namen)", ok: false, error: "name/prompt fehlt" });
+          continue;
+        }
+        const parsed = parseRecurrenceFromToolArgs(spec);
+        if ("error" in parsed) {
+          ergebnisse.push({ name, ok: false, error: parsed.error });
+          continue;
+        }
+        const validationError = validateRecurrence(parsed.recurrence);
+        if (validationError) {
+          ergebnisse.push({ name, ok: false, error: validationError });
+          continue;
+        }
+        const now = new Date().toISOString();
+        const schedule = await agentSchedulesDb.create({
+          id: uuidv4(),
+          name,
+          prompt,
+          recurrence: parsed.recurrence,
+          aktiv: true,
+          nextRunAt: computeNextRun(parsed.recurrence).toISOString(),
+          historie: [],
+          createdAt: now,
+          updatedAt: now,
+        });
+        ergebnisse.push({ name, ok: true, schedule_id: schedule.id });
+      }
+      await logEvent(
+        "anlage",
+        `${ergebnisse.filter((e) => e.ok).length} von ${specs.length} Cronjob-Aufträgen vom Agent angelegt.`,
+        { art: "AgentSchedule" }
+      );
+      return { angelegt: ergebnisse.filter((e) => e.ok).length, ergebnisse };
+    }
+
     default:
       return { error: `Unbekanntes Tool: ${name}` };
   }
@@ -3097,6 +3886,16 @@ find_mieter / get_mietrueckstaende / create_brief – Mahnungen nur bei positive
 - buchung_erstellen und buchung_stornieren: erst mit user_confirmed=false den Vorschlag inkl. Beleg und – falls vorhanden – Split-Vorschau zurückgeben; erst nach klarer Bestätigung des Nutzers („ja“, „buche das“, „bestätigt“) mit user_confirmed=true tatsächlich ausführen. Bei sehr hohen Beträgen (z.B. Kaufpreisen) besonders explizit nachfragen.
 - Stornieren löscht NIE die Originalbuchung, sondern erzeugt eine Gegenbuchung – das bei Rückfragen auch so erklären.
 
+## Investoren (Recherche, Bewertung, Anschreiben, Strategie, Cronjobs)
+- Ziel des Moduls: eine gepflegte Kontaktliste von Investoren (Startup/VC, Private Equity, IT/Software, KI/AI, Real Estate, Property-/Facility-/Asset-Management) aus allen relevanten Ländern und Wissenshubs (Silicon Valley, Berlin, London, Tel Aviv, Singapur, Shanghai/Shenzhen, Bangalore/Mumbai, Moskau, Dubai, …).
+- Recherche-Workflow für "suche neue Investoren [Sektor] [Region]": mehrere gezielte search_investoren_web-Aufrufe (pro Sektor/Region, nicht eine sehr breite Anfrage) → aus den Treffern Kandidaten extrahieren → je Kandidat evaluate_investor_kriterien mit dem recherche_kontext (Titel/URL/Snippet der relevanten Treffer) aufrufen → create_investor mit status="vorschlag", dem Score/kriterien_ergebnis aus der Bewertung und quelle=URL. NIE einen Kandidaten ohne verifizierbare quelle als "freigegeben" anlegen.
+- Werden explizit "Top N" verlangt (z.B. "10 neue Top-Investoren"): die N besten Kandidaten nach Score anlegen, danach create_investoren_ablage_liste (Titel + investor_ids) aufrufen, damit die Liste in der Ablage sichtbar ist, und anschließend create_kalender_ereignis ("Neue Investoren warten auf Freigabe", Kategorie "Aufgabe") anlegen – außer der Nutzer hat für diesen Auftrag ausdrücklich automatische Freigabe gewünscht, dann stattdessen direkt approve_investoren nutzen.
+- Freigabe: manuell über approve_investoren (investor_ids oder alle_vorschlaege=true) bzw. reject_investor. Automatische Freigabe nur, wenn der Nutzer das für den jeweiligen Auftrag klar so eingestellt/gewünscht hat.
+- Anschreiben: generate_investor_anschreiben erstellt einen KI-Entwurf (Vorstellung Person/Philosophie/App, Offenheit für Zusammenarbeit/Kaufangebote/Stellenangebote) im Corporate Design und speichert ihn im Anschreiben-Verlauf des Investors; der Nutzer stellt ihn im UI fertig (PDF mit Briefkopf).
+- Strategie: generate_investor_strategie_bericht liefert einen individuellen Bericht mit mind. 20 Strategiepunkten, abgestimmt auf die vom Nutzer genannten wirtschaftlichen Ziele (wirtschaftliche_ziele-Parameter, falls der Nutzer Ziele/Kontext nennt, sonst generisch).
+- Cronjobs/Aufträge: create_agent_schedule für einen einzelnen wiederkehrenden Auftrag (z.B. "alle 2 Tage neue KI- und Real-Estate-Investoren suchen" → intervall_minuten=2880), create_agent_schedules_batch für bis zu 10 auf einmal (z.B. "erstelle 10 Cronjobs, die laufend neue Investorenkontakte suchen"). Der prompt jedes Schedules sollte den vollständigen Recherche-Workflow oben in Kurzform enthalten (Sektor/Region, "Top 10", Ablage + Kalendereintrag bzw. Freigabe-Verhalten).
+- Löschen: delete_investor erst mit needsConfirmation fragen, dann user_confirmed=true.
+
 ## Regeln
 - Tools nutzen, nicht ablehnen. Keine erfundenen Beträge.
 - Löschen nur mit klarer Nutzer-Freigabe.
@@ -3116,6 +3915,8 @@ export interface AgentResult {
  * Löst die aktuelle App-Seite in einen kompakten, faktenbasierten
  * Kontextblock auf (Durchgang 10: Kontext-Injection). Aktuell unterstützt:
  * `/liegenschaften?select=<id>` → Kurzübersicht der ausgewählten Liegenschaft.
+ * `/investoren` → Kurzübersicht (Anzahl je Status), spart list_investoren bei
+ * generischen Fragen wie "wie viele Investoren warten auf Freigabe?".
  * Liefert null, wenn kein bekanntes Muster erkannt wird oder die Liegenschaft
  * nicht gefunden wird — der Agent fällt dann einfach auf seine Tools zurück,
  * wie zuvor. Rein additiv, kein Ersatz für list_*-Tools bei Bedarf.
@@ -3123,6 +3924,25 @@ export interface AgentResult {
 async function buildSeitenKontext(path?: string): Promise<string | null> {
   if (!path) return null;
   const [pathname, query] = path.split("?");
+
+  if (pathname.startsWith("/investoren")) {
+    try {
+      const alle = await investorenDb.list();
+      if (alle.length === 0) return null;
+      const byStatus: Record<string, number> = {};
+      for (const inv of alle) byStatus[inv.status] = (byStatus[inv.status] || 0) + 1;
+      return [
+        `[Kontext: Der Nutzer ist gerade im Investoren-Bereich, ${alle.length} Kontakt(e) insgesamt.]`,
+        `Nach Status: ${Object.entries(byStatus)
+          .map(([s, n]) => `${s}: ${n}`)
+          .join(" · ")}`,
+        "Nutze diesen Kontext, bevor du list_investoren erneut aufrufst — nur bei Bedarf für Details nachschlagen.",
+      ].join("\n");
+    } catch {
+      return null;
+    }
+  }
+
   if (!query || !pathname.startsWith("/liegenschaften")) return null;
 
   const liegenschaftId = new URLSearchParams(query).get("select");

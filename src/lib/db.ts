@@ -28,6 +28,9 @@ import {
   DashboardVerlauf,
   Eigentuemer,
   Gebaeude,
+  Investor,
+  InvestorAnschreiben,
+  InvestorStrategieBericht,
   Konto,
   Kontoauszug,
   Liegenschaft,
@@ -75,6 +78,9 @@ interface DbShape {
   aiUsageLog: AiCallLogEintrag[];
   kalenderEreignisse: KalenderEreignis[];
   teamNachrichten: TeamNachricht[];
+  investoren: Investor[];
+  investorAnschreiben: InvestorAnschreiben[];
+  investorStrategieBerichte: InvestorStrategieBericht[];
   counters: Record<string, number>;
   // ————— Observability / LLM Mission Control —————
   rateLimitEvents: RateLimitEvent[];
@@ -137,6 +143,9 @@ function withDefaults(db: Partial<DbShape>): DbShape {
 aiUsageLog: db.aiUsageLog || [],
     kalenderEreignisse: db.kalenderEreignisse || [],
     teamNachrichten: db.teamNachrichten || [],
+    investoren: db.investoren || [],
+    investorAnschreiben: db.investorAnschreiben || [],
+    investorStrategieBerichte: db.investorStrategieBerichte || [],
     counters: db.counters || {},
     rateLimitEvents: db.rateLimitEvents || [],
     modelHealth: db.modelHealth || {},
@@ -316,6 +325,12 @@ export const kontenDb = makeCrud<Konto>("konten", "KT");
 export const abrechnungskreiseDb = makeCrud<Abrechnungskreis>("abrechnungskreise", "AK");
 export const kalenderEreignisseDb = makeCrud<KalenderEreignis>("kalenderEreignisse", "KE");
 export const teamNachrichtenDb = makeCrud<TeamNachricht>("teamNachrichten", "TN");
+export const investorenDb = makeCrud<Investor>("investoren", "INV");
+export const investorAnschreibenDb = makeCrud<InvestorAnschreiben>("investorAnschreiben", "INV-AS");
+export const investorStrategieBerichteDb = makeCrud<InvestorStrategieBericht>(
+  "investorStrategieBerichte",
+  "INV-ST"
+);
 
 // -------- Buchhaltung: Aggregation für Dashboard/KPI-Engine --------
 

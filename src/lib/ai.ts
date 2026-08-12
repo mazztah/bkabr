@@ -11,9 +11,13 @@ import {
   ERKANNTE_DOKUMENT_TYPEN,
   ErkannterDokumentTyp,
   MietvertragExtraktion,
+  Investor,
+  InvestorKriteriumErgebnis,
+  InvestorStrategiePunkt,
 } from "./types";
 import { mietRueckstand } from "./mietkonto";
 import { createChatCompletion, VISION_MODEL } from "./groq-client";
+import { INVESTOR_KRITERIEN } from "./investoren";
 
 /**
  * Erkennt Small-Talk / triviale Nachrichten ("hallo", "danke", "ok" …), bei
@@ -1176,5 +1180,176 @@ abr:${JSON.stringify(currentKurz ? { id: currentKurz.id, name: currentKurz.name,
     });
     return completion.choices[0]?.message?.content || "";
   }
+}
+
+// -------- Investoren: Kriterien-Bewertung, Anschreiben, Strategie-Bericht --------
+// Direkte LLM-Anbindung für das Investoren-Modul (siehe lib/investoren.ts für die
+// 10 Kriterien-Definitionen und lib/websearch.ts für die vorgelagerte Recherche).
+
+/**
+ * Bewertet einen (recherchierten) Investoren-Kandidaten gegen die 10
+ * INVESTOR_KRITERIEN. `rechercheKontext` sind die rohen Websuche-Schnipsel
+ * (Titel/URL/Snippet als Text), auf deren Basis die Begründung je Kriterium
+ * gebildet wird – ohne Kontext bewertet das Modell konservativ anhand der
+ * Stammdaten allein (führt meist zu niedrigerem Score, da harte Kriterien
+ * wie "Quelle verifizierbar" Belege brauchen).
+ */
+export async function evaluateInvestorKriterien(
+  investor: Pick<
+    Investor,
+    "firma" | "land" | "sektoren" | "kurzprofil" | "webseite" | "hub" | "tickeGroesse"
+  >,
+  rechercheKontext?: string
+): Promise<InvestorKriteriumErgebnis[]> {
+  const kriterienListe = INVESTOR_KRITERIEN.map(
+    (k) => `- ${k.id} (${k.hart ? "HARTES Ausschlusskriterium" : "weiches Kriterium"}): ${k.label} – ${k.beschreibung}`
+  ).join("\n");
+
+  const completion = await createChatCompletion({
+    max_completion_tokens: 1400,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content:
+          "Du bist ein sorgfältiger Analyst für Investoren-Recherche in einer deutschen Immobilien-/PropTech-App. " +
+          "Bewerte den übergebenen Investoren-Kandidaten anhand exakt dieser 10 Kriterien:\n" +
+          kriterienListe +
+          "\n\nSei konservativ: erfuellt=true nur, wenn der Kontext das wirklich stützt (bei Unsicherheit false). " +
+          "Erfinde KEINE Fakten, die nicht im Kontext stehen. Antworte AUSSCHLIESSLICH mit einem JSON-Objekt " +
+          `{"ergebnisse":[{"kriteriumId":"...", "erfuellt": true|false, "begruendung":"max. 1 Satz"}]} mit GENAU 10 Einträgen (einer je Kriterium-ID).`,
+      },
+      {
+        role: "user",
+        content: `Investoren-Stammdaten:\n${JSON.stringify(investor, null, 2)}\n\nRecherche-Kontext (Websuche-Ergebnisse):\n${
+          rechercheKontext ? rechercheKontext.slice(0, 6000) : "(keine Websuche-Ergebnisse übergeben)"
+        }`,
+      },
+    ],
+  });
+  const parsed = extractJson(completion.choices[0]?.message?.content || "") as {
+    ergebnisse?: { kriteriumId?: string; erfuellt?: boolean; begruendung?: string }[];
+  };
+  const gueltigeIds = new Set(INVESTOR_KRITERIEN.map((k) => k.id));
+  const ergebnisse = (parsed.ergebnisse || [])
+    .filter((e) => e.kriteriumId && gueltigeIds.has(e.kriteriumId))
+    .map((e) => ({
+      kriteriumId: e.kriteriumId as string,
+      erfuellt: Boolean(e.erfuellt),
+      begruendung: e.begruendung,
+    }));
+  // Fehlende Kriterien konservativ als "nicht erfüllt" ergänzen, damit der Score
+  // nie fälschlich zu gut ausfällt, falls das Modell weniger als 10 liefert.
+  for (const k of INVESTOR_KRITERIEN) {
+    if (!ergebnisse.some((e) => e.kriteriumId === k.id)) {
+      ergebnisse.push({ kriteriumId: k.id, erfuellt: false, begruendung: "Vom Modell nicht bewertet" });
+    }
+  }
+  return ergebnisse;
+}
+
+/**
+ * Erzeugt Betreff + Brieftext (nur der Fließtext ab der Anrede bis vor die
+ * Grußformel – Adressblock/Datum/Grußformel werden separat angefügt, siehe
+ * buildInvestorBriefText in lib/investoren.ts) für ein proaktives
+ * Anschreiben an einen Investor: Vorstellung von Person/Philosophie/App,
+ * Offenheit für Zusammenarbeit, Kaufangebote oder Stellenangebote.
+ */
+export async function generateInvestorAnschreiben(
+  investor: Pick<Investor, "firma" | "ansprechpartnerName" | "land" | "sektoren" | "kurzprofil" | "sprache">,
+  kontext: { absenderName?: string; philosophie?: string; anlass?: string } = {}
+): Promise<{ betreff: string; body: string }> {
+  const completion = await createChatCompletion({
+    max_completion_tokens: 1400,
+    temperature: 0.4,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content:
+          "Du schreibst im Auftrag des Gründers/Betreibers der App \"BetriebsKostenBot AI\" (KI-gestützte Plattform für " +
+          "Betriebskostenabrechnungen, Property-/Facility-/Asset-Management) ein proaktives, professionelles Anschreiben " +
+          "an einen Investor bzw. potenziellen Partner. Ziel: kurz Person, Philosophie und die App vorstellen und klar " +
+          "signalisieren, dass Offenheit für Zusammenarbeit, Kaufangebote oder Stellenangebote besteht – ohne aufdringlich " +
+          "zu wirken. Formell, selbstbewusst, prägnant (max. ca. 250 Wörter Fließtext). " +
+          "Erzeuge NUR den Fließtext ab der Anrede (z.B. 'Sehr geehrte(r) Frau/Herr ...,' bzw. 'Sehr geehrtes Team von ...,' " +
+          "falls kein Ansprechpartner bekannt ist) bis zum letzten inhaltlichen Absatz VOR der Grußformel – " +
+          "'Mit freundlichen Grüßen' und die Unterschrift NICHT einfügen, die werden automatisch ergänzt. " +
+          `Antworte AUSSCHLIESSLICH als JSON {"betreff":"...", "body":"..."}.`,
+      },
+      {
+        role: "user",
+        content: `Investor:\n${JSON.stringify(investor, null, 2)}\n\nZusatzkontext:\n${JSON.stringify(
+          {
+            absenderName: kontext.absenderName || "Geschäftsführung BetriebsKostenBot AI",
+            philosophie:
+              kontext.philosophie ||
+              "Langfristig orientierte, transparente Zusammenarbeit; KI-gestützte Effizienz in der Immobilienverwaltung als Kernphilosophie.",
+            anlass: kontext.anlass || "Erstansprache zur Vorstellung von App und Zusammenarbeit",
+          },
+          null,
+          2
+        )}`,
+      },
+    ],
+  });
+  const parsed = extractJson(completion.choices[0]?.message?.content || "") as {
+    betreff?: string;
+    body?: string;
+  };
+  return {
+    betreff: parsed.betreff || `Vorstellung BetriebsKostenBot AI – Zusammenarbeit mit ${investor.firma}`,
+    body: parsed.body || "",
+  };
+}
+
+/**
+ * Erzeugt einen individuellen Strategie-Bericht (Zusammenfassung + mind. 20
+ * konkrete Strategiepunkte) für die Ansprache/Verhandlung mit einem
+ * bestimmten Investor, abgestimmt auf die übergebenen wirtschaftlichen Ziele.
+ */
+export async function generateInvestorStrategieBericht(
+  investor: Pick<Investor, "firma" | "land" | "sektoren" | "kurzprofil" | "tickeGroesse" | "hub">,
+  wirtschaftlicheZiele?: string
+): Promise<{ zusammenfassung: string; punkte: InvestorStrategiePunkt[] }> {
+  const completion = await createChatCompletion({
+    max_completion_tokens: 3000,
+    temperature: 0.3,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content:
+          "Du bist ein erfahrener M&A-/Investoren-Relations-Berater auf State-of-the-Art-Niveau. Erstelle einen " +
+          "individualisierten Strategie-Bericht für die Ansprache und Verhandlung mit GENAU diesem einen Investor, " +
+          "zugeschnitten auf die wirtschaftlichen Ziele des Eigentümers. Der Bericht muss MINDESTENS 20 konkrete, " +
+          "professionelle, nicht-generische Strategiepunkte enthalten (gerne bis zu 25), die klar auf den jeweiligen " +
+          "Investor UND die Ziele eingehen – keine Allgemeinplätze. Decke dabei u.a. ab: Ansprache-Strategie, " +
+          "Verhandlungstaktik, Timing, Risiken/Red Flags, nächste konkrete Schritte, Argumentation/Value Proposition, " +
+          "mögliche Einwände und Gegenargumente. Jeder Punkt hat einen kurzen Titel (ggf. mit Kategorie-Präfix in " +
+          "eckigen Klammern, z.B. '[Verhandlung] ...') und eine 1-3 Sätze lange Beschreibung. " +
+          `Antworte AUSSCHLIESSLICH als JSON {"zusammenfassung":"3-5 Sätze Überblick", "punkte":[{"titel":"...", "beschreibung":"..."}]}.`,
+      },
+      {
+        role: "user",
+        content: `Investor:\n${JSON.stringify(investor, null, 2)}\n\nWirtschaftliche Ziele des Eigentümers:\n${
+          wirtschaftlicheZiele ||
+          "Keine spezifischen Ziele übergeben – gehe von einer nachhaltig profitablen Skalierung der Plattform BetriebsKostenBot AI sowie Offenheit für Kapital, strategische Partnerschaften oder eine Übernahme aus."
+        }`,
+      },
+    ],
+  });
+  const parsed = extractJson(completion.choices[0]?.message?.content || "") as {
+    zusammenfassung?: string;
+    punkte?: { titel?: string; beschreibung?: string }[];
+  };
+  const punkte = (parsed.punkte || [])
+    .filter((p) => p.titel && p.beschreibung)
+    .map((p) => ({ titel: p.titel as string, beschreibung: p.beschreibung as string }));
+  return {
+    zusammenfassung: parsed.zusammenfassung || "",
+    punkte,
+  };
 }
 

@@ -408,7 +408,11 @@ function drawWrapped(
 // block, Betreff und Unterschrift, siehe lib/schriftverkehr.ts) eine finale,
 // versandfertige PDF-Version mit grafischem Briefkopf (Logo + Corporate Design),
 // analog zur mitgelieferten Vorlage "Mieterbegrüßung nach Eigentümerwechsel".
-export async function buildSchriftverkehrPdf(doc: SchriftverkehrDokument): Promise<Uint8Array> {
+// Bewusst als schmaler `{ text: string }`-Typ statt `SchriftverkehrDokument`:
+// die Funktion nutzt ausschließlich das text-Feld, wird dadurch aber auch
+// für InvestorAnschreiben wiederverwendbar (siehe app/api/investoren/anschreiben/[id]/fertigstellen),
+// ohne die beiden Domänen (Mieter-Schriftverkehr vs. Investoren-Anschreiben) zu vermischen.
+export async function buildSchriftverkehrPdf(doc: Pick<SchriftverkehrDokument, "text">): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
