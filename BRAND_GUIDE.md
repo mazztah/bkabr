@@ -51,7 +51,7 @@ Neue Marketing-Abschnitte sollten ausschließlich diese Bausteine verwenden stat
 
 ## 6. Digitale Assets (`public/brand/social/`)
 
-| Datei | Maße | Verwendung |
+| Datei | Maße | VerwenDung |
 |---|---|---|
 | `og-image.png` | 1200 × 630 | Open-Graph/Link-Vorschau (Website, WhatsApp, Slack) |
 | `linkedin-banner.png` | 1584 × 396 | LinkedIn-Unternehmensseite Titelbild |
