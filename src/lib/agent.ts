@@ -67,7 +67,6 @@ import {
 import {
   buildInvestorBriefText,
   empfehlungAusScore,
-  INVESTOR_KRITERIEN,
 } from "./investoren";
 import {
   cascadeDeleteLiegenschaft,
@@ -1051,24 +1050,25 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
   },
 
   // -------- Investoren (Recherche, Bewertung, Anschreiben, Strategie, Cronjobs) --------
+  // Bewusst knapp gehalten (Namen + 1 Satz Beschreibung, minimale Parameter-Hinweise):
+  // Tool-Schemas zählen bei jedem Agent-Aufruf voll ins Token-Budget (siehe
+  // LOW_TPM_SKIP_THRESHOLD in groq-client.ts) – ausführliche Beschreibungen hier
+  // haben in der Praxis dazu geführt, dass die schnellen Modelle übersprungen und
+  // stattdessen unzuverlässige/langsame Fallback-Modelle genutzt wurden (Agent
+  // "hängt"). Details zum Workflow stehen im AGENT_SYSTEM-Prompt, nicht hier.
   {
     type: "function",
     function: {
       name: "list_investoren",
-      description:
-        "Listet Investoren-Kontakte, optional gefiltert nach Status, Sektor, Land oder Freitext-Suche (Firma/Ansprechpartner).",
+      description: "Listet Investoren, optional gefiltert nach Status/Sektor/Land/Freitext.",
       parameters: {
         type: "object",
         properties: {
-          status: {
-            type: "string",
-            enum: ["vorschlag", "freigegeben", "kontaktiert", "in_gespraech", "abgelehnt"],
-          },
-          sektor: { type: "string", description: "z.B. 'KI / AI' oder 'Real Estate'" },
+          status: { type: "string", enum: ["vorschlag", "freigegeben", "kontaktiert", "in_gespraech", "abgelehnt"] },
+          sektor: { type: "string" },
           land: { type: "string" },
-          query: { type: "string", description: "Freitext-Suche in Firma/Ansprechpartner/Kurzprofil" },
+          query: { type: "string" },
         },
-        required: [],
       },
     },
   },
@@ -1076,7 +1076,7 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "get_investor",
-      description: "Liefert die vollständigen Stammdaten inkl. Kriterien-Bewertung eines einzelnen Investors.",
+      description: "Liefert die vollen Stammdaten eines Investors.",
       parameters: {
         type: "object",
         properties: { investor_id: { type: "string" } },
@@ -1089,16 +1089,10 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "search_investoren_web",
       description:
-        "Durchsucht das Web nach Investoren-Kandidaten (z.B. 'top KI-Investoren Berlin 2026' oder 'active real estate private equity funds India'). " +
-        "Liefert rohe Treffer (Titel/URL/Snippet) zurück – DICH als Agent musst daraus die eigentlichen Kandidaten " +
-        "(Firma, Ansprechpartner, Kontakt, Land, Sektor) extrahieren und anschließend evaluate_investor_kriterien + create_investor nutzen. " +
-        "Für eine gute Trefferquote mehrere gezielte Suchen (pro Sektor/Region) statt einer sehr breiten Anfrage.",
+        "Websuche nach Investoren-Kandidaten. Liefert Titel/URL/Snippet zurück, du extrahierst daraus Firma/Kontakt/Land/Sektor.",
       parameters: {
         type: "object",
-        properties: {
-          query: { type: "string", description: "Suchanfrage, z.B. 'active AI venture capital investors Silicon Valley 2026'" },
-          max_results: { type: "number", description: "Standard 5, max 10" },
-        },
+        properties: { query: { type: "string" }, max_results: { type: "number" } },
         required: ["query"],
       },
     },
@@ -1108,9 +1102,7 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "evaluate_investor_kriterien",
       description:
-        "Bewertet einen Investoren-Kandidaten anhand der 10 festen Aufnahme-Kriterien (siehe list_investor_kriterien) auf Basis der " +
-        "übergebenen Stammdaten + Recherche-Kontext (Websuche-Snippets). Liefert Score (0-10), Empfehlung (aufnehmen/ablehnen) und " +
-        "Begründung je Kriterium – nutze das Ergebnis für create_investor (kriterien_ergebnis, score, status).",
+        "Bewertet einen Kandidaten anhand der 10 festen Aufnahme-Kriterien (Quelle/Kontaktweg/Track-Record/…). Liefert Score 0-10 + Empfehlung.",
       parameters: {
         type: "object",
         properties: {
@@ -1121,10 +1113,7 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
           webseite: { type: "string" },
           hub: { type: "string" },
           ticke_groesse: { type: "string" },
-          recherche_kontext: {
-            type: "string",
-            description: "Roher Text aus search_investoren_web-Ergebnissen (Titel/URL/Snippet), der die Bewertung stützt.",
-          },
+          recherche_kontext: { type: "string", description: "Websuche-Snippets als Beleg" },
         },
         required: ["firma"],
       },
@@ -1133,18 +1122,9 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
-      name: "list_investor_kriterien",
-      description: "Listet die 10 festen Aufnahme-Kriterien für Investoren-Kandidaten inkl. Beschreibung.",
-      parameters: { type: "object", properties: { "_": { type: "string", description: "Optional, ignorieren" } } },
-    },
-  },
-  {
-    type: "function",
-    function: {
       name: "create_investor",
       description:
-        "Legt einen Investoren-Kontakt in der Stammdatenliste an. Bei per Websuche recherchierten Kandidaten: status='vorschlag' setzen " +
-        "(wartet auf Freigabe durch den Nutzer) und quelle (URL) + quelle_datum angeben – niemals ohne verifizierbare Quelle direkt 'freigegeben' setzen.",
+        "Legt einen Investor an. Bei Websuche-Kandidaten: status='vorschlag' + quelle (URL) setzen, nie ungeprüft 'freigegeben'.",
       parameters: {
         type: "object",
         properties: {
@@ -1157,21 +1137,17 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
           linkedin_url: { type: "string" },
           xing_url: { type: "string" },
           land: { type: "string" },
-          hub: { type: "string", description: "z.B. 'Silicon Valley', 'Berlin'" },
+          hub: { type: "string" },
           sektoren: { type: "array", items: { type: "string" } },
-          kurzprofil: { type: "string", description: "Kurzer Lebenslauf/Profil-Text" },
+          kurzprofil: { type: "string" },
           ticke_groesse: { type: "string" },
           sprache: { type: "string" },
-          quelle: { type: "string", description: "URL/Quelle der Recherche (Pflicht bei Websuche-Kandidaten)" },
+          quelle: { type: "string" },
           quelle_datum: { type: "string" },
-          status: {
-            type: "string",
-            enum: ["vorschlag", "freigegeben", "kontaktiert", "in_gespraech", "abgelehnt"],
-          },
+          status: { type: "string", enum: ["vorschlag", "freigegeben", "kontaktiert", "in_gespraech", "abgelehnt"] },
           score: { type: "number" },
           kriterien_ergebnis: {
             type: "array",
-            description: "Ergebnis von evaluate_investor_kriterien (kriteriumId/erfuellt/begruendung je Kriterium)",
             items: {
               type: "object",
               properties: {
@@ -1191,7 +1167,7 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "update_investor",
-      description: "Aktualisiert Stammdaten, Status oder Notizen eines bestehenden Investors.",
+      description: "Aktualisiert Stammdaten/Status/Notizen eines Investors.",
       parameters: {
         type: "object",
         properties: {
@@ -1210,10 +1186,7 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
           kurzprofil: { type: "string" },
           ticke_groesse: { type: "string" },
           notizen: { type: "string" },
-          status: {
-            type: "string",
-            enum: ["vorschlag", "freigegeben", "kontaktiert", "in_gespraech", "abgelehnt"],
-          },
+          status: { type: "string", enum: ["vorschlag", "freigegeben", "kontaktiert", "in_gespraech", "abgelehnt"] },
         },
         required: ["investor_id"],
       },
@@ -1223,16 +1196,13 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "approve_investoren",
-      description:
-        "Gibt einen oder mehrere Investoren-Vorschläge frei (Status → 'freigegeben'), z.B. nach manueller Prüfung durch den Nutzer " +
-        "oder wenn der Nutzer explizit automatische Freigabe für eine Suche gewünscht hat. investor_ids ODER alle_vorschlaege=true nutzen.",
+      description: "Gibt einen/mehrere Investoren frei (Status → freigegeben). investor_ids ODER alle_vorschlaege.",
       parameters: {
         type: "object",
         properties: {
           investor_ids: { type: "array", items: { type: "string" } },
-          alle_vorschlaege: { type: "boolean", description: "true = alle Investoren mit status='vorschlag' freigeben" },
+          alle_vorschlaege: { type: "boolean" },
         },
-        required: [],
       },
     },
   },
@@ -1240,13 +1210,10 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "reject_investor",
-      description: "Lehnt einen Investoren-Kandidaten ab (Status → 'abgelehnt').",
+      description: "Lehnt einen Investoren-Kandidaten ab (Status → abgelehnt).",
       parameters: {
         type: "object",
-        properties: {
-          investor_id: { type: "string" },
-          grund: { type: "string" },
-        },
+        properties: { investor_id: { type: "string" }, grund: { type: "string" } },
         required: ["investor_id"],
       },
     },
@@ -1255,13 +1222,10 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "delete_investor",
-      description: "Löscht einen Investoren-Kontakt endgültig. Erfordert user_confirmed=true nach Rückfrage.",
+      description: "Löscht einen Investor endgültig. Erfordert user_confirmed=true nach Rückfrage.",
       parameters: {
         type: "object",
-        properties: {
-          investor_id: { type: "string" },
-          user_confirmed: { type: "boolean" },
-        },
+        properties: { investor_id: { type: "string" }, user_confirmed: { type: "boolean" } },
         required: ["investor_id"],
       },
     },
@@ -1270,15 +1234,13 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "generate_investor_anschreiben",
-      description:
-        "Erstellt per KI ein proaktives Anschreiben an einen Investor (Vorstellung Person/Philosophie/App, Offenheit für " +
-        "Zusammenarbeit/Kaufangebote/Stellenangebote) im Corporate Design und speichert es als Entwurf im Anschreiben-Verlauf des Investors.",
+      description: "Erstellt per KI ein Anschreiben-Entwurf (Vorstellung/Philosophie/App/Offenheit für Zusammenarbeit) im Corporate Design.",
       parameters: {
         type: "object",
         properties: {
           investor_id: { type: "string" },
-          philosophie: { type: "string", description: "Optional: individuelle Philosophie/Botschaft statt Standardtext" },
-          anlass: { type: "string", description: "Optional: konkreter Anlass, falls abweichend von einer Erstansprache" },
+          philosophie: { type: "string" },
+          anlass: { type: "string" },
           absender_name: { type: "string" },
         },
         required: ["investor_id"],
@@ -1289,7 +1251,7 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "list_investor_anschreiben",
-      description: "Listet die gespeicherten Anschreiben eines Investors (Entwürfe + fertiggestellte PDFs).",
+      description: "Listet gespeicherte Anschreiben eines Investors.",
       parameters: {
         type: "object",
         properties: { investor_id: { type: "string" } },
@@ -1301,15 +1263,10 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "generate_investor_strategie_bericht",
-      description:
-        "Erstellt per KI einen individuellen Strategie-Bericht (mind. 20 konkrete Strategiepunkte) für die Ansprache/Verhandlung mit " +
-        "einem bestimmten Investor, abgestimmt auf die wirtschaftlichen Ziele des Nutzers.",
+      description: "Erstellt per KI einen Strategie-Bericht (≥20 Punkte) für die Ansprache eines Investors, abgestimmt auf wirtschaftliche Ziele.",
       parameters: {
         type: "object",
-        properties: {
-          investor_id: { type: "string" },
-          wirtschaftliche_ziele: { type: "string", description: "Freitext: Ziele/Kontext des Eigentümers für diesen Bericht" },
-        },
+        properties: { investor_id: { type: "string" }, wirtschaftliche_ziele: { type: "string" } },
         required: ["investor_id"],
       },
     },
@@ -1318,14 +1275,12 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "create_investoren_ablage_liste",
-      description:
-        "Legt eine Liste von Investoren-Kandidaten (z.B. die neuesten 10 Top-Treffer einer Websuche) als Textdokument in der Ablage ab " +
-        "(sichtbar unter /ablage). Nutze das typischerweise am Ende eines Recherche-Durchlaufs, bevor du create_kalender_ereignis für die Freigabe aufrufst.",
+      description: "Legt eine Kandidatenliste (z.B. Top 10) als Dokument in der Ablage ab.",
       parameters: {
         type: "object",
         properties: {
-          titel: { type: "string", description: "z.B. 'Top 10 KI-Investoren – 12.08.2026'" },
-          investor_ids: { type: "array", items: { type: "string" }, description: "IDs der zuvor mit create_investor angelegten Kandidaten" },
+          titel: { type: "string" },
+          investor_ids: { type: "array", items: { type: "string" } },
         },
         required: ["titel", "investor_ids"],
       },
@@ -1335,14 +1290,13 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "create_kalender_ereignis",
-      description:
-        "Legt einen Kalendereintrag an (z.B. 'Neue Investoren warten auf Freigabe'). Kategorie meist 'Aufgabe' für Freigabe-Hinweise.",
+      description: "Legt einen Kalendereintrag an, z.B. 'Neue Investoren warten auf Freigabe'.",
       parameters: {
         type: "object",
         properties: {
           titel: { type: "string" },
           beschreibung: { type: "string" },
-          datum: { type: "string", description: "ISO-Datum/-Zeit, Standard: jetzt" },
+          datum: { type: "string" },
           kategorie: { type: "string", enum: ["Termin", "Frist", "Aufgabe", "Erinnerung"] },
         },
         required: ["titel"],
@@ -1354,16 +1308,15 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "create_agent_schedule",
       description:
-        "Legt einen wiederkehrenden Agent-Auftrag (Cronjob) an, z.B. 'alle 2 Tage neue KI- und Real-Estate-Investoren suchen'. " +
-        "Der prompt wird bei Fälligkeit automatisch als Nachricht an dich selbst geschickt (mit vollem Tool-Zugriff, inkl. search_investoren_web/create_investor/…).",
+        "Legt einen wiederkehrenden Agent-Auftrag (Cronjob) an, dessen prompt bei Fälligkeit automatisch ausgeführt wird.",
       parameters: {
         type: "object",
         properties: {
           name: { type: "string" },
-          prompt: { type: "string", description: "Vollständiger Auftrag, den der Agent bei Fälligkeit ausführen soll" },
-          intervall_minuten: { type: "number", description: "Für wiederkehrend alle X Minuten, z.B. 2880 für alle 2 Tage" },
-          taeglich_uhrzeit: { type: "string", description: "Alternative: 'HH:MM' für täglich" },
-          woechentlich_wochentag: { type: "number", description: "0=So..6=Sa, zusammen mit woechentlich_uhrzeit" },
+          prompt: { type: "string" },
+          intervall_minuten: { type: "number", description: "z.B. 2880 für alle 2 Tage" },
+          taeglich_uhrzeit: { type: "string" },
+          woechentlich_wochentag: { type: "number" },
           woechentlich_uhrzeit: { type: "string" },
           aktiv: { type: "boolean" },
         },
@@ -1375,8 +1328,7 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "create_agent_schedules_batch",
-      description:
-        "Legt mehrere (bis zu 10) wiederkehrende Agent-Aufträge auf einmal an, z.B. wenn der Nutzer '10 Cronjobs für neue Investorenkontakte' bestellt.",
+      description: "Legt bis zu 10 wiederkehrende Agent-Aufträge auf einmal an.",
       parameters: {
         type: "object",
         properties: {
@@ -3503,10 +3455,6 @@ async function executeTool(
       return { kriterien_ergebnis: ergebnisse, score, empfehlung };
     }
 
-    case "list_investor_kriterien": {
-      return { kriterien: INVESTOR_KRITERIEN };
-    }
-
     case "create_investor": {
       const firma = String(args.firma || "").trim();
       const land = String(args.land || "").trim();
@@ -3886,15 +3834,12 @@ find_mieter / get_mietrueckstaende / create_brief – Mahnungen nur bei positive
 - buchung_erstellen und buchung_stornieren: erst mit user_confirmed=false den Vorschlag inkl. Beleg und – falls vorhanden – Split-Vorschau zurückgeben; erst nach klarer Bestätigung des Nutzers („ja“, „buche das“, „bestätigt“) mit user_confirmed=true tatsächlich ausführen. Bei sehr hohen Beträgen (z.B. Kaufpreisen) besonders explizit nachfragen.
 - Stornieren löscht NIE die Originalbuchung, sondern erzeugt eine Gegenbuchung – das bei Rückfragen auch so erklären.
 
-## Investoren (Recherche, Bewertung, Anschreiben, Strategie, Cronjobs)
-- Ziel des Moduls: eine gepflegte Kontaktliste von Investoren (Startup/VC, Private Equity, IT/Software, KI/AI, Real Estate, Property-/Facility-/Asset-Management) aus allen relevanten Ländern und Wissenshubs (Silicon Valley, Berlin, London, Tel Aviv, Singapur, Shanghai/Shenzhen, Bangalore/Mumbai, Moskau, Dubai, …).
-- Recherche-Workflow für "suche neue Investoren [Sektor] [Region]": mehrere gezielte search_investoren_web-Aufrufe (pro Sektor/Region, nicht eine sehr breite Anfrage) → aus den Treffern Kandidaten extrahieren → je Kandidat evaluate_investor_kriterien mit dem recherche_kontext (Titel/URL/Snippet der relevanten Treffer) aufrufen → create_investor mit status="vorschlag", dem Score/kriterien_ergebnis aus der Bewertung und quelle=URL. NIE einen Kandidaten ohne verifizierbare quelle als "freigegeben" anlegen.
-- Werden explizit "Top N" verlangt (z.B. "10 neue Top-Investoren"): die N besten Kandidaten nach Score anlegen, danach create_investoren_ablage_liste (Titel + investor_ids) aufrufen, damit die Liste in der Ablage sichtbar ist, und anschließend create_kalender_ereignis ("Neue Investoren warten auf Freigabe", Kategorie "Aufgabe") anlegen – außer der Nutzer hat für diesen Auftrag ausdrücklich automatische Freigabe gewünscht, dann stattdessen direkt approve_investoren nutzen.
-- Freigabe: manuell über approve_investoren (investor_ids oder alle_vorschlaege=true) bzw. reject_investor. Automatische Freigabe nur, wenn der Nutzer das für den jeweiligen Auftrag klar so eingestellt/gewünscht hat.
-- Anschreiben: generate_investor_anschreiben erstellt einen KI-Entwurf (Vorstellung Person/Philosophie/App, Offenheit für Zusammenarbeit/Kaufangebote/Stellenangebote) im Corporate Design und speichert ihn im Anschreiben-Verlauf des Investors; der Nutzer stellt ihn im UI fertig (PDF mit Briefkopf).
-- Strategie: generate_investor_strategie_bericht liefert einen individuellen Bericht mit mind. 20 Strategiepunkten, abgestimmt auf die vom Nutzer genannten wirtschaftlichen Ziele (wirtschaftliche_ziele-Parameter, falls der Nutzer Ziele/Kontext nennt, sonst generisch).
-- Cronjobs/Aufträge: create_agent_schedule für einen einzelnen wiederkehrenden Auftrag (z.B. "alle 2 Tage neue KI- und Real-Estate-Investoren suchen" → intervall_minuten=2880), create_agent_schedules_batch für bis zu 10 auf einmal (z.B. "erstelle 10 Cronjobs, die laufend neue Investorenkontakte suchen"). Der prompt jedes Schedules sollte den vollständigen Recherche-Workflow oben in Kurzform enthalten (Sektor/Region, "Top 10", Ablage + Kalendereintrag bzw. Freigabe-Verhalten).
-- Löschen: delete_investor erst mit needsConfirmation fragen, dann user_confirmed=true.
+## Investoren
+- Recherche: mehrere gezielte search_investoren_web-Aufrufe (pro Sektor/Region) → Kandidaten extrahieren → evaluate_investor_kriterien je Kandidat → create_investor mit status="vorschlag" + quelle=URL (nie ungeprüft "freigegeben").
+- "Top N" gewünscht: die N besten anlegen, dann create_investoren_ablage_liste + create_kalender_ereignis ("Freigabe offen") – außer der Nutzer wünscht für diesen Auftrag automatische Freigabe, dann direkt approve_investoren.
+- Freigabe: approve_investoren/reject_investor. Anschreiben: generate_investor_anschreiben (Vorstellung/Philosophie/App, offen für Zusammenarbeit/Kauf/Job). Strategie: generate_investor_strategie_bericht (≥20 Punkte, wirtschaftliche_ziele nutzen falls genannt).
+- Cronjobs: create_agent_schedule (einzeln) / create_agent_schedules_batch (bis 10), z.B. "alle 2 Tage" = intervall_minuten=2880.
+- delete_investor: erst ohne user_confirmed fragen, dann bestätigt ausführen.
 
 ## Regeln
 - Tools nutzen, nicht ablehnen. Keine erfundenen Beträge.
