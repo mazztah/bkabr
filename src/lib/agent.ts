@@ -3835,6 +3835,7 @@ find_mieter / get_mietrueckstaende / create_brief – Mahnungen nur bei positive
 - Stornieren löscht NIE die Originalbuchung, sondern erzeugt eine Gegenbuchung – das bei Rückfragen auch so erklären.
 
 ## Investoren
+- Bei vagen Aufträgen ("suche neue Investoren") sinnvolle Standardannahmen treffen (breite Sektoren/Top-Wissenshubs) und SOFORT recherchieren statt erst nachzufragen – der Nutzer kann danach verfeinern.
 - Recherche: mehrere gezielte search_investoren_web-Aufrufe (pro Sektor/Region) → Kandidaten extrahieren → evaluate_investor_kriterien je Kandidat → create_investor mit status="vorschlag" + quelle=URL (nie ungeprüft "freigegeben").
 - "Top N" gewünscht: die N besten anlegen, dann create_investoren_ablage_liste + create_kalender_ereignis ("Freigabe offen") – außer der Nutzer wünscht für diesen Auftrag automatische Freigabe, dann direkt approve_investoren.
 - Freigabe: approve_investoren/reject_investor. Anschreiben: generate_investor_anschreiben (Vorstellung/Philosophie/App, offen für Zusammenarbeit/Kauf/Job). Strategie: generate_investor_strategie_bericht (≥20 Punkte, wirtschaftliche_ziele nutzen falls genannt).
@@ -4714,6 +4715,14 @@ export function isAgentIntent(message: string): boolean {
     (/\b(probleme?|hinweise?|fehler|befunde?)\b/.test(m) &&
       /\b(beseitig|beheb|berein|korrigier|fix|schliess)\w*/.test(m))
   ) {
+    return true;
+  }
+
+  // Investoren: jede Erwähnung geht an den Agenten – nur der hat echten Zugriff auf
+  // die Investoren-Datenbank/Websuche/Anschreiben/Strategie/Cronjobs. Ohne diese Regel
+  // landen auch reine Fragen ("wie viele Investoren haben wir?") im normalen Chat ohne
+  // Tool-Zugriff, der dann plausibel klingende, aber frei erfundene Antworten liefert.
+  if (/\b(investor|investoren)\b/.test(m)) {
     return true;
   }
 
