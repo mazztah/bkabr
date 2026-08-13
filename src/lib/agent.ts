@@ -80,7 +80,7 @@ const MAX_AGENT_STEPS = 20;
 
 // -------- Tool-Definitionen (OpenAI-/Groq-kompatibel) --------
 
-const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
+const CORE_AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
@@ -1048,7 +1048,17 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
       },
     },
   },
+];
 
+// Eigenes Array (nicht Teil von CORE_AGENT_TOOLS): wird in runAgent() nur dann an
+// die Anfrage angehängt, wenn Nachricht/Seite tatsächlich mit Investoren zu tun haben
+// (siehe wantsInvestorTools weiter unten). Grund: Tool-Schemas zählen bei JEDER
+// Agent-Anfrage voll ins Token-Budget (echtes Groq-Limit: 8000 TPM für die
+// schnellen Modelle) – wenn diese ~15 Tools immer mitgeschickt würden, würden
+// auch reine Mieter-/Mahnungs-/Kalender-Anfragen unnötig auf langsamere
+// Fallback-Modelle ausweichen müssen. Siehe Log-Fund: "Request too large ...
+// Limit 8000, Requested 8150" bei openai/gpt-oss-120b/20b.
+const INVESTOR_AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
   // -------- Investoren (Recherche, Bewertung, Anschreiben, Strategie, Cronjobs) --------
   // Bewusst knapp gehalten (Namen + 1 Satz Beschreibung, minimale Parameter-Hinweise):
   // Tool-Schemas zählen bei jedem Agent-Aufruf voll ins Token-Budget (siehe
@@ -1122,12 +1132,13 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
-      name: "create_investor",
+      name: "save_investor",
       description:
-        "Legt einen Investor an. Bei Websuche-Kandidaten: status='vorschlag' + quelle (URL) setzen, nie ungeprüft 'freigegeben'.",
+        "Legt einen Investor an (kein investor_id) oder aktualisiert ihn (investor_id angeben). Bei Websuche-Kandidaten: status='vorschlag' + quelle (URL) setzen, nie ungeprüft 'freigegeben'.",
       parameters: {
         type: "object",
         properties: {
+          investor_id: { type: "string", description: "Nur beim Aktualisieren angeben, sonst weglassen" },
           firma: { type: "string" },
           ansprechpartner_name: { type: "string" },
           ansprechpartner_rolle: { type: "string" },
@@ -1159,36 +1170,6 @@ const AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
           },
           notizen: { type: "string" },
         },
-        required: ["firma", "land"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "update_investor",
-      description: "Aktualisiert Stammdaten/Status/Notizen eines Investors.",
-      parameters: {
-        type: "object",
-        properties: {
-          investor_id: { type: "string" },
-          firma: { type: "string" },
-          ansprechpartner_name: { type: "string" },
-          ansprechpartner_rolle: { type: "string" },
-          email: { type: "string" },
-          telefon: { type: "string" },
-          webseite: { type: "string" },
-          linkedin_url: { type: "string" },
-          xing_url: { type: "string" },
-          land: { type: "string" },
-          hub: { type: "string" },
-          sektoren: { type: "array", items: { type: "string" } },
-          kurzprofil: { type: "string" },
-          ticke_groesse: { type: "string" },
-          notizen: { type: "string" },
-          status: { type: "string", enum: ["vorschlag", "freigegeben", "kontaktiert", "in_gespraech", "abgelehnt"] },
-        },
-        required: ["investor_id"],
       },
     },
   },
@@ -3455,10 +3436,42 @@ async function executeTool(
       return { kriterien_ergebnis: ergebnisse, score, empfehlung };
     }
 
-    case "create_investor": {
+    case "save_investor": {
+      const id = args.investor_id ? String(args.investor_id) : "";
+
+      if (id) {
+        // Update-Zweig
+        const patch: Record<string, unknown> = {};
+        const feldMap: Record<string, keyof Investor> = {
+          firma: "firma",
+          ansprechpartner_name: "ansprechpartnerName",
+          ansprechpartner_rolle: "ansprechpartnerRolle",
+          email: "email",
+          telefon: "telefon",
+          webseite: "webseite",
+          linkedin_url: "linkedinUrl",
+          xing_url: "xingUrl",
+          land: "land",
+          hub: "hub",
+          kurzprofil: "kurzprofil",
+          ticke_groesse: "tickeGroesse",
+          notizen: "notizen",
+          status: "status",
+        };
+        for (const [argKey, feld] of Object.entries(feldMap)) {
+          if (args[argKey] !== undefined) patch[feld] = args[argKey];
+        }
+        if (Array.isArray(args.sektoren)) patch.sektoren = args.sektoren;
+        const updated = await investorenDb.update(id, patch as Partial<Investor>);
+        if (!updated) return { error: "Investor nicht gefunden" };
+        await logEvent("aenderung", `Investor „${updated.firma}" vom Agent aktualisiert.`, { art: "Investor", id });
+        return { ok: true, investor: { id: updated.id, firma: updated.firma, status: updated.status } };
+      }
+
+      // Anlegen-Zweig
       const firma = String(args.firma || "").trim();
       const land = String(args.land || "").trim();
-      if (!firma || !land) return { error: "firma und land erforderlich" };
+      if (!firma || !land) return { error: "firma und land erforderlich (zum Aktualisieren stattdessen investor_id angeben)" };
       const now = new Date().toISOString();
       const kriterienErgebnisRoh = Array.isArray(args.kriterien_ergebnis)
         ? (args.kriterien_ergebnis as Record<string, unknown>[])
@@ -3503,36 +3516,6 @@ async function executeTool(
         id: saved.id,
       });
       return { ok: true, investor: { id: saved.id, firma: saved.firma, status: saved.status, score: saved.score } };
-    }
-
-    case "update_investor": {
-      const id = String(args.investor_id || "");
-      if (!id) return { error: "investor_id erforderlich" };
-      const patch: Record<string, unknown> = {};
-      const feldMap: Record<string, keyof Investor> = {
-        firma: "firma",
-        ansprechpartner_name: "ansprechpartnerName",
-        ansprechpartner_rolle: "ansprechpartnerRolle",
-        email: "email",
-        telefon: "telefon",
-        webseite: "webseite",
-        linkedin_url: "linkedinUrl",
-        xing_url: "xingUrl",
-        land: "land",
-        hub: "hub",
-        kurzprofil: "kurzprofil",
-        ticke_groesse: "tickeGroesse",
-        notizen: "notizen",
-        status: "status",
-      };
-      for (const [argKey, feld] of Object.entries(feldMap)) {
-        if (args[argKey] !== undefined) patch[feld] = args[argKey];
-      }
-      if (Array.isArray(args.sektoren)) patch.sektoren = args.sektoren;
-      const updated = await investorenDb.update(id, patch as Partial<Investor>);
-      if (!updated) return { error: "Investor nicht gefunden" };
-      await logEvent("aenderung", `Investor „${updated.firma}" vom Agent aktualisiert.`, { art: "Investor", id });
-      return { ok: true, investor: { id: updated.id, firma: updated.firma, status: updated.status } };
     }
 
     case "approve_investoren": {
@@ -3836,7 +3819,7 @@ find_mieter / get_mietrueckstaende / create_brief – Mahnungen nur bei positive
 
 ## Investoren
 - Bei vagen Aufträgen ("suche neue Investoren") sinnvolle Standardannahmen treffen (breite Sektoren/Top-Wissenshubs) und SOFORT recherchieren statt erst nachzufragen – der Nutzer kann danach verfeinern.
-- Recherche: mehrere gezielte search_investoren_web-Aufrufe (pro Sektor/Region) → Kandidaten extrahieren → evaluate_investor_kriterien je Kandidat → create_investor mit status="vorschlag" + quelle=URL (nie ungeprüft "freigegeben").
+- Recherche: mehrere gezielte search_investoren_web-Aufrufe (pro Sektor/Region) → Kandidaten extrahieren → evaluate_investor_kriterien je Kandidat → save_investor (ohne investor_id) mit status="vorschlag" + quelle=URL (nie ungeprüft "freigegeben").
 - "Top N" gewünscht: die N besten anlegen, dann create_investoren_ablage_liste + create_kalender_ereignis ("Freigabe offen") – außer der Nutzer wünscht für diesen Auftrag automatische Freigabe, dann direkt approve_investoren.
 - Freigabe: approve_investoren/reject_investor. Anschreiben: generate_investor_anschreiben (Vorstellung/Philosophie/App, offen für Zusammenarbeit/Kauf/Job). Strategie: generate_investor_strategie_bericht (≥20 Punkte, wirtschaftliche_ziele nutzen falls genannt).
 - Cronjobs: create_agent_schedule (einzeln) / create_agent_schedules_batch (bis 10), z.B. "alle 2 Tage" = intervall_minuten=2880.
@@ -3956,12 +3939,18 @@ export async function runAgent(params: {
     },
   ];
 
+  const wantsInvestorTools =
+    mentionsInvestor(params.message) ||
+    Boolean(params.path && params.path.startsWith("/investoren")) ||
+    (params.history || []).slice(-4).some((h) => mentionsInvestor(h.content));
+  const tools = wantsInvestorTools ? [...CORE_AGENT_TOOLS, ...INVESTOR_AGENT_TOOLS] : CORE_AGENT_TOOLS;
+
   try {
     for (let step = 0; step < MAX_AGENT_STEPS; step++) {
       const completion = await createChatCompletion({
         max_completion_tokens: 2000,
         temperature: 0.2,
-        tools: AGENT_TOOLS,
+        tools,
         tool_choice: "auto",
         messages,
       });
@@ -4700,6 +4689,13 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
 }
 
 /** Erkennung, ob eine Chat-Nachricht einen Agenten-Workflow auslösen soll */
+/** Erkennt, ob Text sich auf das Investoren-Modul bezieht (für Intent-Routing UND Tool-Auswahl). */
+function mentionsInvestor(text: string): boolean {
+  return /\b(investor|investoren)\b/.test(
+    text.toLowerCase().replace(/ß/g, "ss").replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue")
+  );
+}
+
 export function isAgentIntent(message: string): boolean {
   const m = message
     .toLowerCase()
@@ -4722,7 +4718,7 @@ export function isAgentIntent(message: string): boolean {
   // die Investoren-Datenbank/Websuche/Anschreiben/Strategie/Cronjobs. Ohne diese Regel
   // landen auch reine Fragen ("wie viele Investoren haben wir?") im normalen Chat ohne
   // Tool-Zugriff, der dann plausibel klingende, aber frei erfundene Antworten liefert.
-  if (/\b(investor|investoren)\b/.test(m)) {
+  if (mentionsInvestor(m)) {
     return true;
   }
 
