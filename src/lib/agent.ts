@@ -4057,6 +4057,12 @@ export async function runAgent(params: {
         messages.push({
           role: "tool",
           tool_call_id: call.id,
+          // WICHTIG: name ist im generischen OpenAI-Schema optional, wird aber vom
+          // Harmony-Renderer (Groq gpt-oss-120b/20b, qwen3.6-27b) zwingend verlangt –
+          // fehlt es, schlägt JEDER mehrstufige Tool-Aufruf mit "Tools should have a
+          // name!" fehl und der Agent fällt unbemerkt auf schwächere Fallback-Modelle
+          // zurück (sichtbar in den Logs als wiederholte 400er auf genau diesen Modellen).
+          name: call.function.name,
           content: JSON.stringify(result),
         } as Groq.Chat.Completions.ChatCompletionMessageParam);
       }
