@@ -477,7 +477,7 @@ Beiträge willkommen – Attribution an das Projekt freut uns.
 
 <div align="center">
 
-**Gebaut mit Neugier, TypeScript und 0 € Budget.**  
+**Gebaut mit Neugier, TypeScript und ja 0 € Budget.**  
 Wenn dich das anstupst: Star ⭐ · Fork · Issue · PR.
 
 *Betriebskostenabrechnungen, die sich von selbst erledigen – und eine Community, die mitbaut.*
