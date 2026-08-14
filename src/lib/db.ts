@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { pingProviderModel } from "./llm-observability";
+import * as dbSupabase from "./db-supabase";
 import {
   AblageDokument,
   Abrechnung,
@@ -308,11 +309,47 @@ function makeCrud<T extends { id: string; nummer?: string; createdAt: string; up
   };
 }
 
-export const liegenschaftenDb = makeCrud<Liegenschaft>("liegenschaften", "LG");
-export const gebaeudeDb = makeCrud<Gebaeude>("gebaeude", "GB");
-export const wohnungenDb = makeCrud<Wohnung>("wohnungen", "EH");
-export const mieterDb = makeCrud<Mieter>("mieter", "MI");
-export const mietvertraegeDb = makeCrud<Mietvertrag>("mietvertraege", "MV");
+// -------- Backend-Umschaltung pro Modul (Phase 2, Durchgang 13) --------
+// DB_SUPABASE_MODULES="liegenschaften,gebaeude" schaltet NUR diese Module auf
+// Supabase, alle anderen bleiben unverändert auf der JSON-Datei. Leer/nicht
+// gesetzt = Verhalten exakt wie vorher (Default: alles JSON). So lässt sich
+// jedes Modul einzeln in Produktion prüfen, bevor das nächste umgestellt wird
+// — siehe supabase/MIGRATION.md.
+const SUPABASE_MODULES = new Set(
+  (process.env.DB_SUPABASE_MODULES || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+function pickBackend<T>(moduleName: string, jsonImpl: T, supabaseImpl: T): T {
+  return SUPABASE_MODULES.has(moduleName) ? supabaseImpl : jsonImpl;
+}
+
+export const liegenschaftenDb = pickBackend(
+  "liegenschaften",
+  makeCrud<Liegenschaft>("liegenschaften", "LG"),
+  dbSupabase.liegenschaftenDb
+);
+export const gebaeudeDb = pickBackend(
+  "gebaeude",
+  makeCrud<Gebaeude>("gebaeude", "GB"),
+  dbSupabase.gebaeudeDb
+);
+export const wohnungenDb = pickBackend(
+  "wohnungen",
+  makeCrud<Wohnung>("wohnungen", "EH"),
+  dbSupabase.wohnungenDb
+);
+export const mieterDb = pickBackend(
+  "mieter",
+  makeCrud<Mieter>("mieter", "MI"),
+  dbSupabase.mieterDb
+);
+export const mietvertraegeDb = pickBackend(
+  "mietvertraege",
+  makeCrud<Mietvertrag>("mietvertraege", "MV"),
+  dbSupabase.mietvertraegeDb
+);
 export const eigentuemerDb = makeCrud<Eigentuemer>("eigentuemer", "EG");
 export const pmVertraegeDb = makeCrud<PmVertrag>("pmVertraege", "PM");
 export const schriftverkehrDb = makeCrud<SchriftverkehrDokument>("schriftverkehr", "SV");

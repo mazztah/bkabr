@@ -45,6 +45,11 @@ export function isSupabaseConfigured(): boolean {
   return getClient() !== null;
 }
 
+/** Für andere Module (z.B. db-supabase.ts), die denselben Client-Singleton brauchen. */
+export function getSupabaseClient(): SupabaseClient | null {
+  return getClient();
+}
+
 export type AgentRunStatus = "running" | "success" | "max_steps_reached" | "error";
 
 export interface AgentRunStep {

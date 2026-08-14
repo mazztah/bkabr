@@ -661,6 +661,24 @@ create table if not exists counters (
   value int not null default 0
 );
 
+-- Atomarer Zähler-Increment für die Supabase-seitige Nummernvergabe
+-- (nextNummer-Äquivalent für Module, die per DB_SUPABASE_MODULES bereits auf
+-- Supabase laufen). Als DB-Funktion statt read-then-write in JS, damit
+-- parallele Requests sich nicht dieselbe Nummer schnappen (race condition).
+create or replace function increment_counter(p_key text)
+returns int
+language plpgsql
+as $$
+declare
+  new_value int;
+begin
+  insert into counters (key, value) values (p_key, 1)
+  on conflict (key) do update set value = counters.value + 1
+  returning value into new_value;
+  return new_value;
+end;
+$$;
+
 create table if not exists app_settings (
   key text primary key,
   value jsonb not null,
