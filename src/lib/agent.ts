@@ -3822,8 +3822,13 @@ find_mieter / get_mietrueckstaende / create_brief – Mahnungen nur bei positive
 
 ## Investoren
 - Bei vagen Aufträgen ("suche neue Investoren") sinnvolle Standardannahmen treffen (breite Sektoren/Top-Wissenshubs) und SOFORT recherchieren statt erst nachzufragen – der Nutzer kann danach verfeinern.
-- Recherche: mehrere gezielte search_investoren_web-Aufrufe (pro Sektor/Region) → Kandidaten extrahieren → evaluate_investor_kriterien je Kandidat → save_investor (ohne investor_id) mit status="vorschlag" + quelle=URL (nie ungeprüft "freigegeben").
-- "Top N" gewünscht: die N besten anlegen, dann create_investoren_ablage_liste + create_kalender_ereignis ("Freigabe offen") – außer der Nutzer wünscht für diesen Auftrag automatische Freigabe, dann direkt approve_investoren.
+- Recherche: mehrere gezielte search_investoren_web-Aufrufe (pro Sektor/Region, mind. 3-4 unterschiedliche Suchen für "10 Investoren" statt nur einer einzigen breiten Anfrage – eine einzelne Suche liefert erfahrungsgemäß zu wenige verwertbare Treffer) → Kandidaten extrahieren → evaluate_investor_kriterien je Kandidat → save_investor (ohne investor_id) mit status="vorschlag" + quelle=URL (nie ungeprüft "freigegeben"). Liefert die Recherche weniger Kandidaten als gewünscht, das offen sagen (nicht so tun, als sei die Zielzahl erreicht) und ggf. weitere Suchen anbieten.
+- WICHTIG – nach der Recherche, BEVOR das Ergebnis final abgelegt wird: hat der Nutzer nicht schon in seiner Nachricht klargemacht, was mit den gefundenen Kandidaten passieren soll, explizit fragen (kurze Auswahl, keine Fließtext-Rückfrage):
+  „Ich habe [N] Investoren gefunden und mit vollständigen Stammdaten als Vorschlag gespeichert. Was soll ich damit tun?
+  a) Direkt freigeben (Status → freigegeben, sofort aktiv im System)
+  b) Liste zur Durchsicht in der Ablage hinterlegen (du prüfst und gibst dann frei)"
+  Danach abwarten und erst auf Antwort mit approve_investoren (a) bzw. create_investoren_ablage_liste + create_kalender_ereignis (b) fortfahren. Sagt der Nutzer bereits vorher klar "speichere/lege direkt an" → a) ohne Rückfrage; sagt er "Liste/zur Freigabe/zur Durchsicht" → b) ohne Rückfrage.
+- Die Investoren-Stammdaten sind in JEDEM Fall (a oder b) bereits vollständig über save_investor gespeichert – der Unterschied ist nur Status + ob zusätzlich eine Ablage-Liste/Kalendereintrag entsteht.
 - Freigabe: approve_investoren/reject_investor. Anschreiben: generate_investor_anschreiben (Vorstellung/Philosophie/App, offen für Zusammenarbeit/Kauf/Job). Strategie: generate_investor_strategie_bericht (≥20 Punkte, wirtschaftliche_ziele nutzen falls genannt).
 - Cronjobs: create_agent_schedule (einzeln) / create_agent_schedules_batch (bis 10), z.B. "alle 2 Tage" = intervall_minuten=2880.
 - delete_investor: erst ohne user_confirmed fragen, dann bestätigt ausführen.
@@ -3964,6 +3969,39 @@ export async function runAgent(params: {
 
       const toolCalls = msg.tool_calls;
       if (!toolCalls || toolCalls.length === 0) {
+        // Sicherheitsnetz: manche Modelle (beobachtet u.a. bei GLM/Gemma über
+        // Cerebras/Cloudflare, siehe STRUCTURED_OUTPUT_UNSAFE_MODELS in
+        // groq-client.ts) schreiben einen Tool-Aufruf als rohen Pseudo-XML-
+        // Text in den normalen Antwortinhalt statt ihn strukturiert im
+        // tool_calls-Feld zu liefern – toolCalls ist dann leer, msg.content
+        // enthält aber sichtbaren Kauderwelsch wie "<tool_call>name<arg_key>…".
+        // Das NIE ungefiltert als "fertige Antwort" an den Nutzer zeigen:
+        // wirkt wie ein Ergebnis, ist aber nichts passiert (kein Tool lief,
+        // nichts wurde gespeichert). Die eigentliche Ursache wird über die
+        // Modell-Filterliste vermieden; dies ist nur die zweite Absicherung.
+        const looksLikeLeakedToolCall =
+          !!msg.content && /<tool_call>|<arg_key>|<arg_value>/i.test(msg.content);
+        if (looksLikeLeakedToolCall) {
+          console.warn(
+            `[agent] Modell hat vermutlich einen Tool-Aufruf als Text statt strukturiert geliefert (Modell: ${completion.model || "unbekannt"}). Roh-Inhalt (gekürzt): ${msg.content?.slice(0, 200)}`
+          );
+          const reflection = `Abgebrochen: Modell (${completion.model || "unbekannt"}) hat einen Tool-Aufruf nicht strukturiert geliefert, sondern als Text ausgegeben. Kein Tool wurde ausgeführt.`;
+          await completeAgentRun(runId, {
+            status: "error",
+            steps: capabilitySteps,
+            reflection,
+            reply: msg.content || "",
+          });
+          return {
+            reply:
+              "Die Anfrage ist technisch fehlgeschlagen (das Modell hat keinen gültigen Tool-Aufruf geliefert, es wurde nichts gespeichert). Das kommt gelegentlich bei bestimmten Fallback-Modellen vor – bitte versuch es direkt nochmal, in der Regel klappt es beim nächsten Versuch mit einem anderen Modell.",
+            steps,
+            createdBriefIds,
+            runId,
+            reflection,
+          };
+        }
+
         const reflection = `Ziel ohne Auffälligkeiten erreicht (${steps.length} Schritt(e), ${capabilitySteps.filter((s) => !s.success).length} Fehler).`;
         await completeAgentRun(runId, {
           status: "success",

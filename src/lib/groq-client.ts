@@ -127,6 +127,20 @@ const STRUCTURED_OUTPUT_UNSAFE_MODELS = new Set([
   "groq/compound",
   "groq/compound-mini", // unterstützt keine eigenen Tools
   "qwen/qwen3.6-27b", // in Praxis vereinzelt json_validate_failed bei strikter Extraktion
+  // GLM- und Gemma-Modelle über Cerebras/Cloudflare: in der Praxis beobachtet
+  // (Nutzer-Reports, z.B. Investoren-Recherche), dass Tool-Aufrufe NICHT im
+  // strukturierten `tool_calls`-Feld ankommen, sondern als rohe Pseudo-XML-
+  // Textzeichenfolge im normalen Antwortinhalt landen, z.B.
+  // "<tool_call>evaluate_investor_kriterien<arg_key>firma</arg_key>...",
+  // teils mitten im Wert abgeschnitten. Der Agent-Loop erkennt das nicht als
+  // Tool-Aufruf (leeres tool_calls-Array), hält die Runde für beendet und
+  // zeigt den rohen Text als "Antwort" an – nichts wird tatsächlich
+  // ausgeführt/gespeichert. Deshalb für alle Aufrufe mit tools/response_format
+  // gesperrt, nicht nur für reine Text-Antworten.
+  "zai-glm-4.7", // Cerebras
+  "gemma-4-31b", // Cerebras
+  "@cf/zai-org/glm-4.7-flash", // Cloudflare
+  "@cf/google/gemma-4-26b-a4b-it", // Cloudflare
 ]);
 
 /**
@@ -962,6 +976,16 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
     const nvidiaModels = getNvidiaTextModels();
     for (const nvm of nvidiaModels) {
       if (!models.includes(nvm)) models.push(nvm);
+    }
+
+    // Structured-Output-Filter erneut über die GESAMTE Kette anwenden (oben
+    // wirkte er nur auf den Groq-Teil, bevor Cerebras/Cloudflare/NVIDIA
+    // angehängt wurden – die frisch angehängten Modelle waren dadurch
+    // ungefiltert nutzbar, obwohl STRUCTURED_OUTPUT_UNSAFE_MODELS auch
+    // Cerebras-/Cloudflare-Modell-IDs enthält).
+    if (needsStructuredOutput) {
+      const filtered = models.filter((m) => !STRUCTURED_OUTPUT_UNSAFE_MODELS.has(m));
+      if (filtered.length > 0) models = filtered;
     }
   }
 
