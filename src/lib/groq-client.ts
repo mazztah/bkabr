@@ -44,14 +44,23 @@ import type { AiProvider } from "./types";
  *      Hinweis: NVIDIA Build braucht nur einen API-Key (Format "nvapi-…"),
  *      keine separate Account-ID – anders als Cloudflare.
  *
- * Stufen 3–5 werden automatisch übersprungen, wenn ein Aufruf `tools`
+ * Stufen 3–13 werden automatisch übersprungen, wenn ein Aufruf `tools`
  * (Agent-Funktionsaufrufe) oder striktes JSON-Mode (Klassifikation/Extraktion,
  * u.a. Smart-Upload, Mietvertrags-Analyse) braucht – siehe
- * STRUCTURED_OUTPUT_UNSAFE_MODELS weiter unten. Dort greifen dann weiterhin nur
- * Stufen 1–2 (genau wie vor dieser Erweiterung, also unverändert zuverlässig).
- * Grund: Compound unterstützt laut Groq keine eigenen Tools, und qwen/qwen3.6-27b
+ * STRUCTURED_OUTPUT_UNSAFE_MODELS weiter unten. Der Filter wirkt über die
+ * GESAMTE Kette (Groq + Cerebras + Cloudflare + NVIDIA), nicht nur über die
+ * Groq-Stufen. Fällt die Kette komplett aus (alle anderen Stufen erschöpft),
+ * werden die eigentlich gesperrten Modelle trotzdem als allerletzte Reserve
+ * genutzt (kein Totalausfall) – aber eben nur dann, nicht routinemäßig.
+ * Grund: Compound unterstützt laut Groq keine eigenen Tools, qwen/qwen3.6-27b
  * hat in der Praxis bei striktem JSON-Mode mit "json_validate_failed" abgebrochen
- * (Reasoning-Modelle neigen dazu, dem JSON zusätzlichen Text beizumischen).
+ * (Reasoning-Modelle neigen dazu, dem JSON zusätzlichen Text beizumischen), und
+ * meta/llama-3.1-8b-instruct sowie meta/llama-3.2-3b-instruct sind für den
+ * Agent-Tool-Katalog (~48 Tool-Schemas) schlicht zu klein: in der Observability
+ * zeigte sich, dass diese Stufe mit Abstand am häufigsten als Fallback lief
+ * (408 von 509 Aufrufen) und dabei wiederholt nur die Absicht ankündigte
+ * ("Ich recherchiere jetzt…"), ohne den eigentlichen Tool-Aufruf zu machen –
+ * 0-Schritt-Läufe, die fälschlich als "success" protokolliert wurden.
  * Für reine Text-Antworten (Chat, Anschreiben-Text, Recht-Einschätzung) stehen
  * dagegen alle Groq-Stufen + optional Cerebras + Cloudflare + NVIDIA zur Verfügung.
  *
@@ -141,6 +150,12 @@ const STRUCTURED_OUTPUT_UNSAFE_MODELS = new Set([
   "gemma-4-31b", // Cerebras
   "@cf/zai-org/glm-4.7-flash", // Cloudflare
   "@cf/google/gemma-4-26b-a4b-it", // Cloudflare
+  // Zu klein für ~48 Tool-Schemas gleichzeitig: kündigen typischerweise nur
+  // die Absicht als Text an ("Ich recherchiere jetzt…"), ohne den Tool-Aufruf
+  // tatsächlich zu machen -> 0-Schritt-Läufe, fälschlich als "success" geloggt.
+  // Bei Nutzer-Reports mit 408/509 bzw. praktisch 100% Fallback-Anteil beobachtet.
+  "meta/llama-3.1-8b-instruct", // NVIDIA
+  "meta/llama-3.2-3b-instruct", // NVIDIA
 ]);
 
 /**

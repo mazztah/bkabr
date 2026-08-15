@@ -3959,7 +3959,14 @@ export async function runAgent(params: {
         max_completion_tokens: 2000,
         temperature: 0.2,
         tools,
-        tool_choice: "auto",
+        // Schritt 0 erzwingt einen echten Tool-Aufruf (statt "ich mache jetzt
+        // X" nur als Text anzukündigen und dann aufzuhören – beobachtetes
+        // Muster: 0-Schritt-Läufe, die fälschlich als "success" geloggt
+        // wurden, siehe STRUCTURED_OUTPUT_UNSAFE_MODELS-Kommentar in
+        // groq-client.ts). Ab Schritt 1 "auto", weil ein Abschluss ohne
+        // weiteren Tool-Aufruf dort meist legitim ist (Zusammenfassung nach
+        // bereits erledigten Schritten).
+        tool_choice: step === 0 ? "required" : "auto",
         messages,
       });
 
