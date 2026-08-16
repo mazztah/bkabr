@@ -3978,23 +3978,44 @@ export async function runAgent(params: {
 
       const toolCalls = msg.tool_calls;
       if (!toolCalls || toolCalls.length === 0) {
-        // Sicherheitsnetz: manche Modelle (beobachtet u.a. bei GLM/Gemma über
+        // Sicherheitsnetz 1: manche Modelle (beobachtet u.a. bei GLM/Gemma über
         // Cerebras/Cloudflare, siehe STRUCTURED_OUTPUT_UNSAFE_MODELS in
         // groq-client.ts) schreiben einen Tool-Aufruf als rohen Pseudo-XML-
         // Text in den normalen Antwortinhalt statt ihn strukturiert im
         // tool_calls-Feld zu liefern – toolCalls ist dann leer, msg.content
         // enthält aber sichtbaren Kauderwelsch wie "<tool_call>name<arg_key>…".
-        // Das NIE ungefiltert als "fertige Antwort" an den Nutzer zeigen:
-        // wirkt wie ein Ergebnis, ist aber nichts passiert (kein Tool lief,
-        // nichts wurde gespeichert). Die eigentliche Ursache wird über die
-        // Modell-Filterliste vermieden; dies ist nur die zweite Absicherung.
         const looksLikeLeakedToolCall =
           !!msg.content && /<tool_call>|<arg_key>|<arg_value>/i.test(msg.content);
-        if (looksLikeLeakedToolCall) {
+
+        // Sicherheitsnetz 2: Schritt 0 erzwingt per tool_choice="required" einen
+        // ECHTEN Tool-Aufruf (siehe oben) – genau damit ein Modell nicht bloß
+        // "ich mache jetzt X" als Text ankündigt und dann aufhört. In der Praxis
+        // halten sich schwächere/eigentlich gesperrte Fallback-Modelle (z.B.
+        // nvidia:meta/llama-3.1-8b-instruct, das als "letzte Reserve" trotz
+        // STRUCTURED_OUTPUT_UNSAFE_MODELS-Sperre genutzt wird, siehe groq-client.ts)
+        // NICHT zuverlässig an diese Vorgabe und liefern trotzdem einfachen,
+        // flüssigen Text ohne jeden XML-Marker – z.B. beobachtet: eine komplett
+        // freierfundene Liste von Briefvorlagen als "Antwort" auf "suche 10 neue
+        // KI-Investoren aus Deutschland und den USA". Ohne diese zweite Prüfung
+        // wurde das bisher NUR erkannt, wenn der Text wie ein roh ausgegebener
+        // Tool-Call aussah (looksLikeLeakedToolCall) – jede andere Form von
+        // "einfach drauflosgeschriebenem" Text in Schritt 0 wurde fälschlich als
+        // erledigt akzeptiert und dem Nutzer als fertiges Ergebnis gezeigt,
+        // obwohl kein einziges Tool lief und nichts gespeichert wurde.
+        const missingRequiredToolCall = step === 0 && !looksLikeLeakedToolCall;
+
+        // Das NIE ungefiltert als "fertige Antwort" an den Nutzer zeigen: wirkt
+        // wie ein Ergebnis, ist aber nichts passiert (kein Tool lief, nichts
+        // wurde gespeichert/recherchiert).
+        if (looksLikeLeakedToolCall || missingRequiredToolCall) {
           console.warn(
-            `[agent] Modell hat vermutlich einen Tool-Aufruf als Text statt strukturiert geliefert (Modell: ${completion.model || "unbekannt"}). Roh-Inhalt (gekürzt): ${msg.content?.slice(0, 200)}`
+            missingRequiredToolCall
+              ? `[agent] Modell (${completion.model || "unbekannt"}) hat trotz tool_choice="required" in Schritt 0 keinen Tool-Aufruf geliefert, sondern Text: ${msg.content?.slice(0, 200)}`
+              : `[agent] Modell hat vermutlich einen Tool-Aufruf als Text statt strukturiert geliefert (Modell: ${completion.model || "unbekannt"}). Roh-Inhalt (gekürzt): ${msg.content?.slice(0, 200)}`
           );
-          const reflection = `Abgebrochen: Modell (${completion.model || "unbekannt"}) hat einen Tool-Aufruf nicht strukturiert geliefert, sondern als Text ausgegeben. Kein Tool wurde ausgeführt.`;
+          const reflection = missingRequiredToolCall
+            ? `Abgebrochen: Modell (${completion.model || "unbekannt"}) hat trotz erzwungenem Tool-Aufruf (Schritt 0) keinen Tool-Aufruf geliefert, sondern reinen Text. Kein Tool wurde ausgeführt.`
+            : `Abgebrochen: Modell (${completion.model || "unbekannt"}) hat einen Tool-Aufruf nicht strukturiert geliefert, sondern als Text ausgegeben. Kein Tool wurde ausgeführt.`;
           await completeAgentRun(runId, {
             status: "error",
             steps: capabilitySteps,
@@ -4003,7 +4024,7 @@ export async function runAgent(params: {
           });
           return {
             reply:
-              "Die Anfrage ist technisch fehlgeschlagen (das Modell hat keinen gültigen Tool-Aufruf geliefert, es wurde nichts gespeichert). Das kommt gelegentlich bei bestimmten Fallback-Modellen vor – bitte versuch es direkt nochmal, in der Regel klappt es beim nächsten Versuch mit einem anderen Modell.",
+              "Die Anfrage ist technisch fehlgeschlagen (das Modell hat keinen gültigen Tool-Aufruf geliefert, es wurde nichts gespeichert/recherchiert). Das kommt gelegentlich bei bestimmten Fallback-Modellen vor – bitte versuch es direkt nochmal, in der Regel klappt es beim nächsten Versuch mit einem anderen Modell.",
             steps,
             createdBriefIds,
             runId,

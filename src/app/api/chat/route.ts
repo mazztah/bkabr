@@ -46,48 +46,26 @@ export async function POST(req: NextRequest) {
         });
       } catch (agentErr: any) {
         console.error("Agent error, falling back to chat:", agentErr);
-        // Fallback: normaler Chat mit Hinweis
-        try {
-          const [all, current, liegenschaften, gebaeude, wohnungen, mieter, mietvertraege] =
-            await Promise.all([
-              listAbrechnungen(),
-              id ? getAbrechnung(id) : Promise.resolve(null),
-              liegenschaftenDb.list(),
-              gebaeudeDb.list(),
-              wohnungenDb.list(),
-              mieterDb.list(),
-              mietvertraegeDb.list(),
-            ]);
-          const reply = await chatWithContext({
-            message:
-              message +
-              `\n\n[Systemhinweis: Der Agent ist fehlgeschlagen (${agentErr?.message || "unbekannt"}). Wenn der Nutzer Hinweise/Fehler bereinigen, Gebäude anlegen oder unpassende Dokumente sehen will, erkläre den Fehler ehrlich und dass ein erneuter Versuch oder Server-Log-Prüfung nötig ist – NICHT auf manuelle Mahnungen/Schriftverkehr verweisen, wenn der Auftrag Stammdaten-Bereinigung war.]`,
-            current: current ?? null,
-            all,
-            liegenschaften,
-            gebaeude,
-            wohnungen,
-            mieter,
-            mietvertraege,
-            history: safeHistory,
-            path: typeof path === "string" ? path : "/",
-          });
-          return NextResponse.json({
-            reply,
-            agent: false,
-            agentError: agentErr?.message || String(agentErr),
-          });
-        } catch (chatErr: any) {
-          return NextResponse.json(
-            {
-              error:
-                chatErr?.message ||
-                agentErr?.message ||
-                "Chat und Agent fehlgeschlagen. Bitte GROQ_API_KEY und Server-Logs prüfen.",
-            },
-            { status: 500 }
-          );
-        }
+        // Bewusst KEIN zweiter KI-Aufruf mehr für die Fehler-Erklärung: Der
+        // Agent ist gerade fehlgeschlagen – meistens, weil die GESAMTE
+        // Modell-Fallback-Kette erschöpft ist (siehe groq-client.ts). Ein
+        // zweiter createChatCompletion-Aufruf über chatWithContext läuft
+        // durch dieselbe Kette und landet dann auf demselben instabilen
+        // Rest – in der Praxis beobachtet z.B. bei „suche 10 neue
+        // KI-Investoren aus Deutschland und den USA“: statt ehrlich den
+        // Fehler zu nennen, hat das schwache Restmodell eine völlig
+        // themenfremde, frei erfundene Antwort geliefert (eine Liste von
+        // Briefvorlagen), ohne dass für den Nutzer erkennbar war, dass der
+        // eigentliche Auftrag gar nicht ausgeführt wurde. Eine statische
+        // Fehlermeldung ist hier zuverlässiger als eine weitere unsichere
+        // KI-Antwort, die genau dasselbe Problem (erschöpfte Kette) noch
+        // einmal treffen kann.
+        const kurzerAuftrag = message.length > 200 ? message.slice(0, 200) + "…" : message;
+        return NextResponse.json({
+          reply: `Der Agent konnte diesen Auftrag gerade technisch nicht ausführen:\n\n„${kurzerAuftrag}“\n\nFehler: ${agentErr?.message || "unbekannt"}\n\nBitte die Nachricht gleich nochmal senden – meist liegt es an einem vorübergehenden Rate-Limit bei einem der KI-Modelle (siehe Mission Control → Cost & Rate-Limits). Tritt es wiederholt auf, bitte die Live-Systemlogs dort prüfen.`,
+          agent: false,
+          agentError: agentErr?.message || String(agentErr),
+        });
       }
     }
 
