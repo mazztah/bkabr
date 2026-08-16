@@ -3715,11 +3715,39 @@ async function executeTool(
         try {
           const { patch, kriterienErgebnis, score, quellen } = await enrichInvestorStammdaten(inv);
           const now = new Date().toISOString();
+          const dokumente = [...(inv.dokumente || [])];
+          // Kurze Recherche-Zusammenfassung als Dokument ablegen (Dokumente-Tab) –
+          // damit auch der Agent, nicht nur der Nutzer, Dateien anhängen kann.
+          if (quellen.length || Object.keys(patch).length) {
+            try {
+              const zusammenfassungText =
+                `Stammdaten-Update ${now.slice(0, 10)} für ${inv.firma}\n\n` +
+                Object.entries(patch)
+                  .map(([k, v]) => `${k}: ${Array.isArray(v) ? JSON.stringify(v) : v}`)
+                  .join("\n") +
+                (quellen.length ? `\n\nQuellen:\n${quellen.join("\n")}` : "");
+              const dateiName = `Stammdaten-Update-${now.slice(0, 10)}.txt`;
+              const storedFileName = await storeFile(uuidv4(), dateiName, Buffer.from(zusammenfassungText, "utf-8"));
+              dokumente.push({
+                id: uuidv4(),
+                dateiName,
+                storedFileName,
+                mimeType: "text/plain",
+                size: Buffer.byteLength(zusammenfassungText, "utf-8"),
+                hochgeladenAm: now,
+                hochgeladenVon: "agent",
+              });
+            } catch {
+              // Ablage des Zusammenfassungs-Dokuments ist ein Nice-to-have – schlägt
+              // sie fehl, wird das eigentliche Stammdaten-Update trotzdem gespeichert.
+            }
+          }
           const updated = await investorenDb.update(inv.id, {
             ...patch,
             kriterienErgebnis,
             score,
             stammdatenAktualisiertAm: now,
+            dokumente,
             notizen: quellen.length
               ? [inv.notizen, `Stammdaten aktualisiert (${now.slice(0, 10)}) – Quellen: ${quellen.join(", ")}`]
                   .filter(Boolean)

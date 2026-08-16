@@ -3,17 +3,21 @@
 import { useEffect, useState, use as usePromise } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import Modal from "@/components/Modal";
 import { formatDate } from "@/lib/utils";
 import {
   Investor,
   InvestorAnschreiben,
   InvestorStatus,
   InvestorStrategieBericht,
+  InvestorStrategiePunkt,
   INVESTOR_STATUS_LABEL,
 } from "@/lib/types";
 import { INVESTOR_KRITERIEN } from "@/lib/investoren";
 
-type Tab = "stammdaten" | "strategie" | "anschreiben";
+type BuiltinTab = "stammdaten" | "projekte" | "kennzahlen" | "berichte" | "dokumente" | "strategie" | "anschreiben";
+/** "custom:<id>" adressiert einen frei vom Nutzer angelegten Zusatz-Tab (investor.customTabs) */
+type Tab = BuiltinTab | `custom:${string}`;
 
 const STATUS_FARBE: Record<InvestorStatus, string> = {
   vorschlag: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
@@ -52,6 +56,27 @@ export default function InvestorDetailPage({ params }: { params: Promise<{ id: s
       body: JSON.stringify({ status }),
     });
     refresh();
+  };
+
+  const neuenTabAnlegen = async () => {
+    const titel = window.prompt("Titel des neuen Tabs (z.B. „Due-Diligence-Notizen“):");
+    if (!titel || !titel.trim()) return;
+    const neu = {
+      id: crypto.randomUUID(),
+      titel: titel.trim(),
+      inhalt: "",
+      aktualisiertAm: new Date().toISOString(),
+    };
+    const res = await fetch(`/api/investoren/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ customTabs: [...(investor?.customTabs || []), neu] }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      setInvestor(json.investor);
+      setTab(`custom:${neu.id}`);
+    }
   };
 
   const notizenSpeichern = async () => {
@@ -132,10 +157,14 @@ export default function InvestorDetailPage({ params }: { params: Promise<{ id: s
         </div>
       </div>
 
-      <div className="mb-5 flex gap-1 border-b border-border">
+      <div className="mb-5 flex flex-wrap items-center gap-1 border-b border-border">
         {(
           [
             ["stammdaten", "Stammdaten"],
+            ["projekte", "Aktuelle Projekte"],
+            ["kennzahlen", "Unternehmenskennzahlen"],
+            ["berichte", "Wirtschaftsberichte"],
+            ["dokumente", "Dokumente"],
             ["strategie", "Strategie-Bericht"],
             ["anschreiben", "Anschreiben"],
           ] as [Tab, string][]
@@ -143,13 +172,33 @@ export default function InvestorDetailPage({ params }: { params: Promise<{ id: s
           <button
             key={key}
             onClick={() => setTab(key)}
-            className={`px-3 py-2 text-sm font-medium ${
+            className={`whitespace-nowrap px-3 py-2 text-sm font-medium ${
               tab === key ? "border-b-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground"
             }`}
           >
             {label}
           </button>
         ))}
+        {(investor.customTabs || []).map((ct) => (
+          <button
+            key={ct.id}
+            onClick={() => setTab(`custom:${ct.id}`)}
+            className={`whitespace-nowrap px-3 py-2 text-sm font-medium ${
+              tab === `custom:${ct.id}`
+                ? "border-b-2 border-primary text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {ct.titel}
+          </button>
+        ))}
+        <button
+          onClick={neuenTabAnlegen}
+          title="Neuen Tab anlegen"
+          className="whitespace-nowrap rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          ＋ Tab
+        </button>
       </div>
 
       {tab === "stammdaten" && (
@@ -163,8 +212,26 @@ export default function InvestorDetailPage({ params }: { params: Promise<{ id: s
             <Feld label="Xing" wert={investor.xingUrl} href={investor.xingUrl} extern />
             <Feld label="Ticketgröße" wert={investor.tickeGroesse} />
             <Feld label="Sprache" wert={investor.sprache} />
+            <Feld label="Unternehmensgröße" wert={investor.unternehmensgroesse} />
+            <Feld label="Mitarbeiterzahl" wert={investor.mitarbeiterzahl} />
+            <Feld label="Investiertes Kapital gesamt" wert={investor.investiertesKapitalGesamt} />
+            <Feld label="Gegründet" wert={investor.gegruendet} />
+            <Feld label="Adresse" wert={investor.adresse} />
             <Feld label="Quelle" wert={investor.quelle} href={investor.quelle} extern zusatz={investor.quelleDatum} />
           </div>
+
+          {investor.partner && investor.partner.length > 0 && (
+            <div className="rounded-lg border border-border bg-card p-4 text-sm">
+              <p className="mb-1 text-xs font-medium text-muted-foreground">Wichtige Partner / Beteiligungen</p>
+              <div className="flex flex-wrap gap-1">
+                {investor.partner.map((p, i) => (
+                  <span key={i} className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                    {p}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
 
           {investor.sektoren.length > 0 && (
             <div className="flex flex-wrap gap-1">
@@ -227,8 +294,21 @@ export default function InvestorDetailPage({ params }: { params: Promise<{ id: s
         </div>
       )}
 
+      {tab === "projekte" && <ProjekteTab investorId={id} investor={investor} onUpdate={setInvestor} />}
+      {tab === "kennzahlen" && <KennzahlenTab investorId={id} investor={investor} onUpdate={setInvestor} />}
+      {tab === "berichte" && <BerichteTab investorId={id} investor={investor} onUpdate={setInvestor} />}
+      {tab === "dokumente" && <DokumenteTab investorId={id} investor={investor} onUpdate={setInvestor} />}
       {tab === "strategie" && <StrategieTab investorId={id} />}
       {tab === "anschreiben" && <AnschreibenTab investorId={id} />}
+      {tab.startsWith("custom:") && (
+        <CustomTabView
+          investorId={id}
+          investor={investor}
+          tabId={tab.slice("custom:".length)}
+          onUpdate={setInvestor}
+          onDeleted={() => setTab("stammdaten")}
+        />
+      )}
     </div>
   );
 }
@@ -263,6 +343,514 @@ function Feld({
         <p>{wert}</p>
       )}
       {zusatz && <p className="text-xs text-muted-foreground">{zusatz}</p>}
+    </div>
+  );
+}
+
+async function patchInvestor(id: string, patch: Record<string, unknown>): Promise<Investor | null> {
+  const res = await fetch(`/api/investoren/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) return null;
+  const json = await res.json();
+  return json.investor as Investor;
+}
+
+function ProjekteTab({
+  investorId,
+  investor,
+  onUpdate,
+}: {
+  investorId: string;
+  investor: Investor;
+  onUpdate: (i: Investor) => void;
+}) {
+  const [titel, setTitel] = useState("");
+  const [beschreibung, setBeschreibung] = useState("");
+  const [status, setStatus] = useState("");
+  const [jahr, setJahr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const projekte = investor.aktuelleProjekte || [];
+
+  const hinzufuegen = async () => {
+    if (!titel.trim() || !beschreibung.trim()) return;
+    setBusy(true);
+    try {
+      const neu = { titel: titel.trim(), beschreibung: beschreibung.trim(), status: status || undefined, jahr: jahr || undefined };
+      const updated = await patchInvestor(investorId, { aktuelleProjekte: [...projekte, neu] });
+      if (updated) {
+        onUpdate(updated);
+        setTitel("");
+        setBeschreibung("");
+        setStatus("");
+        setJahr("");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const entfernen = async (idx: number) => {
+    const updated = await patchInvestor(investorId, { aktuelleProjekte: projekte.filter((_, i) => i !== idx) });
+    if (updated) onUpdate(updated);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-border bg-card p-4 text-sm">
+        <p className="mb-2 text-xs font-medium text-muted-foreground">Projekt manuell hinzufügen</p>
+        <div className="mb-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <input
+            value={titel}
+            onChange={(e) => setTitel(e.target.value)}
+            placeholder="Titel"
+            className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
+          <div className="grid grid-cols-2 gap-2">
+            <input
+              value={status}
+              onChange={(e) => setStatus(e.target.value)}
+              placeholder="Status (optional)"
+              className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+            />
+            <input
+              value={jahr}
+              onChange={(e) => setJahr(e.target.value)}
+              placeholder="Jahr (optional)"
+              className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+            />
+          </div>
+        </div>
+        <textarea
+          value={beschreibung}
+          onChange={(e) => setBeschreibung(e.target.value)}
+          rows={2}
+          placeholder="Beschreibung"
+          className="mb-2 w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+        />
+        <button
+          onClick={hinzufuegen}
+          disabled={busy || !titel.trim() || !beschreibung.trim()}
+          className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+        >
+          + Hinzufügen
+        </button>
+      </div>
+
+      {projekte.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          Noch keine aktuellen Projekte hinterlegt. Der Agent trägt hier bei „Stammdaten updaten" automatisch ein,
+          was er recherchiert – oder leg selbst eines an.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {projekte.map((p, i) => (
+            <div key={i} className="rounded-lg border border-border bg-card p-4 text-sm">
+              <div className="flex items-start justify-between gap-2">
+                <p className="font-medium">
+                  {p.titel}
+                  {p.jahr ? ` (${p.jahr})` : ""}
+                  {p.status && (
+                    <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                      {p.status}
+                    </span>
+                  )}
+                </p>
+                <button onClick={() => entfernen(i)} className="shrink-0 text-xs text-muted-foreground hover:text-[var(--destructive)]">
+                  ✕
+                </button>
+              </div>
+              <p className="mt-1 text-muted-foreground">{p.beschreibung}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KennzahlenTab({
+  investorId,
+  investor,
+  onUpdate,
+}: {
+  investorId: string;
+  investor: Investor;
+  onUpdate: (i: Investor) => void;
+}) {
+  const [label, setLabel] = useState("");
+  const [wert, setWert] = useState("");
+  const [jahr, setJahr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const kennzahlen = investor.kennzahlen || [];
+
+  const hinzufuegen = async () => {
+    if (!label.trim() || !wert.trim()) return;
+    setBusy(true);
+    try {
+      const neu = { label: label.trim(), wert: wert.trim(), jahr: jahr || undefined };
+      const updated = await patchInvestor(investorId, { kennzahlen: [...kennzahlen, neu] });
+      if (updated) {
+        onUpdate(updated);
+        setLabel("");
+        setWert("");
+        setJahr("");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const entfernen = async (idx: number) => {
+    const updated = await patchInvestor(investorId, { kennzahlen: kennzahlen.filter((_, i) => i !== idx) });
+    if (updated) onUpdate(updated);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-border bg-card p-4 text-sm">
+        <p className="mb-2 text-xs font-medium text-muted-foreground">Kennzahl manuell hinzufügen</p>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="z.B. Umsatz, AUM, EBITDA"
+            className="rounded border border-border bg-background px-2 py-1.5 text-sm sm:col-span-2"
+          />
+          <input
+            value={wert}
+            onChange={(e) => setWert(e.target.value)}
+            placeholder="Wert"
+            className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
+          <input
+            value={jahr}
+            onChange={(e) => setJahr(e.target.value)}
+            placeholder="Jahr (optional)"
+            className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
+        </div>
+        <button
+          onClick={hinzufuegen}
+          disabled={busy || !label.trim() || !wert.trim()}
+          className="mt-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+        >
+          + Hinzufügen
+        </button>
+      </div>
+
+      {kennzahlen.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          Noch keine Unternehmenskennzahlen hinterlegt. Der Agent trägt hier bei „Stammdaten updaten" automatisch
+          ein, was er recherchiert – oder leg selbst welche an.
+        </p>
+      ) : (
+        <div className="overflow-hidden rounded-lg border border-border">
+          <table className="w-full text-sm">
+            <tbody>
+              {kennzahlen.map((k, i) => (
+                <tr key={i} className="border-b border-border last:border-0">
+                  <td className="bg-card px-4 py-2 font-medium">{k.label}</td>
+                  <td className="bg-card px-4 py-2">{k.wert}</td>
+                  <td className="bg-card px-4 py-2 text-xs text-muted-foreground">{k.jahr || ""}</td>
+                  <td className="bg-card px-2 py-2 text-right">
+                    <button onClick={() => entfernen(i)} className="text-xs text-muted-foreground hover:text-[var(--destructive)]">
+                      ✕
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BerichteTab({
+  investorId,
+  investor,
+  onUpdate,
+}: {
+  investorId: string;
+  investor: Investor;
+  onUpdate: (i: Investor) => void;
+}) {
+  const [titel, setTitel] = useState("");
+  const [zusammenfassung, setZusammenfassung] = useState("");
+  const [jahr, setJahr] = useState("");
+  const [quelle, setQuelle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const berichte = investor.wirtschaftsberichte || [];
+
+  const hinzufuegen = async () => {
+    if (!titel.trim() || !zusammenfassung.trim()) return;
+    setBusy(true);
+    try {
+      const neu = { titel: titel.trim(), zusammenfassung: zusammenfassung.trim(), jahr: jahr || undefined, quelle: quelle || undefined };
+      const updated = await patchInvestor(investorId, { wirtschaftsberichte: [...berichte, neu] });
+      if (updated) {
+        onUpdate(updated);
+        setTitel("");
+        setZusammenfassung("");
+        setJahr("");
+        setQuelle("");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const entfernen = async (idx: number) => {
+    const updated = await patchInvestor(investorId, { wirtschaftsberichte: berichte.filter((_, i) => i !== idx) });
+    if (updated) onUpdate(updated);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-border bg-card p-4 text-sm">
+        <p className="mb-2 text-xs font-medium text-muted-foreground">Wirtschaftsbericht manuell hinzufügen</p>
+        <div className="mb-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <input
+            value={titel}
+            onChange={(e) => setTitel(e.target.value)}
+            placeholder="Titel"
+            className="rounded border border-border bg-background px-2 py-1.5 text-sm sm:col-span-2"
+          />
+          <input
+            value={jahr}
+            onChange={(e) => setJahr(e.target.value)}
+            placeholder="Jahr (optional)"
+            className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
+        </div>
+        <textarea
+          value={zusammenfassung}
+          onChange={(e) => setZusammenfassung(e.target.value)}
+          rows={2}
+          placeholder="Zusammenfassung"
+          className="mb-2 w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+        />
+        <input
+          value={quelle}
+          onChange={(e) => setQuelle(e.target.value)}
+          placeholder="Quelle/URL (optional)"
+          className="mb-2 w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+        />
+        <button
+          onClick={hinzufuegen}
+          disabled={busy || !titel.trim() || !zusammenfassung.trim()}
+          className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+        >
+          + Hinzufügen
+        </button>
+      </div>
+
+      {berichte.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          Noch keine Wirtschaftsberichte hinterlegt. Der Agent trägt hier bei „Stammdaten updaten" automatisch ein,
+          was er recherchiert – oder leg selbst einen an.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {berichte.map((b, i) => (
+            <div key={i} className="rounded-lg border border-border bg-card p-4 text-sm">
+              <div className="flex items-start justify-between gap-2">
+                <p className="font-medium">
+                  {b.titel}
+                  {b.jahr ? ` (${b.jahr})` : ""}
+                </p>
+                <button onClick={() => entfernen(i)} className="shrink-0 text-xs text-muted-foreground hover:text-[var(--destructive)]">
+                  ✕
+                </button>
+              </div>
+              <p className="mt-1 text-muted-foreground">{b.zusammenfassung}</p>
+              {b.quelle && (
+                <a href={b.quelle} target="_blank" rel="noreferrer" className="mt-1 inline-block text-xs text-primary hover:underline">
+                  Quelle ↗
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DokumenteTab({
+  investorId,
+  investor,
+  onUpdate,
+}: {
+  investorId: string;
+  investor: Investor;
+  onUpdate: (i: Investor) => void;
+}) {
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const dokumente = investor.dokumente || [];
+
+  const upload = async (file: File) => {
+    setUploading(true);
+    setError(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/upload", { method: "POST", body: formData });
+      const json = await res.json();
+      if (!res.ok) {
+        setError(json.error || "Upload fehlgeschlagen");
+        return;
+      }
+      const neu = {
+        id: crypto.randomUUID(),
+        dateiName: json.dateiName,
+        storedFileName: json.storedFileName,
+        mimeType: json.mimeType,
+        size: json.size,
+        hochgeladenAm: new Date().toISOString(),
+        hochgeladenVon: "user" as const,
+      };
+      const updated = await patchInvestor(investorId, { dokumente: [...dokumente, neu] });
+      if (updated) onUpdate(updated);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const entfernen = async (id: string) => {
+    const updated = await patchInvestor(investorId, { dokumente: dokumente.filter((d) => d.id !== id) });
+    if (updated) onUpdate(updated);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-border bg-card p-4 text-sm">
+        <p className="mb-2 text-xs font-medium text-muted-foreground">
+          Dokument hochladen (z.B. Präsentation, Geschäftsbericht, Vertragsentwurf) — auch der Agent kann hier per
+          Chat-Auftrag Rechercheergebnisse ablegen.
+        </p>
+        <input
+          type="file"
+          disabled={uploading}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) upload(f);
+            e.target.value = "";
+          }}
+          className="text-sm"
+        />
+        {uploading && <p className="mt-2 text-xs text-muted-foreground">Lade hoch …</p>}
+        {error && <p className="mt-2 text-xs text-[var(--destructive)]">⚠️ {error}</p>}
+      </div>
+
+      {dokumente.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Noch keine Dokumente hochgeladen.</p>
+      ) : (
+        <div className="space-y-2">
+          {dokumente.map((d) => (
+            <div key={d.id} className="flex items-center justify-between rounded-lg border border-border bg-card p-3 text-sm">
+              <div>
+                <a
+                  href={`/api/files/${d.storedFileName}?mime=${encodeURIComponent(d.mimeType)}&name=${encodeURIComponent(d.dateiName)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium text-primary hover:underline"
+                >
+                  {d.dateiName}
+                </a>
+                <p className="text-xs text-muted-foreground">
+                  {(d.size / 1024).toFixed(0)} KB · {formatDate(d.hochgeladenAm)} ·{" "}
+                  {d.hochgeladenVon === "agent" ? "vom Agenten" : "manuell hochgeladen"}
+                </p>
+              </div>
+              <button onClick={() => entfernen(d.id)} className="text-xs text-muted-foreground hover:text-[var(--destructive)]">
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CustomTabView({
+  investorId,
+  investor,
+  tabId,
+  onUpdate,
+  onDeleted,
+}: {
+  investorId: string;
+  investor: Investor;
+  tabId: string;
+  onUpdate: (i: Investor) => void;
+  onDeleted: () => void;
+}) {
+  const alle = investor.customTabs || [];
+  const eintrag = alle.find((t) => t.id === tabId);
+  const [inhalt, setInhalt] = useState(eintrag?.inhalt || "");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setInhalt(eintrag?.inhalt || "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabId]);
+
+  if (!eintrag) return <p className="text-sm text-muted-foreground">Tab nicht gefunden.</p>;
+
+  const speichern = async () => {
+    setBusy(true);
+    try {
+      const neueTabs = alle.map((t) => (t.id === tabId ? { ...t, inhalt, aktualisiertAm: new Date().toISOString() } : t));
+      const updated = await patchInvestor(investorId, { customTabs: neueTabs });
+      if (updated) onUpdate(updated);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const loeschen = async () => {
+    if (!window.confirm(`Tab „${eintrag.titel}" wirklich löschen?`)) return;
+    const neueTabs = alle.filter((t) => t.id !== tabId);
+    const updated = await patchInvestor(investorId, { customTabs: neueTabs });
+    if (updated) {
+      onUpdate(updated);
+      onDeleted();
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg border border-border bg-card p-4 text-sm">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-xs font-medium text-muted-foreground">
+            Zuletzt aktualisiert: {formatDate(eintrag.aktualisiertAm)}
+          </p>
+          <button onClick={loeschen} className="text-xs text-muted-foreground hover:text-[var(--destructive)]">
+            Tab löschen
+          </button>
+        </div>
+        <textarea
+          value={inhalt}
+          onChange={(e) => setInhalt(e.target.value)}
+          rows={12}
+          className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+          placeholder="Freitext für diesen Zusatz-Tab …"
+        />
+        <button
+          onClick={speichern}
+          disabled={busy}
+          className="mt-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+        >
+          {busy ? "Speichere…" : "Speichern"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -304,6 +892,10 @@ function StrategieTab({ investorId }: { investorId: string }) {
     } finally {
       setGeneriere(false);
     }
+  };
+
+  const berichtAktualisiert = (aktualisiert: InvestorStrategieBericht) => {
+    setBerichte((prev) => prev.map((b) => (b.id === aktualisiert.id ? aktualisiert : b)));
   };
 
   return (
@@ -349,14 +941,29 @@ function StrategieTab({ investorId }: { investorId: string }) {
               {offen === b.id && (
                 <div className="mt-3 space-y-3">
                   <p className="text-xs text-muted-foreground">{b.zusammenfassung}</p>
+
+                  <div className="flex items-start gap-2 rounded-md border border-primary/30 bg-primary/5 p-3 text-xs">
+                    <span className="text-base leading-none">🤖</span>
+                    <p>
+                      Sagt dir diese Strategie so zu, oder soll ich noch etwas anpassen? Bei jedem Punkt unten kannst
+                      du auf <span className="font-medium">„Optimieren"</span> klicken, deinen Änderungswunsch
+                      eintragen (oder mich frei optimieren lassen) und die neue Fassung per{" "}
+                      <span className="font-medium">„Übernehmen"</span> speichern. Über{" "}
+                      <span className="font-medium">„Historie"</span> siehst du alle bisherigen Fassungen eines
+                      Punktes.
+                    </p>
+                  </div>
+
                   <ol className="space-y-2">
                     {b.punkte.map((p, i) => (
-                      <li key={i} className="text-xs">
-                        <span className="font-medium">
-                          {i + 1}. {p.titel}
-                        </span>
-                        <p className="text-muted-foreground">{p.beschreibung}</p>
-                      </li>
+                      <StrategiePunktZeile
+                        key={p.id}
+                        investorId={investorId}
+                        berichtId={b.id}
+                        punkt={p}
+                        index={i}
+                        onUpdated={berichtAktualisiert}
+                      />
                     ))}
                   </ol>
                 </div>
@@ -366,6 +973,170 @@ function StrategieTab({ investorId }: { investorId: string }) {
         </div>
       )}
     </div>
+  );
+}
+
+function StrategiePunktZeile({
+  investorId,
+  berichtId,
+  punkt,
+  index,
+  onUpdated,
+}: {
+  investorId: string;
+  berichtId: string;
+  punkt: InvestorStrategiePunkt;
+  index: number;
+  onUpdated: (bericht: InvestorStrategieBericht) => void;
+}) {
+  const [optimierenOffen, setOptimierenOffen] = useState(false);
+  const [wunsch, setWunsch] = useState("");
+  const [vorschlag, setVorschlag] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [historieOffen, setHistorieOffen] = useState(false);
+
+  const vonLlmOptimierenLassen = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/investoren/${investorId}/strategie/${berichtId}/punkte/${punkt.id}/optimieren`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ wunsch }),
+        }
+      );
+      const json = await res.json();
+      if (!res.ok) {
+        setError(json.error || "Optimierung fehlgeschlagen");
+        return;
+      }
+      setVorschlag(json.vorschlag);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const uebernehmen = async () => {
+    if (!vorschlag) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/investoren/${investorId}/strategie/${berichtId}/punkte/${punkt.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ beschreibung: vorschlag, quelle: "ki-optimierung", hinweis: wunsch || undefined }),
+      });
+      const json = await res.json();
+      if (res.ok) {
+        onUpdated(json.bericht);
+        setOptimierenOffen(false);
+        setVorschlag(null);
+        setWunsch("");
+      } else {
+        setError(json.error || "Speichern fehlgeschlagen");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <li className="rounded-lg border border-border/60 p-2">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <span className="text-xs font-medium">
+            {index + 1}. {punkt.titel}
+          </span>
+          <p className="text-xs text-muted-foreground">{punkt.beschreibung}</p>
+        </div>
+        <div className="flex shrink-0 gap-1">
+          {punkt.historie && punkt.historie.length > 0 && (
+            <button
+              onClick={() => setHistorieOffen(true)}
+              className="whitespace-nowrap rounded border border-border px-2 py-1 text-[10px] hover:bg-muted"
+            >
+              Historie ({punkt.historie.length})
+            </button>
+          )}
+          <button
+            onClick={() => setOptimierenOffen((v) => !v)}
+            className="whitespace-nowrap rounded border border-border px-2 py-1 text-[10px] hover:bg-muted"
+          >
+            {optimierenOffen ? "Schließen" : "Optimieren"}
+          </button>
+        </div>
+      </div>
+
+      {optimierenOffen && (
+        <div className="mt-2 space-y-2 rounded-md border border-border bg-muted/40 p-2">
+          <p className="flex items-start gap-1 text-[10px] font-medium text-muted-foreground">
+            <span>🤖</span>
+            <span>Was soll an diesem Punkt angepasst werden?</span>
+          </p>
+          <textarea
+            value={wunsch}
+            onChange={(e) => setWunsch(e.target.value)}
+            rows={2}
+            placeholder="Änderungswunsch eintragen – oder leer lassen und frei optimieren lassen"
+            className="w-full rounded border border-border bg-background px-2 py-1 text-xs"
+          />
+          {error && <p className="text-[10px] text-[var(--destructive)]">⚠️ {error}</p>}
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={vonLlmOptimierenLassen}
+              disabled={busy}
+              className="rounded-md border border-border px-2 py-1 text-[10px] hover:bg-muted disabled:opacity-50"
+            >
+              {busy && !vorschlag ? "Optimiere…" : "🧠 Vorschlag generieren"}
+            </button>
+          </div>
+          {vorschlag && (
+            <div className="mt-1 rounded-md border border-primary/30 bg-primary/5 p-2">
+              <p className="mb-1 text-[10px] font-medium text-muted-foreground">Vorschlag:</p>
+              <p className="text-xs">{vorschlag}</p>
+              <div className="mt-2 flex gap-2">
+                <button
+                  onClick={uebernehmen}
+                  disabled={busy}
+                  className="rounded-md bg-primary px-2 py-1 text-[10px] font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  ✓ Übernehmen
+                </button>
+                <button
+                  onClick={() => setVorschlag(null)}
+                  className="rounded-md border border-border px-2 py-1 text-[10px] hover:bg-muted"
+                >
+                  Verwerfen
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {historieOffen && (
+        <Modal title={`Historie: ${punkt.titel}`} onClose={() => setHistorieOffen(false)}>
+          <div className="max-h-96 space-y-3 overflow-y-auto">
+            {[...(punkt.historie || [])].reverse().map((v, i) => (
+              <div key={i} className="rounded-md border border-border p-2 text-xs">
+                <p className="mb-1 text-[10px] text-muted-foreground">
+                  {formatDate(v.aktualisiertAm)} · abgelöst durch{" "}
+                  {v.quelle === "user" ? "manuelle Bearbeitung" : "KI-Optimierung"}
+                  {v.hinweis ? ` (Wunsch: „${v.hinweis}")` : ""}
+                </p>
+                <p>{v.beschreibung}</p>
+              </div>
+            ))}
+            <div className="rounded-md border border-primary/30 bg-primary/5 p-2 text-xs">
+              <p className="mb-1 text-[10px] text-muted-foreground">Aktuelle Fassung</p>
+              <p>{punkt.beschreibung}</p>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </li>
   );
 }
 

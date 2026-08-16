@@ -1110,6 +1110,47 @@ export interface InvestorKriteriumErgebnis {
   begruendung?: string;
 }
 
+/** Eine einzelne Unternehmenskennzahl (frei/flexibel statt starrem Schema,
+ *  damit der Agent so viele Details wie recherchierbar ablegen kann, z.B.
+ *  Umsatz, EBITDA, AUM, Wachstumsrate, Gründungsjahr, …). */
+export interface InvestorKennzahl {
+  label: string;
+  wert: string;
+  jahr?: string;
+}
+
+export interface InvestorProjekt {
+  titel: string;
+  beschreibung: string;
+  status?: string; // z.B. "laufend", "abgeschlossen", "geplant"
+  jahr?: string;
+}
+
+export interface InvestorWirtschaftsbericht {
+  titel: string;
+  jahr?: string;
+  zusammenfassung: string;
+  quelle?: string;
+}
+
+export interface InvestorDokument {
+  id: string;
+  dateiName: string;
+  storedFileName: string;
+  mimeType: string;
+  size: number;
+  hochgeladenAm: string;
+  hochgeladenVon: "user" | "agent";
+}
+
+/** Frei vom Nutzer angelegter Zusatz-Tab (Titel + Freitext) auf der Investor-Detailseite. */
+export interface InvestorCustomTab {
+  id: string;
+  titel: string;
+  inhalt: string;
+  aktualisiertAm: string;
+}
+
 export interface Investor {
   id: string;
   nummer?: string;
@@ -1140,6 +1181,23 @@ export interface Investor {
   /** Zeitpunkt der letzten "Stammdaten updaten"-Anreicherung (enrichInvestorStammdaten in ai.ts).
    *  Undefined = noch nie angereichert (z.B. frisch aus der Recherche, nur Basis-Treffer). */
   stammdatenAktualisiertAm?: string;
+
+  // -------- Erweiterte Stammdaten (Durchgang "Investoren-Detailtiefe") --------
+  /** z.B. "Konzern", "Mittelstand", "Startup (Series B)" */
+  unternehmensgroesse?: string;
+  mitarbeiterzahl?: string;
+  /** Wichtige Partner/Beteiligungen/Co-Investoren */
+  partner?: string[];
+  investiertesKapitalGesamt?: string;
+  adresse?: string;
+  gegruendet?: string;
+  kennzahlen?: InvestorKennzahl[];
+  aktuelleProjekte?: InvestorProjekt[];
+  wirtschaftsberichte?: InvestorWirtschaftsbericht[];
+  dokumente?: InvestorDokument[];
+  /** Vom Nutzer frei angelegte Zusatz-Tabs auf der Detailseite */
+  customTabs?: InvestorCustomTab[];
+
   createdAt: string;
   updatedAt: string;
 }
@@ -1163,9 +1221,23 @@ export interface InvestorAnschreiben {
   updatedAt: string;
 }
 
+export interface InvestorStrategiePunktVersion {
+  /** Fassung, die durch die neue Version ersetzt wurde */
+  beschreibung: string;
+  /** Zeitpunkt der Ablösung (=Zeitpunkt der Änderung, nicht der Erstellung) */
+  aktualisiertAm: string;
+  /** Wodurch die ABLÖSENDE (neue) Fassung zustande kam */
+  quelle: "user" | "ki-optimierung";
+  /** Bei ki-optimierung: der Änderungswunsch, der zur neuen Fassung führte */
+  hinweis?: string;
+}
+
 export interface InvestorStrategiePunkt {
+  /** Stabile ID innerhalb des Berichts, damit einzelne Punkte gezielt optimiert/versioniert werden können */
+  id: string;
   titel: string;
   beschreibung: string;
+  historie?: InvestorStrategiePunktVersion[];
 }
 
 export interface InvestorStrategieBericht {

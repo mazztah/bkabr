@@ -19,6 +19,7 @@ import { mietRueckstand } from "./mietkonto";
 import { createChatCompletion, VISION_MODEL } from "./groq-client";
 import { INVESTOR_KRITERIEN, empfehlungAusScore } from "./investoren";
 import { webSearch } from "./websearch";
+import { v4 as uuidv4 } from "uuid";
 
 /**
  * Erkennt Small-Talk / triviale Nachrichten ("hallo", "danke", "ok" …), bei
@@ -1278,8 +1279,8 @@ export async function enrichInvestorStammdaten(
   const quellen: string[] = [];
   try {
     const treffer = await webSearch(
-      `${investor.firma} ${investor.land} Investor Kontakt Ansprechpartner E-Mail LinkedIn Ticketgröße`,
-      { maxResults: 5 }
+      `${investor.firma} ${investor.land} Investor Kontakt Ansprechpartner Unternehmensgröße Mitarbeiter Kennzahlen Umsatz aktuelle Projekte Adresse`,
+      { maxResults: 6 }
     );
     for (const t of treffer) {
       rechercheKontext += `- ${t.titel} (${t.url}): ${t.snippet}\n`;
@@ -1297,7 +1298,7 @@ export async function enrichInvestorStammdaten(
   ).join("\n");
 
   const completion = await createChatCompletion({
-    max_completion_tokens: 1600,
+    max_completion_tokens: 2600,
     temperature: 0,
     response_format: { type: "json_object" },
     messages: [
@@ -1305,15 +1306,25 @@ export async function enrichInvestorStammdaten(
         role: "system",
         content:
           "Du bist ein sorgfältiger Analyst für Investoren-Recherche in einer deutschen Immobilien-/PropTech-App. " +
-          "Ergänze aus dem Recherche-Kontext (Websuche-Ergebnisse) so viele Stammdaten-Felder wie möglich für den " +
-          "übergebenen Investor UND bewerte ihn anhand exakt dieser 10 Kriterien:\n" +
+          "Ergänze aus dem Recherche-Kontext (Websuche-Ergebnisse) so viele Stammdaten-Felder wie möglich – so " +
+          "detailliert wie möglich, aber ausschließlich mit im Kontext belegten Fakten – für den übergebenen Investor " +
+          "UND bewerte ihn anhand exakt dieser 10 Kriterien:\n" +
           kriterienListe +
-          "\n\nErfinde KEINE Fakten, die nicht im Kontext stehen – fehlt ein Feld im Kontext, lasse es im JSON einfach " +
-          "weg (nicht raten, nicht null/leer setzen). Sei bei den Kriterien konservativ: erfuellt=true nur, wenn der " +
-          'Kontext das wirklich stützt. Antworte AUSSCHLIESSLICH mit einem JSON-Objekt {"ansprechpartner_name":"...", ' +
-          '"ansprechpartner_rolle":"...", "email":"...", "telefon":"...", "webseite":"...", "linkedin_url":"...", ' +
-          '"hub":"...", "kurzprofil":"max. 3 Sätze", "ticke_groesse":"...", "sprache":"Deutsch|Englisch|...", ' +
-          '"kriterien_ergebnis":[{"kriteriumId":"...", "erfuellt": true|false, "begruendung":"max. 1 Satz"}] mit GENAU 10 Einträgen}.',
+          "\n\nErfinde KEINE Fakten, die nicht im Kontext stehen – fehlt ein Feld/Eintrag im Kontext, lasse ihn im " +
+          "JSON einfach weg (nicht raten, nicht null/leer/'unbekannt' setzen). Sei bei den Kriterien konservativ: " +
+          'erfuellt=true nur, wenn der Kontext das wirklich stützt. Antworte AUSSCHLIESSLICH mit einem JSON-Objekt:\n' +
+          '{"ansprechpartner_name":"...", "ansprechpartner_rolle":"...", "email":"...", "telefon":"...", ' +
+          '"webseite":"...", "linkedin_url":"...", "hub":"...", "kurzprofil":"max. 3 Sätze", "ticke_groesse":"...", ' +
+          '"sprache":"Deutsch|Englisch|...", ' +
+          '"unternehmensgroesse":"z.B. Konzern / Mittelstand / Startup (Series B)", "mitarbeiterzahl":"z.B. \\"~250\\" oder \\"50-200\\"", ' +
+          '"partner":["wichtige Partner/Co-Investoren/Beteiligungen, je einer als String"], ' +
+          '"investiertes_kapital_gesamt":"z.B. \\"€2.3 Mrd. AUM\\" oder \\"€150 Mio. seit Gründung\\"", ' +
+          '"adresse":"vollständige Firmenadresse falls bekannt", "gegruendet":"Gründungsjahr", ' +
+          '"kennzahlen":[{"label":"z.B. Umsatz, EBITDA, AUM, Wachstumsrate, Portfoliogröße", "wert":"...", "jahr":"optional"}], ' +
+          '"aktuelle_projekte":[{"titel":"...", "beschreibung":"1-2 Sätze", "status":"laufend|abgeschlossen|geplant (optional)", "jahr":"optional"}], ' +
+          '"wirtschaftsberichte":[{"titel":"...", "jahr":"optional", "zusammenfassung":"1-3 Sätze", "quelle":"URL falls vorhanden"}], ' +
+          '"kriterien_ergebnis":[{"kriteriumId":"...", "erfuellt": true|false, "begruendung":"max. 1 Satz"}] mit GENAU 10 Einträgen}. ' +
+          "Alle Arrays sind optional und dürfen leer/weggelassen werden, wenn der Kontext dazu nichts hergibt.",
       },
       {
         role: "user",
@@ -1338,12 +1349,50 @@ export async function enrichInvestorStammdaten(
     kurzprofil: "kurzprofil",
     ticke_groesse: "tickeGroesse",
     sprache: "sprache",
+    unternehmensgroesse: "unternehmensgroesse",
+    mitarbeiterzahl: "mitarbeiterzahl",
+    investiertes_kapital_gesamt: "investiertesKapitalGesamt",
+    adresse: "adresse",
+    gegruendet: "gegruendet",
   };
   for (const [key, feld] of Object.entries(feldMap)) {
     const val = parsed[key];
     if (typeof val === "string" && val.trim()) {
       (patch as Record<string, unknown>)[feld] = val.trim();
     }
+  }
+
+  if (Array.isArray(parsed.partner)) {
+    const partner = (parsed.partner as unknown[]).filter((p): p is string => typeof p === "string" && p.trim() !== "");
+    if (partner.length) patch.partner = partner;
+  }
+  if (Array.isArray(parsed.kennzahlen)) {
+    const kennzahlen = (parsed.kennzahlen as { label?: string; wert?: string; jahr?: string }[])
+      .filter((k) => k?.label && k?.wert)
+      .map((k) => ({ label: k.label as string, wert: k.wert as string, jahr: k.jahr || undefined }));
+    if (kennzahlen.length) patch.kennzahlen = kennzahlen;
+  }
+  if (Array.isArray(parsed.aktuelle_projekte)) {
+    const projekte = (parsed.aktuelle_projekte as { titel?: string; beschreibung?: string; status?: string; jahr?: string }[])
+      .filter((p) => p?.titel && p?.beschreibung)
+      .map((p) => ({
+        titel: p.titel as string,
+        beschreibung: p.beschreibung as string,
+        status: p.status || undefined,
+        jahr: p.jahr || undefined,
+      }));
+    if (projekte.length) patch.aktuelleProjekte = projekte;
+  }
+  if (Array.isArray(parsed.wirtschaftsberichte)) {
+    const berichte = (parsed.wirtschaftsberichte as { titel?: string; jahr?: string; zusammenfassung?: string; quelle?: string }[])
+      .filter((b) => b?.titel && b?.zusammenfassung)
+      .map((b) => ({
+        titel: b.titel as string,
+        zusammenfassung: b.zusammenfassung as string,
+        jahr: b.jahr || undefined,
+        quelle: b.quelle || undefined,
+      }));
+    if (berichte.length) patch.wirtschaftsberichte = berichte;
   }
 
   const gueltigeIds = new Set(INVESTOR_KRITERIEN.map((k) => k.id));
@@ -1464,10 +1513,48 @@ export async function generateInvestorStrategieBericht(
   };
   const punkte = (parsed.punkte || [])
     .filter((p) => p.titel && p.beschreibung)
-    .map((p) => ({ titel: p.titel as string, beschreibung: p.beschreibung as string }));
+    .map((p) => ({ id: uuidv4(), titel: p.titel as string, beschreibung: p.beschreibung as string }));
   return {
     zusammenfassung: parsed.zusammenfassung || "",
     punkte,
   };
+}
+
+/**
+ * Überarbeitet EINEN einzelnen Strategiepunkt eines bestehenden Strategie-
+ * Berichts anhand eines Änderungswunschs des Nutzers (oder, falls kein Wunsch
+ * angegeben, nach eigenem Ermessen). Liefert nur einen TEXTVORSCHLAG zurück –
+ * das Speichern/Versionieren übernimmt die aufrufende Route erst, wenn der
+ * Nutzer den Vorschlag über "Übernehmen" bestätigt.
+ */
+export async function optimizeInvestorStrategiePunkt(
+  investor: Pick<Investor, "firma" | "land" | "sektoren">,
+  punkt: Pick<InvestorStrategiePunkt, "titel" | "beschreibung">,
+  wunsch: string
+): Promise<string> {
+  const completion = await createChatCompletion({
+    max_completion_tokens: 500,
+    temperature: 0.4,
+    messages: [
+      {
+        role: "system",
+        content:
+          "Du bist ein erfahrener M&A-/Investoren-Relations-Berater. Du überarbeitest EINEN einzelnen Strategiepunkt " +
+          "aus einem bestehenden Strategie-Bericht für die Ansprache eines bestimmten Investors, basierend auf dem " +
+          "Änderungswunsch des Nutzers. Bleib beim selben Titel/Thema, überarbeite NUR den Beschreibungstext (1-4 " +
+          "prägnante, professionelle, konkrete Sätze – keine Allgemeinplätze). Antworte AUSSCHLIESSLICH mit dem neuen " +
+          "Beschreibungstext selbst, ohne Anführungszeichen, ohne Präfix wie 'Neue Version:', ohne Meta-Kommentar.",
+      },
+      {
+        role: "user",
+        content: `Investor: ${investor.firma} (${investor.land}${
+          investor.sektoren.length ? ", " + investor.sektoren.join(", ") : ""
+        })\n\nStrategiepunkt „${punkt.titel}“\nAktuelle Beschreibung: ${punkt.beschreibung}\n\nÄnderungswunsch des Nutzers: ${
+          wunsch.trim() || "Kein konkreter Wunsch angegeben – bitte eigenständig präzisieren/verbessern, ohne den fachlichen Kern zu verändern."
+        }`,
+      },
+    ],
+  });
+  return (completion.choices[0]?.message?.content || "").trim();
 }
 
