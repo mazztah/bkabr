@@ -848,22 +848,38 @@ function applyTokenBudget(model: string, params: ChatParams): ChatParams {
     let trialMsgs = [...system, ...kept];
     let t = estimateMessagesTokens(trialMsgs) + toolsTax;
     if (t + MIN_COMPLETION > TPM_SAFE) {
-      const budgetForLast = Math.max(500, TPM_SAFE - toolsTax - MIN_COMPLETION - 200);
-      trialMsgs = trialMsgs.map((m, idx) => {
-        if (idx < trialMsgs.length - 1) return m;
-        const c = (m as any).content;
-        if (typeof c !== "string") return m;
-        const maxChars = budgetForLast * 4;
-        if (c.length <= maxChars) return m;
-        return {
-          ...m,
-          content:
-            c.slice(0, Math.floor(maxChars * 0.7)) +
-            "\n…[gekürzt wegen Token-Budget]…\n" +
-            c.slice(-Math.floor(maxChars * 0.25)),
-        } as any;
-      });
-      t = estimateMessagesTokens(trialMsgs) + toolsTax;
+      // WICHTIG: dieselbe Zeichen/Token-Ratio wie estimateTokens() (2.2)
+      // verwenden. Hier stand vorher noch der alte Faktor 4 (aus der Zeit vor
+      // der 4→2.2-Umstellung oben) – dadurch blieb der "harte" Kürzungsschritt
+      // selbst regelmäßig ~1.7-2x zu groß, obwohl der Log "Token-Budget
+      // angepasst (... safe=5000)" grünes Licht meldete. Erklärt exakt das
+      // Produktionsmuster: "input≈19394 ... safe=5000" im Log, unmittelbar
+      // gefolgt von einem echten 413 mit "Requested 8987" vom Provider.
+      // Zusätzlich jetzt iterativ statt Einmal-Versuch: falls der gekürzte
+      // Text (inkl. "…[gekürzt]…"-Marker + Rest-Anteil) immer noch über dem
+      // Budget liegt, wird das Zeichen-Budget schrittweise verschärft, bis es
+      // wirklich passt (oder eine Untergrenze erreicht ist).
+      const CHARS_PER_TOKEN = 2.2;
+      let budgetForLast = Math.max(200, TPM_SAFE - toolsTax - MIN_COMPLETION - 200);
+      for (let attempt = 0; attempt < 6; attempt++) {
+        trialMsgs = trialMsgs.map((m, idx) => {
+          if (idx < trialMsgs.length - 1) return m;
+          const c = (m as any).content;
+          if (typeof c !== "string") return m;
+          const maxChars = Math.floor(budgetForLast * CHARS_PER_TOKEN);
+          if (c.length <= maxChars) return m;
+          return {
+            ...m,
+            content:
+              c.slice(0, Math.floor(maxChars * 0.7)) +
+              "\n…[gekürzt wegen Token-Budget]…\n" +
+              c.slice(-Math.floor(maxChars * 0.25)),
+          } as any;
+        });
+        t = estimateMessagesTokens(trialMsgs) + toolsTax;
+        if (t + MIN_COMPLETION <= TPM_SAFE || budgetForLast <= 200) break;
+        budgetForLast = Math.max(200, Math.floor(budgetForLast * 0.7));
+      }
     }
     maxCompletion = Math.min(
       maxCompletion,
