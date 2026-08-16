@@ -4023,7 +4023,19 @@ export async function runAgent(params: {
   const tools = wantsInvestorTools ? INVESTOR_AGENT_TOOLS : CORE_AGENT_TOOLS;
 
   try {
+    // Tools, nach denen typischerweise noch Schreib-Aufrufe folgen MÜSSEN
+    // (z.B. search_investoren_web → pro gefundenem Kandidaten ein
+    // save_investor). Ohne Zwang bricht v.a. bei mehreren nötigen Suchen ein
+    // schwächeres Modell gerne nach der ersten Suche mit einer nichtssagenden
+    // Antwort ab ("Wie kann ich Ihnen weiterhelfen?") statt die gefundenen
+    // Kandidaten zu speichern – und das wird fälschlich als "Erfolg"
+    // akzeptiert, weil ab Schritt 1 normalerweise tool_choice="auto" gilt.
+    const FORCED_FOLLOWUP_TOOLS = new Set(["search_investoren_web"]);
+
     for (let step = 0; step < MAX_AGENT_STEPS; step++) {
+      const lastStep = capabilitySteps[capabilitySteps.length - 1];
+      const mustContinueWithTool =
+        step > 0 && Boolean(lastStep?.success) && FORCED_FOLLOWUP_TOOLS.has(lastStep.tool);
       const completion = await createChatCompletion({
         max_completion_tokens: 2000,
         temperature: 0.2,
@@ -4032,10 +4044,12 @@ export async function runAgent(params: {
         // X" nur als Text anzukündigen und dann aufzuhören – beobachtetes
         // Muster: 0-Schritt-Läufe, die fälschlich als "success" geloggt
         // wurden, siehe STRUCTURED_OUTPUT_UNSAFE_MODELS-Kommentar in
-        // groq-client.ts). Ab Schritt 1 "auto", weil ein Abschluss ohne
+        // groq-client.ts). Ab Schritt 1 sonst "auto", weil ein Abschluss ohne
         // weiteren Tool-Aufruf dort meist legitim ist (Zusammenfassung nach
-        // bereits erledigten Schritten).
-        tool_choice: step === 0 ? "required" : "auto",
+        // bereits erledigten Schritten) – AUSSER der letzte Aufruf war nur
+        // eine Recherche ohne Folge-Schreibaktion (siehe mustContinueWithTool
+        // oben), dann bleibt es ebenfalls "required".
+        tool_choice: step === 0 || mustContinueWithTool ? "required" : "auto",
         messages,
       });
 
@@ -4054,34 +4068,41 @@ export async function runAgent(params: {
         const looksLikeLeakedToolCall =
           !!msg.content && /<tool_call>|<arg_key>|<arg_value>/i.test(msg.content);
 
-        // Sicherheitsnetz 2: Schritt 0 erzwingt per tool_choice="required" einen
-        // ECHTEN Tool-Aufruf (siehe oben) – genau damit ein Modell nicht bloß
-        // "ich mache jetzt X" als Text ankündigt und dann aufhört. In der Praxis
-        // halten sich schwächere/eigentlich gesperrte Fallback-Modelle (z.B.
-        // nvidia:meta/llama-3.1-8b-instruct, das als "letzte Reserve" trotz
-        // STRUCTURED_OUTPUT_UNSAFE_MODELS-Sperre genutzt wird, siehe groq-client.ts)
-        // NICHT zuverlässig an diese Vorgabe und liefern trotzdem einfachen,
-        // flüssigen Text ohne jeden XML-Marker – z.B. beobachtet: eine komplett
-        // freierfundene Liste von Briefvorlagen als "Antwort" auf "suche 10 neue
-        // KI-Investoren aus Deutschland und den USA". Ohne diese zweite Prüfung
-        // wurde das bisher NUR erkannt, wenn der Text wie ein roh ausgegebener
-        // Tool-Call aussah (looksLikeLeakedToolCall) – jede andere Form von
-        // "einfach drauflosgeschriebenem" Text in Schritt 0 wurde fälschlich als
-        // erledigt akzeptiert und dem Nutzer als fertiges Ergebnis gezeigt,
-        // obwohl kein einziges Tool lief und nichts gespeichert wurde.
-        const missingRequiredToolCall = step === 0 && !looksLikeLeakedToolCall;
+        // Sicherheitsnetz 2: Schritt 0 (und ggf. weitere erzwungene Schritte,
+        // siehe mustContinueWithTool oben) erzwingt per tool_choice="required"
+        // einen ECHTEN Tool-Aufruf (siehe oben) – genau damit ein Modell nicht
+        // bloß "ich mache jetzt X" als Text ankündigt und dann aufhört. In der
+        // Praxis halten sich schwächere/eigentlich gesperrte Fallback-Modelle
+        // (z.B. nvidia:meta/llama-3.1-8b-instruct, das als "letzte Reserve"
+        // trotz STRUCTURED_OUTPUT_UNSAFE_MODELS-Sperre genutzt wird, siehe
+        // groq-client.ts) NICHT zuverlässig an diese Vorgabe und liefern
+        // trotzdem einfachen, flüssigen Text ohne jeden XML-Marker – z.B.
+        // beobachtet: eine komplett freierfundene Liste von Briefvorlagen als
+        // "Antwort" auf "suche 10 neue KI-Investoren aus Deutschland und den
+        // USA", oder (nach dem Zwischenschritt-Fix oben) ein nichtssagendes
+        // "Wie kann ich Ihnen weiterhelfen?" NACH einer bereits erfolgten
+        // Suche, statt die gefundenen Kandidaten zu speichern. Ohne diese
+        // zweite Prüfung wurde das bisher NUR erkannt, wenn der Text wie ein
+        // roh ausgegebener Tool-Call aussah (looksLikeLeakedToolCall) – jede
+        // andere Form von "einfach drauflosgeschriebenem" Text in einem
+        // erzwungenen Schritt wurde fälschlich als erledigt akzeptiert und
+        // dem Nutzer als fertiges Ergebnis gezeigt, obwohl kein einziges Tool
+        // lief bzw. keine der gefundenen Kandidaten gespeichert wurden.
+        const missingRequiredToolCall = (step === 0 || mustContinueWithTool) && !looksLikeLeakedToolCall;
 
         // Das NIE ungefiltert als "fertige Antwort" an den Nutzer zeigen: wirkt
-        // wie ein Ergebnis, ist aber nichts passiert (kein Tool lief, nichts
-        // wurde gespeichert/recherchiert).
+        // wie ein Ergebnis, ist aber der eigentliche Auftrag nicht (vollständig)
+        // erledigt (kein Tool lief bzw. eine begonnene Recherche wurde nicht zu
+        // Ende gebracht, z.B. Kandidaten gefunden aber nicht gespeichert).
         if (looksLikeLeakedToolCall || missingRequiredToolCall) {
           console.warn(
             missingRequiredToolCall
-              ? `[agent] Modell (${completion.model || "unbekannt"}) hat trotz tool_choice="required" in Schritt 0 keinen Tool-Aufruf geliefert, sondern Text: ${msg.content?.slice(0, 200)}`
+              ? `[agent] Modell (${completion.model || "unbekannt"}) hat trotz tool_choice="required" (Schritt ${step}) keinen Tool-Aufruf geliefert, sondern Text: ${msg.content?.slice(0, 200)}`
               : `[agent] Modell hat vermutlich einen Tool-Aufruf als Text statt strukturiert geliefert (Modell: ${completion.model || "unbekannt"}). Roh-Inhalt (gekürzt): ${msg.content?.slice(0, 200)}`
           );
+          const bereitsErledigt = capabilitySteps.filter((s) => s.success).length;
           const reflection = missingRequiredToolCall
-            ? `Abgebrochen: Modell (${completion.model || "unbekannt"}) hat trotz erzwungenem Tool-Aufruf (Schritt 0) keinen Tool-Aufruf geliefert, sondern reinen Text. Kein Tool wurde ausgeführt.`
+            ? `Abgebrochen: Modell (${completion.model || "unbekannt"}) hat trotz erzwungenem Tool-Aufruf (Schritt ${step}) keinen Tool-Aufruf geliefert, sondern reinen Text. ${bereitsErledigt > 0 ? `${bereitsErledigt} vorherige(r) Schritt(e) erfolgreich, aber der Auftrag wurde nicht zu Ende gebracht.` : "Kein Tool wurde ausgeführt."}`
             : `Abgebrochen: Modell (${completion.model || "unbekannt"}) hat einen Tool-Aufruf nicht strukturiert geliefert, sondern als Text ausgegeben. Kein Tool wurde ausgeführt.`;
           await completeAgentRun(runId, {
             status: "error",
@@ -4091,7 +4112,9 @@ export async function runAgent(params: {
           });
           return {
             reply:
-              "Die Anfrage ist technisch fehlgeschlagen (das Modell hat keinen gültigen Tool-Aufruf geliefert, es wurde nichts gespeichert/recherchiert). Das kommt gelegentlich bei bestimmten Fallback-Modellen vor – bitte versuch es direkt nochmal, in der Regel klappt es beim nächsten Versuch mit einem anderen Modell.",
+              bereitsErledigt > 0
+                ? "Die Anfrage ist nur teilweise gelaufen: einige Schritte waren erfolgreich, aber der Auftrag wurde nicht zu Ende gebracht (das Modell hat danach keinen gültigen Tool-Aufruf mehr geliefert). Das kommt gelegentlich bei bestimmten Fallback-Modellen vor – bitte versuch es direkt nochmal, in der Regel klappt es beim nächsten Versuch mit einem anderen Modell."
+                : "Die Anfrage ist technisch fehlgeschlagen (das Modell hat keinen gültigen Tool-Aufruf geliefert, es wurde nichts gespeichert/recherchiert). Das kommt gelegentlich bei bestimmten Fallback-Modellen vor – bitte versuch es direkt nochmal, in der Regel klappt es beim nächsten Versuch mit einem anderen Modell.",
             steps,
             createdBriefIds,
             runId,
