@@ -1137,6 +1137,9 @@ export interface Investor {
   score?: number;
   kriterienErgebnis?: InvestorKriteriumErgebnis[];
   notizen?: string;
+  /** Zeitpunkt der letzten "Stammdaten updaten"-Anreicherung (enrichInvestorStammdaten in ai.ts).
+   *  Undefined = noch nie angereichert (z.B. frisch aus der Recherche, nur Basis-Treffer). */
+  stammdatenAktualisiertAm?: string;
   createdAt: string;
   updatedAt: string;
 }

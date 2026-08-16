@@ -43,6 +43,14 @@ export default function InvestorenPage() {
   const [neu, setNeu] = useState(LEER_NEU);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [freigebenLaufend, setFreigebenLaufend] = useState<string | null>(null);
+  const [stammdatenLauf, setStammdatenLauf] = useState<{
+    laufend: boolean;
+    aktuellerName?: string;
+    erledigt: number;
+    gesamt: number;
+    fehler: string[];
+  } | null>(null);
 
   const refresh = () => {
     setLoading(true);
@@ -60,6 +68,11 @@ export default function InvestorenPage() {
     return counts;
   }, [investoren]);
 
+  const offenFuerStammdaten = useMemo(
+    () => investoren.filter((inv) => inv.status === "freigegeben" && !inv.stammdatenAktualisiertAm).length,
+    [investoren]
+  );
+
   const gefiltert = useMemo(() => {
     return investoren.filter((inv) => {
       if (statusFilter && inv.status !== statusFilter) return false;
@@ -73,6 +86,52 @@ export default function InvestorenPage() {
       return true;
     });
   }, [investoren, statusFilter, sektorFilter, query]);
+
+  const freigeben = async (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setFreigebenLaufend(id);
+    try {
+      const res = await fetch(`/api/investoren/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "freigegeben" }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setInvestoren((prev) => prev.map((inv) => (inv.id === id ? json.investor || inv : inv)));
+      }
+    } finally {
+      setFreigebenLaufend(null);
+    }
+  };
+
+  // Verarbeitet die freigegebenen, noch nicht angereicherten Investoren EINZELN
+  // nacheinander (ein Request pro Investor, siehe /api/investoren/[id]/stammdaten) –
+  // damit die Liste live nach jedem Investor aktualisiert wird, statt auf einen
+  // einzigen langen Sammel-Request zu warten.
+  const stammdatenUpdaten = async () => {
+    const targets = investoren.filter((inv) => inv.status === "freigegeben" && !inv.stammdatenAktualisiertAm);
+    if (targets.length === 0) return;
+    setStammdatenLauf({ laufend: true, erledigt: 0, gesamt: targets.length, fehler: [] });
+    const fehler: string[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      const inv = targets[i];
+      setStammdatenLauf({ laufend: true, aktuellerName: inv.firma, erledigt: i, gesamt: targets.length, fehler });
+      try {
+        const res = await fetch(`/api/investoren/${inv.id}/stammdaten`, { method: "POST" });
+        const json = await res.json();
+        if (res.ok && json.investor) {
+          setInvestoren((prev) => prev.map((x) => (x.id === inv.id ? json.investor : x)));
+        } else {
+          fehler.push(`${inv.firma}: ${json.error || "unbekannter Fehler"}`);
+        }
+      } catch {
+        fehler.push(`${inv.firma}: Netzwerkfehler`);
+      }
+    }
+    setStammdatenLauf({ laufend: false, erledigt: targets.length, gesamt: targets.length, fehler });
+  };
 
   const anlegen = async () => {
     if (!neu.firma.trim() || !neu.land.trim()) {
@@ -198,9 +257,63 @@ export default function InvestorenPage() {
                 </div>
               )}
               {inv.kurzprofil && <p className="mb-2 line-clamp-2 text-xs text-muted-foreground">{inv.kurzprofil}</p>}
-              <p className="text-[10px] text-muted-foreground">Angelegt: {formatDate(inv.createdAt)}</p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] text-muted-foreground">
+                  Angelegt: {formatDate(inv.createdAt)}
+                  {inv.stammdatenAktualisiertAm ? " · ✓ Stammdaten aktuell" : ""}
+                </p>
+                {inv.status === "vorschlag" && (
+                  <button
+                    onClick={(e) => freigeben(e, inv.id)}
+                    disabled={freigebenLaufend === inv.id}
+                    className="shrink-0 rounded-md bg-emerald-500/15 px-2 py-1 text-[11px] font-medium text-emerald-600 hover:bg-emerald-500/25 disabled:opacity-50 dark:text-emerald-400"
+                  >
+                    {freigebenLaufend === inv.id ? "…" : "✓ Freigeben"}
+                  </button>
+                )}
+              </div>
             </Link>
           ))}
+        </div>
+      )}
+
+      {investoren.length > 0 && (
+        <div className="mt-5 rounded-lg border border-border bg-card p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">Stammdaten updaten</p>
+              <p className="text-xs text-muted-foreground">
+                {offenFuerStammdaten > 0
+                  ? `${offenFuerStammdaten} freigegebene(r) Investor(en) ohne vollständige Stammdaten. Sucht pro Investor einzeln nach Kontakt/Ansprechpartner und bewertet die Aufnahme-Kriterien.`
+                  : "Alle freigegebenen Investoren haben aktuelle Stammdaten. Auch per Chat möglich: „Stammdaten für die freigegebenen Investoren anlegen“."}
+              </p>
+            </div>
+            <button
+              onClick={stammdatenUpdaten}
+              disabled={offenFuerStammdaten === 0 || Boolean(stammdatenLauf?.laufend)}
+              className="shrink-0 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+            >
+              {stammdatenLauf?.laufend
+                ? `Aktualisiere … (${stammdatenLauf.erledigt}/${stammdatenLauf.gesamt})`
+                : `Stammdaten updaten${offenFuerStammdaten > 0 ? ` (${offenFuerStammdaten})` : ""}`}
+            </button>
+          </div>
+          {stammdatenLauf?.laufend && stammdatenLauf.aktuellerName && (
+            <p className="mt-2 text-xs text-muted-foreground">Gerade dran: {stammdatenLauf.aktuellerName} …</p>
+          )}
+          {!stammdatenLauf?.laufend && stammdatenLauf && stammdatenLauf.gesamt > 0 && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Fertig: {stammdatenLauf.erledigt}/{stammdatenLauf.gesamt} aktualisiert
+              {stammdatenLauf.fehler.length > 0 ? `, ${stammdatenLauf.fehler.length} Fehler` : ""}.
+            </p>
+          )}
+          {stammdatenLauf && stammdatenLauf.fehler.length > 0 && (
+            <ul className="mt-1 list-inside list-disc text-xs text-[var(--destructive)]">
+              {stammdatenLauf.fehler.map((f, i) => (
+                <li key={i}>{f}</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

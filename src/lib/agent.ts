@@ -60,6 +60,7 @@ import { deleteStoredFile, storeFile } from "./storage";
 import { computeNextRun, validateRecurrence } from "./schedule";
 import { webSearch } from "./websearch";
 import {
+  enrichInvestorStammdaten,
   evaluateInvestorKriterien,
   generateInvestorAnschreiben,
   generateInvestorStrategieBericht,
@@ -1264,6 +1265,20 @@ const INVESTOR_AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
           investor_ids: { type: "array", items: { type: "string" } },
         },
         required: ["titel", "investor_ids"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_investoren_stammdaten",
+      description:
+        "Reichert Stammdaten (Kontakt, Ansprechpartner, Kriterien-Score, …) für freigegebene Investoren einzeln per Websuche an. Ohne investor_ids: alle freigegebenen Investoren, die noch nicht angereichert wurden.",
+      parameters: {
+        type: "object",
+        properties: {
+          investor_ids: { type: "array", items: { type: "string" } },
+        },
       },
     },
   },
@@ -3676,6 +3691,55 @@ async function executeTool(
       return { ok: true, ablage_id: ablageDoc.id, dateiName, anzahl: gewaehlt.length };
     }
 
+    case "update_investoren_stammdaten": {
+      // Bewusst EIN Tool-Aufruf, der INTERN sequenziell mehrere schlanke,
+      // werkzeuglose enrichInvestorStammdaten()-Aufrufe macht (kein weiterer
+      // Agent-Loop-Umlauf pro Investor, kein erneutes ~19k-Token-Tool-Schema
+      // je Kandidat) – siehe Kommentar bei enrichInvestorStammdaten (ai.ts).
+      const explizit = Array.isArray(args.investor_ids) ? (args.investor_ids as string[]) : [];
+      const alle = await investorenDb.list();
+      const targets = explizit.length
+        ? alle.filter((i) => explizit.includes(i.id))
+        : alle.filter((i) => i.status === "freigegeben" && !i.stammdatenAktualisiertAm);
+      if (targets.length === 0) {
+        return {
+          ok: true,
+          anzahl: 0,
+          hinweis: explizit.length
+            ? "Keiner der angegebenen investor_ids gefunden."
+            : "Keine freigegebenen Investoren ohne aktualisierte Stammdaten gefunden.",
+        };
+      }
+      const ergebnisse: { firma: string; ok: boolean; fehler?: string }[] = [];
+      for (const inv of targets) {
+        try {
+          const { patch, kriterienErgebnis, score, quellen } = await enrichInvestorStammdaten(inv);
+          const now = new Date().toISOString();
+          const updated = await investorenDb.update(inv.id, {
+            ...patch,
+            kriterienErgebnis,
+            score,
+            stammdatenAktualisiertAm: now,
+            notizen: quellen.length
+              ? [inv.notizen, `Stammdaten aktualisiert (${now.slice(0, 10)}) – Quellen: ${quellen.join(", ")}`]
+                  .filter(Boolean)
+                  .join("\n")
+              : inv.notizen,
+          });
+          ergebnisse.push({ firma: inv.firma, ok: Boolean(updated) });
+        } catch (err: any) {
+          ergebnisse.push({ firma: inv.firma, ok: false, fehler: err?.message || "unbekannter Fehler" });
+        }
+      }
+      const anzahlOk = ergebnisse.filter((e) => e.ok).length;
+      await logEvent(
+        "aenderung",
+        `Stammdaten für ${anzahlOk}/${targets.length} Investor(en) aktualisiert.`,
+        { art: "Investor" }
+      );
+      return { ok: true, anzahl: anzahlOk, gesamt: targets.length, ergebnisse };
+    }
+
     case "create_kalender_ereignis": {
       const titel = String(args.titel || "");
       if (!titel) return { error: "titel erforderlich" };
@@ -3824,13 +3888,9 @@ find_mieter / get_mietrueckstaende / create_brief – Mahnungen nur bei positive
 ## Investoren
 - Nennt der Nutzer bereits konkrete Angaben zu EINEM Investor (Firma + mind. ein weiteres Merkmal wie Typ/Land/Kontakt) und bittet darum, diese zu erfassen/anzulegen/zu speichern/nachzutragen (z.B. „Stammdaten nachtragen: MAGAN Immobilien (Private Equity, Österreich)“, „erfasse den Investor X“): NIEMALS behaupten, du könntest keine Informationen zu Unternehmen/Personen abrufen oder erst manuelle Schritte vorschlagen – das sind vom Nutzer bereits gelieferte Daten, keine Recherche-Anfrage. Stattdessen SOFORT save_investor aufrufen (ohne investor_id, status="vorschlag") mit genau den genannten Feldern (firma, land, sektoren/kurzprofil aus dem Typ ableiten, …) und danach kurz bestätigen, was gespeichert wurde. Keine Websuche und keine Rückfrage nötig, außer die Firma (Pflichtfeld) fehlt ganz.
 - Bei vagen Aufträgen ("suche neue Investoren") sinnvolle Standardannahmen treffen (breite Sektoren/Top-Wissenshubs) und SOFORT recherchieren statt erst nachzufragen – der Nutzer kann danach verfeinern.
-- Recherche: mehrere gezielte search_investoren_web-Aufrufe (pro Sektor/Region, mind. 3-4 unterschiedliche Suchen für "10 Investoren" statt nur einer einzigen breiten Anfrage – eine einzelne Suche liefert erfahrungsgemäß zu wenige verwertbare Treffer) → Kandidaten extrahieren → evaluate_investor_kriterien je Kandidat → save_investor (ohne investor_id) mit status="vorschlag" + quelle=URL (nie ungeprüft "freigegeben"). Liefert die Recherche weniger Kandidaten als gewünscht, das offen sagen (nicht so tun, als sei die Zielzahl erreicht) und ggf. weitere Suchen anbieten.
-- WICHTIG – nach der Recherche, BEVOR das Ergebnis final abgelegt wird: hat der Nutzer nicht schon in seiner Nachricht klargemacht, was mit den gefundenen Kandidaten passieren soll, explizit fragen (kurze Auswahl, keine Fließtext-Rückfrage):
-  „Ich habe [N] Investoren gefunden und mit vollständigen Stammdaten als Vorschlag gespeichert. Was soll ich damit tun?
-  a) Direkt freigeben (Status → freigegeben, sofort aktiv im System)
-  b) Liste zur Durchsicht in der Ablage hinterlegen (du prüfst und gibst dann frei)"
-  Danach abwarten und erst auf Antwort mit approve_investoren (a) bzw. create_investoren_ablage_liste + create_kalender_ereignis (b) fortfahren. Sagt der Nutzer bereits vorher klar "speichere/lege direkt an" → a) ohne Rückfrage; sagt er "Liste/zur Freigabe/zur Durchsicht" → b) ohne Rückfrage.
-- Die Investoren-Stammdaten sind in JEDEM Fall (a oder b) bereits vollständig über save_investor gespeichert – der Unterschied ist nur Status + ob zusätzlich eine Ablage-Liste/Kalendereintrag entsteht.
+- Recherche/Suche: mehrere gezielte search_investoren_web-Aufrufe (pro Sektor/Region, mind. 3-4 unterschiedliche Suchen für "10 Investoren" statt nur einer einzigen breiten Anfrage – eine einzelne Suche liefert erfahrungsgemäß zu wenige verwertbare Treffer) → für JEDEN gefundenen Kandidaten SOFORT einzeln save_investor (ohne investor_id) mit status="vorschlag" + quelle=URL (nie ungeprüft "freigegeben"). WICHTIG: hier bewusst KEIN evaluate_investor_kriterien und KEINE Passungs-Bewertung – die Kandidaten sollen roh und zügig in der Investoren-Liste erscheinen, damit der Nutzer sie dort nach und nach durchgehen und einzeln freigeben kann. Die Bewertung/Vertiefung passiert erst später, siehe „Stammdaten updaten“ unten. Liefert die Recherche weniger Kandidaten als gewünscht, das offen sagen (nicht so tun, als sei die Zielzahl erreicht) und ggf. weitere Suchen anbieten.
+- Nach der Suche NICHT nachfragen, was mit den Kandidaten passieren soll – sie sind bereits als Vorschlag gespeichert und sofort in der Investoren-Liste sichtbar. Kurz bestätigen wie viele gefunden/gespeichert wurden, fertig.
+- Stammdaten updaten (Vertiefung nach Freigabe): Wenn der Nutzer im Chat sinngemäß bittet, für freigegebene/bereits recherchierte Investoren die (vollständigen) Stammdaten anzulegen/zu vervollständigen/zu aktualisieren (z.B. „lege die Stammdaten der freigegebenen Investoren an“, „Stammdaten updaten“ im Investoren-Kontext – NICHT zu verwechseln mit dem Mieter-Fall oben) → update_investoren_stammdaten aufrufen. Ohne investor_ids werden automatisch alle freigegebenen Investoren ohne bisheriges Update verarbeitet; mit investor_ids gezielt einzelne. Das Tool sucht pro Investor selbstständig nach und ergänzt Kontakt/Ansprechpartner/Score – NICHT versuchen, das stattdessen manuell über mehrere search_investoren_web + save_investor-Aufrufe nachzubauen.
 - Freigabe: approve_investoren/reject_investor. Anschreiben: generate_investor_anschreiben (Vorstellung/Philosophie/App, offen für Zusammenarbeit/Kauf/Job). Strategie: generate_investor_strategie_bericht (≥20 Punkte, wirtschaftliche_ziele nutzen falls genannt).
 - Cronjobs: create_agent_schedule (einzeln) / create_agent_schedules_batch (bis 10), z.B. "alle 2 Tage" = intervall_minuten=2880.
 - delete_investor: erst ohne user_confirmed fragen, dann bestätigt ausführen.
@@ -3953,7 +4013,14 @@ export async function runAgent(params: {
     mentionsInvestor(params.message) ||
     Boolean(params.path && params.path.startsWith("/investoren")) ||
     (params.history || []).slice(-4).some((h) => mentionsInvestor(h.content));
-  const tools = wantsInvestorTools ? [...CORE_AGENT_TOOLS, ...INVESTOR_AGENT_TOOLS] : CORE_AGENT_TOOLS;
+  // WICHTIG: bei Investoren-Anfragen NUR die 11 Investoren-Tools senden, nicht
+  // zusätzlich alle 47 CORE_AGENT_TOOLS obendrauf. Investoren-Workflows
+  // brauchen keines der Mieter-/Gebäude-/Buchhaltungs-/Schriftverkehr-Tools –
+  // das war zuvor der mit Abstand größte Anteil am ~19k-Token-Payload (siehe
+  // Mission-Control-Logs), der praktisch jede Investoren-Anfrage über Groqs
+  // reales 8000-TPM-Limit UND das eigene Sicherheitsbudget getrieben und so
+  // regelmäßig bis zum unzuverlässigsten Fallback-Modell durchgereicht hat.
+  const tools = wantsInvestorTools ? INVESTOR_AGENT_TOOLS : CORE_AGENT_TOOLS;
 
   try {
     for (let step = 0; step < MAX_AGENT_STEPS; step++) {

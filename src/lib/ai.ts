@@ -17,7 +17,8 @@ import {
 } from "./types";
 import { mietRueckstand } from "./mietkonto";
 import { createChatCompletion, VISION_MODEL } from "./groq-client";
-import { INVESTOR_KRITERIEN } from "./investoren";
+import { INVESTOR_KRITERIEN, empfehlungAusScore } from "./investoren";
+import { webSearch } from "./websearch";
 
 /**
  * Erkennt Small-Talk / triviale Nachrichten ("hallo", "danke", "ok" …), bei
@@ -1247,6 +1248,123 @@ export async function evaluateInvestorKriterien(
     }
   }
   return ergebnisse;
+}
+
+/**
+ * "Stammdaten updaten" für EINEN bereits angelegten (i.d.R. freigegebenen)
+ * Investor: führt eine gezielte Websuche nach Kontakt-/Ansprechpartner-Infos
+ * aus und lässt ein Modell daraus in EINEM strukturierten, werkzeuglosen
+ * Completion-Aufruf so viele Stammdaten-Felder wie möglich extrahieren sowie
+ * die 10 Aufnahme-Kriterien bewerten.
+ *
+ * Bewusst NICHT über den Agent-Tool-Loop (runAgent) gelöst, sondern als
+ * eigenständige Funktion: so kostet die Anreicherung PRO Investor nur einen
+ * schlanken Completion-Aufruf ohne das volle ~19k-Token-Tool-Schema im
+ * Kontext, ist unabhängig pro Investor retry-fähig, und lässt sich sowohl aus
+ * dem "Stammdaten updaten"-Button (API-Route, ein Investor pro Request, siehe
+ * /api/investoren/[id]/stammdaten) als auch aus dem Chat-Tool
+ * update_investoren_stammdaten (agent.ts) heraus mit identischem Verhalten
+ * aufrufen.
+ */
+export async function enrichInvestorStammdaten(
+  investor: Pick<Investor, "firma" | "land" | "sektoren" | "hub" | "webseite" | "kurzprofil" | "tickeGroesse">
+): Promise<{
+  patch: Partial<Investor>;
+  kriterienErgebnis: InvestorKriteriumErgebnis[];
+  score: number;
+  quellen: string[];
+}> {
+  let rechercheKontext = "";
+  const quellen: string[] = [];
+  try {
+    const treffer = await webSearch(
+      `${investor.firma} ${investor.land} Investor Kontakt Ansprechpartner E-Mail LinkedIn Ticketgröße`,
+      { maxResults: 5 }
+    );
+    for (const t of treffer) {
+      rechercheKontext += `- ${t.titel} (${t.url}): ${t.snippet}\n`;
+      quellen.push(t.url);
+    }
+  } catch (err) {
+    // Websuche kann fehlschlagen (z.B. TAVILY_API_KEY fehlt, Rate-Limit) – dann
+    // arbeitet das Modell nur mit den bereits vorhandenen Stammdaten weiter,
+    // statt den ganzen Lauf für diesen Investor abzubrechen.
+    rechercheKontext = `(Websuche fehlgeschlagen: ${(err as Error)?.message || "unbekannt"})`;
+  }
+
+  const kriterienListe = INVESTOR_KRITERIEN.map(
+    (k) => `- ${k.id} (${k.hart ? "HARTES Ausschlusskriterium" : "weiches Kriterium"}): ${k.label} – ${k.beschreibung}`
+  ).join("\n");
+
+  const completion = await createChatCompletion({
+    max_completion_tokens: 1600,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content:
+          "Du bist ein sorgfältiger Analyst für Investoren-Recherche in einer deutschen Immobilien-/PropTech-App. " +
+          "Ergänze aus dem Recherche-Kontext (Websuche-Ergebnisse) so viele Stammdaten-Felder wie möglich für den " +
+          "übergebenen Investor UND bewerte ihn anhand exakt dieser 10 Kriterien:\n" +
+          kriterienListe +
+          "\n\nErfinde KEINE Fakten, die nicht im Kontext stehen – fehlt ein Feld im Kontext, lasse es im JSON einfach " +
+          "weg (nicht raten, nicht null/leer setzen). Sei bei den Kriterien konservativ: erfuellt=true nur, wenn der " +
+          'Kontext das wirklich stützt. Antworte AUSSCHLIESSLICH mit einem JSON-Objekt {"ansprechpartner_name":"...", ' +
+          '"ansprechpartner_rolle":"...", "email":"...", "telefon":"...", "webseite":"...", "linkedin_url":"...", ' +
+          '"hub":"...", "kurzprofil":"max. 3 Sätze", "ticke_groesse":"...", "sprache":"Deutsch|Englisch|...", ' +
+          '"kriterien_ergebnis":[{"kriteriumId":"...", "erfuellt": true|false, "begruendung":"max. 1 Satz"}] mit GENAU 10 Einträgen}.',
+      },
+      {
+        role: "user",
+        content: `Bekannte Stammdaten:\n${JSON.stringify(investor, null, 2)}\n\nRecherche-Kontext (Websuche-Ergebnisse):\n${rechercheKontext.slice(
+          0,
+          6000
+        )}`,
+      },
+    ],
+  });
+
+  const parsed = extractJson(completion.choices[0]?.message?.content || "") as Record<string, unknown>;
+  const patch: Partial<Investor> = {};
+  const feldMap: Record<string, keyof Investor> = {
+    ansprechpartner_name: "ansprechpartnerName",
+    ansprechpartner_rolle: "ansprechpartnerRolle",
+    email: "email",
+    telefon: "telefon",
+    webseite: "webseite",
+    linkedin_url: "linkedinUrl",
+    hub: "hub",
+    kurzprofil: "kurzprofil",
+    ticke_groesse: "tickeGroesse",
+    sprache: "sprache",
+  };
+  for (const [key, feld] of Object.entries(feldMap)) {
+    const val = parsed[key];
+    if (typeof val === "string" && val.trim()) {
+      (patch as Record<string, unknown>)[feld] = val.trim();
+    }
+  }
+
+  const gueltigeIds = new Set(INVESTOR_KRITERIEN.map((k) => k.id));
+  const roh = Array.isArray(parsed.kriterien_ergebnis)
+    ? (parsed.kriterien_ergebnis as { kriteriumId?: string; erfuellt?: boolean; begruendung?: string }[])
+    : [];
+  const kriterienErgebnis: InvestorKriteriumErgebnis[] = roh
+    .filter((e) => e.kriteriumId && gueltigeIds.has(e.kriteriumId))
+    .map((e) => ({
+      kriteriumId: e.kriteriumId as string,
+      erfuellt: Boolean(e.erfuellt),
+      begruendung: e.begruendung,
+    }));
+  for (const k of INVESTOR_KRITERIEN) {
+    if (!kriterienErgebnis.some((e) => e.kriteriumId === k.id)) {
+      kriterienErgebnis.push({ kriteriumId: k.id, erfuellt: false, begruendung: "Vom Modell nicht bewertet" });
+    }
+  }
+  const { score } = empfehlungAusScore(kriterienErgebnis);
+
+  return { patch, kriterienErgebnis, score, quellen };
 }
 
 /**

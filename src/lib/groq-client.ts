@@ -799,17 +799,40 @@ function estimateMessagesTokens(messages: ChatParams["messages"]): number {
 }
 
 /**
+ * Pro-Provider "sicheres" Token-Budget statt eines einzigen globalen Werts.
+ * Hintergrund: Der bisherige EINE Wert (5000, für alle Provider gleich) hatte
+ * zwei ungewollte Nebenwirkungen, sobald System+Tools (bei aktivem
+ * Investoren-Toolset ~19k Tokens, siehe Mission-Control-Logs) den Wert
+ * überstiegen: (1) max_completion wurde praktisch IMMER auf das Minimum
+ * (256 Tokens) gedrückt — das reicht für Werkzeug-Argumente + Begründung oft
+ * knapp nicht und dürfte mit ein Grund für abgeschnittene/unpräzise
+ * Tool-Aufrufe gewesen sein; (2) Nachrichten wurden auch bei Providern hart
+ * gekürzt, die den echten Umfang locker vertragen hätten (Cloudflare wirbt
+ * für glm-4.7-flash/gemma-4-26b/kimi-k2.6 explizit mit 128-256k Kontext,
+ * NVIDIA NIM-Modelle i.d.R. ebenfalls 128k). Nur Groqs eigene "on_demand"
+ * Free-Tier-Modelle haben das beobachtete harte 8000-TPM-Limit — dafür bleibt
+ * der bisherige konservative Wert bestehen.
+ */
+function safeTpmForModel(model: string): number {
+  if (model.startsWith("cloudflare:")) return 40000;
+  if (model.startsWith("nvidia:")) {
+    // meta/llama-3.3-70b-instruct scheitert in der Praxis eher an Latenz/Timeout
+    // als an Größe (siehe Logs: "aborted due to timeout") – ein kleineres Budget
+    // als bei Cloudflare hält die Anfrage schneller, statt das Timeout-Risiko
+    // durch noch mehr Kontext zu erhöhen.
+    return 24000;
+  }
+  if (model.startsWith("cerebras:")) return 16000; // aktuell meist per 402 blockiert; großzügig für den Fall reaktivierten Guthabens
+  return 5000; // groq/* inkl. compound, compound-mini: Sicherheitsabstand zum beobachteten 8000-TPM-Limit
+}
+
+/**
  * Für ALLE Modelle: Nachrichten so kürzen und max_completion_tokens so
- * setzen, dass Input+Output ein sicheres Budget nicht überschreiten.
- * Nutzervorgabe: nie mehr als 5000 Tokens pro Anfrage senden — das hält
- * Free-Tier-TPM-Limits ein (mehrere Modelle in der Fallback-Kette liegen bei
- * 8000 TPM) und schont zugleich das Tages-Kontingent (TPD), weil weniger
- * Tokens pro Retry verbraucht werden. Vorher galt das nur für qwen/qwen3.6-27b
- * — laut Logs schlugen aber auch openai/gpt-oss-20b und qwen mit exakt
- * demselben "Request too large"-Fehler fehl, deshalb jetzt für jedes Modell.
+ * setzen, dass Input+Output ein sicheres, PRO PROVIDER unterschiedliches
+ * Budget nicht überschreiten (siehe safeTpmForModel oben).
  */
 function applyTokenBudget(model: string, params: ChatParams): ChatParams {
-  const TPM_SAFE = 5000;
+  const TPM_SAFE = safeTpmForModel(model);
   const MIN_COMPLETION = 256;
   const messages = [...(params.messages || [])];
 
