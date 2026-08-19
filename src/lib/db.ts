@@ -29,6 +29,7 @@ import {
   DashboardVerlauf,
   Eigentuemer,
   Gebaeude,
+  Handwerker,
   Investor,
   InvestorAnschreiben,
   InvestorStrategieBericht,
@@ -37,6 +38,8 @@ import {
   Liegenschaft,
   Mieter,
   Mietvertrag,
+  Ticket,
+  TicketNachricht,
   ModelCatalogEntry,
   ObservabilityOverview,
   PmVertrag,
@@ -82,6 +85,10 @@ interface DbShape {
   investoren: Investor[];
   investorAnschreiben: InvestorAnschreiben[];
   investorStrategieBerichte: InvestorStrategieBericht[];
+  // ————— Ticketsystem (Instandhaltung/Aufträge) —————
+  handwerker: Handwerker[];
+  tickets: Ticket[];
+  ticketNachrichten: TicketNachricht[];
   counters: Record<string, number>;
   // ————— Observability / LLM Mission Control —————
   rateLimitEvents: RateLimitEvent[];
@@ -147,6 +154,9 @@ aiUsageLog: db.aiUsageLog || [],
     investoren: db.investoren || [],
     investorAnschreiben: db.investorAnschreiben || [],
     investorStrategieBerichte: db.investorStrategieBerichte || [],
+    handwerker: db.handwerker || [],
+    tickets: db.tickets || [],
+    ticketNachrichten: db.ticketNachrichten || [],
     counters: db.counters || {},
     rateLimitEvents: db.rateLimitEvents || [],
     modelHealth: db.modelHealth || {},
@@ -364,6 +374,11 @@ export const kalenderEreignisseDb = makeCrud<KalenderEreignis>("kalenderEreignis
 export const teamNachrichtenDb = makeCrud<TeamNachricht>("teamNachrichten", "TN");
 export const investorenDb = makeCrud<Investor>("investoren", "INV");
 export const investorAnschreibenDb = makeCrud<InvestorAnschreiben>("investorAnschreiben", "INV-AS");
+// -------- Ticketsystem: Handwerker & Tickets --------
+export const handwerkerDb = makeCrud<Handwerker>("handwerker", "HW");
+export const ticketsDb = makeCrud<Ticket>("tickets", "TI");
+export const ticketNachrichtenDb = makeCrud<TicketNachricht>("ticketNachrichten", "TIM");
+
 export const investorStrategieBerichteDb = makeCrud<InvestorStrategieBericht>(
   "investorStrategieBerichte",
   "INV-ST"

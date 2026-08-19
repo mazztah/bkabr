@@ -28,6 +28,7 @@ import {
   Handshake,
   Wrench,
   ClipboardList,
+  Ticket,
   PieChart,
   TrendingUp,
   CalendarClock,
@@ -104,6 +105,7 @@ const GROUPS: NavGroup[] = [
     items: [
       { href: "/instandhaltung", label: "Instandhaltung", icon: Wrench },
       { href: "/auftraege", label: "Aufträge", icon: ClipboardList },
+      { href: "/ticketsystem", label: "Ticketsystem", icon: Ticket },
       { href: "/assetmanagement", label: "Assetmanagement", icon: PieChart },
       { href: "/budgetierung", label: "Budgetierung", icon: TrendingUp },
     ],

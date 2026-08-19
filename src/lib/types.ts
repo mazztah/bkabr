@@ -421,6 +421,13 @@ export type AnhangTyp =
   | "Eigentuemerbeschluss"
   | "Nachtrag"
   | "Uebergabeprotokoll"
+  | "Gewerbeschein"
+  | "Versicherungsnachweis"
+  | "Zertifikat"
+  | "Lebenslauf"
+  | "Angebot"
+  | "Rechnung"
+  | "Foto"
   | "Sonstiges";
 
 export interface Anhang {
@@ -1716,4 +1723,183 @@ export interface ObservabilityOverview {
     lastAgentRun?: string;
     funMode: boolean;
   };
+}
+
+// ============================================================================
+// -------- Ticketsystem: Handwerker (Stammdaten & Karteikarten) --------
+// ============================================================================
+
+export type HandwerkerStatus = "aktiv" | "inaktiv" | "gesperrt";
+
+export type HandwerkerGewerk =
+  | "Elektro"
+  | "Sanitär/Heizung"
+  | "Maler/Lackierer"
+  | "Schreiner/Tischler"
+  | "Dach/Fassade"
+  | "Garten-/Außenanlagen"
+  | "Reinigung"
+  | "Schlüsseldienst"
+  | "Aufzug"
+  | "Allgemein"
+  | "Sonstiges";
+
+export const HANDWERKER_GEWERKE: HandwerkerGewerk[] = [
+  "Elektro",
+  "Sanitär/Heizung",
+  "Maler/Lackierer",
+  "Schreiner/Tischler",
+  "Dach/Fassade",
+  "Garten-/Außenanlagen",
+  "Reinigung",
+  "Schlüsseldienst",
+  "Aufzug",
+  "Allgemein",
+  "Sonstiges",
+];
+
+/**
+ * Ein Trackrecord-Eintrag ist die Protokollzeile eines abgeschlossenen oder
+ * offenen Auftrags eines Handwerkers – entweder "intern" automatisch aus
+ * einem Ticket dieses Systems erzeugt/synchronisiert, oder "extern" manuell
+ * erfasst (z.B. Historie aus der Zeit vor Einführung des Ticketsystems, oder
+ * Aufträge außerhalb der Plattform).
+ */
+export interface HandwerkerTrackrecordEintrag {
+  id: string;
+  quelle: "intern" | "extern";
+  ticketId?: string;
+  ticketNummer?: string;
+  titel: string;
+  beschreibung?: string;
+  status: "offen" | "erledigt" | "abgelehnt";
+  bewertung?: number; // 1-5 Sterne, optional
+  datum: string;
+  createdAt: string;
+}
+
+export interface Handwerker {
+  id: string;
+  nummer?: string;
+  name: string;
+  firma?: string;
+  gewerk: HandwerkerGewerk;
+  email?: string;
+  telefon?: string;
+  adresse?: string;
+  stundensatz?: number;
+  status: HandwerkerStatus;
+  /** Freitext-Karteikarte: Werdegang, Qualifikationen, Erfahrung, Referenzen */
+  lebenslauf?: string;
+  qualifikationen?: string[];
+  notizen?: string;
+  /** Karteikarte "Dokumente": Gewerbeschein, Versicherungsnachweis, Zertifikate, Meisterbrief etc. */
+  dokumente?: Anhang[];
+  /** Karteikarte "Trackrecord": Protokoll offener/erledigter Aufträge (intern + extern) */
+  trackrecord?: HandwerkerTrackrecordEintrag[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ============================================================================
+// -------- Ticketsystem: Tickets (Auftragseingang, Freigaben, Zuweisung) --------
+// ============================================================================
+
+export type TicketStatus =
+  | "Eingang"
+  | "Zur Freigabe"
+  | "Freigegeben"
+  | "Zugewiesen"
+  | "In Bearbeitung"
+  | "Erledigt"
+  | "Abgelehnt"
+  | "Storniert";
+
+export const TICKET_STATUS_REIHENFOLGE: TicketStatus[] = [
+  "Eingang",
+  "Zur Freigabe",
+  "Freigegeben",
+  "Zugewiesen",
+  "In Bearbeitung",
+  "Erledigt",
+  "Abgelehnt",
+  "Storniert",
+];
+
+export type TicketPrioritaet = "niedrig" | "mittel" | "hoch" | "notfall";
+
+export const TICKET_PRIORITAETEN: TicketPrioritaet[] = ["niedrig", "mittel", "hoch", "notfall"];
+
+export type TicketQuelle =
+  | "Mieter-Meldung"
+  | "Intern"
+  | "Manuell weitergeleitet"
+  | "Instandhaltung"
+  | "Aufträge";
+
+export const TICKET_QUELLEN: TicketQuelle[] = [
+  "Mieter-Meldung",
+  "Intern",
+  "Manuell weitergeleitet",
+  "Instandhaltung",
+  "Aufträge",
+];
+
+/** Chronologischer Status-/Ereignisverlauf eines Tickets (Audit-Trail). */
+export interface TicketHistorieEintrag {
+  id: string;
+  zeitpunkt: string;
+  status?: TicketStatus;
+  text: string;
+  von?: string;
+}
+
+/** Nachricht im Ticket-Thread. "intern"=nur für Verwaltung, sonst für Handwerker/extern sichtbar. */
+export interface TicketNachricht {
+  id: string;
+  nummer?: string;
+  ticketId: string;
+  von: string;
+  text: string;
+  intern: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Ticket {
+  id: string;
+  nummer?: string;
+  titel: string;
+  beschreibung?: string;
+  status: TicketStatus;
+  prioritaet: TicketPrioritaet;
+  quelle: TicketQuelle;
+  kategorie?: string;
+  // Optionaler Objektbezug (Liegenschaftshierarchie) – alles optional, damit
+  // Tickets auch ohne Zuordnung zu einem konkreten Objekt angelegt werden können.
+  liegenschaftId?: string;
+  gebaeudeId?: string;
+  wohnungId?: string;
+  mieterId?: string;
+  // Zuweisung
+  handwerkerId?: string;
+  zugewiesenAm?: string;
+  // Melder / Auftraggeber
+  erstelltVon?: string;
+  // Freigabe-Workflow
+  freigabeErforderlich: boolean;
+  freigegebenVon?: string;
+  freigegebenAm?: string;
+  freigabeKommentar?: string;
+  // Ablehnung (Ticket selbst ODER Ablehnung durch den Handwerker)
+  ablehnungsgrund?: string;
+  abgelehntVon?: string;
+  abgelehntAm?: string;
+  // Sonstiges
+  faelligkeitsdatum?: string;
+  kostenSchaetzung?: number;
+  dokumente?: Anhang[];
+  historie: TicketHistorieEintrag[];
+  createdAt: string;
+  updatedAt: string;
 }
