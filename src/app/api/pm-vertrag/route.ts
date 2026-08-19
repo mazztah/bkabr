@@ -34,6 +34,8 @@ export async function POST(req: NextRequest) {
     kuendigungsfrist: body.kuendigungsfrist,
     status: body.status || "Entwurf",
     extraktText: body.extraktText,
+    anzahlGebaeudeLtVertrag: body.anzahlGebaeudeLtVertrag ? Number(body.anzahlGebaeudeLtVertrag) : undefined,
+    einheitenLtVertrag: Array.isArray(body.einheitenLtVertrag) ? body.einheitenLtVertrag : undefined,
     createdAt: now,
     updatedAt: now,
   };

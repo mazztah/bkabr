@@ -7,6 +7,7 @@ import {
   Eigentuemer,
   ErkannterDokumentTyp,
   Gebaeude,
+  Handwerker,
   HierarchieGebaeudeVorschlag,
   HierarchieMieterVorschlag,
   HierarchieWohnungVorschlag,
@@ -33,6 +34,7 @@ const TYP_ICON: Record<ErkannterDokumentTyp, string> = {
   grundbuchauszug: "📜",
   kaufvertrag: "🏷️",
   liegenschaftskarte: "🗺️",
+  handwerker_stammdatenblatt: "🧰",
   kontoauszug: "💳",
   unbekannt: "❓",
 };
@@ -51,9 +53,10 @@ export default function SmartUploadPage() {
   const [mietvertraege, setMietvertraege] = useState<Mietvertrag[]>([]);
   const [pmVertraege, setPmVertraege] = useState<PmVertrag[]>([]);
   const [eigentuemerListe, setEigentuemerListe] = useState<Eigentuemer[]>([]);
+  const [handwerkerListe, setHandwerkerListe] = useState<Handwerker[]>([]);
 
   const ladeStammdaten = async () => {
-    const [lg, gb, wh, mi, mv, pm, eg] = await Promise.all([
+    const [lg, gb, wh, mi, mv, pm, eg, hw] = await Promise.all([
       fetch("/api/liegenschaften").then((r) => r.json()),
       fetch("/api/gebaeude").then((r) => r.json()),
       fetch("/api/wohnungen").then((r) => r.json()),
@@ -61,6 +64,7 @@ export default function SmartUploadPage() {
       fetch("/api/mietvertraege").then((r) => r.json()),
       fetch("/api/pm-vertrag").then((r) => r.json()),
       fetch("/api/eigentuemer").then((r) => r.json()),
+      fetch("/api/handwerker").then((r) => r.json()),
     ]);
     setLiegenschaften(lg.liegenschaften || []);
     setGebaeude(gb.gebaeude || []);
@@ -69,6 +73,7 @@ export default function SmartUploadPage() {
     setMietvertraege(mv.mietvertraege || []);
     setPmVertraege(pm.pmVertraege || []);
     setEigentuemerListe(eg.eigentuemer || []);
+    setHandwerkerListe(hw.handwerker || []);
   };
 
   useEffect(() => {
@@ -226,6 +231,7 @@ export default function SmartUploadPage() {
                 mietvertraege={mietvertraege}
                 pmVertraege={pmVertraege}
                 eigentuemerListe={eigentuemerListe}
+                handwerkerListe={handwerkerListe}
                 onErledigt={(patch) => setItem(item.key, patch)}
                 onReload={ladeStammdaten}
               />
@@ -342,6 +348,7 @@ function QueueCard(props: {
   mietvertraege: Mietvertrag[];
   pmVertraege: PmVertrag[];
   eigentuemerListe: Eigentuemer[];
+  handwerkerListe: Handwerker[];
   onErledigt: (patch: Partial<Item>) => void;
   onReload: () => void;
 }) {
@@ -362,6 +369,11 @@ function QueueCard(props: {
   }
   if (item.typ === "pm_vertrag" && item.pmVertrag) {
     return <PmVertragCard {...props} onBusy={setBusy} busy={busy} verwerfen={verwerfen} onReload={onReload} />;
+  }
+  if (item.typ === "handwerker_stammdatenblatt" && item.handwerker) {
+    return (
+      <HandwerkerCard {...props} onBusy={setBusy} busy={busy} verwerfen={verwerfen} onReload={onReload} />
+    );
   }
   if (
     (item.typ === "eigentuemer_dokument" || item.typ === "grundbuchauszug" || item.typ === "kaufvertrag") &&
@@ -889,6 +901,229 @@ function PmVertragCard(
         className="mt-3 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
       >
         {busy ? "Speichere…" : "✓ Übernehmen & ablegen"}
+      </button>
+    </CardShell>
+  );
+}
+
+function HandwerkerCard(
+  props: {
+    item: Item;
+    handwerkerListe: Handwerker[];
+    busy: boolean;
+    onBusy: (b: boolean) => void;
+    verwerfen: () => void;
+    onErledigt: (patch: Partial<Item>) => void;
+    onReload: () => void;
+  } & Record<string, any>
+) {
+  const { item, handwerkerListe, busy, onBusy, verwerfen, onErledigt, onReload } = props;
+  const e = item.handwerker!.extraktion;
+  const v = item.handwerker!.vorschlag;
+  const [modus, setModus] = useState<"vorhanden" | "neu">(v.handwerkerId ? "vorhanden" : "neu");
+  const [handwerkerId, setHandwerkerId] = useState(v.handwerkerId || "");
+  const [neu, setNeu] = useState({
+    name: e.name || e.firma || "",
+    firma: e.firma || "",
+    gewerk: e.gewerk || "",
+    email: e.email || "",
+    telefon: e.telefon || "",
+    adresse: e.adresse || "",
+    stundensatz: e.stundensatz ? String(e.stundensatz) : "",
+    lebenslauf: e.lebenslauf || "",
+  });
+
+  const HANDWERKER_GEWERKE_LISTE = [
+    "Elektro",
+    "Sanitär/Heizung",
+    "Maler/Lackierer",
+    "Schreiner/Tischler",
+    "Dach/Fassade",
+    "Fliesenleger",
+    "Bodenleger",
+    "Maurer/Verputzer",
+    "Garten-/Außenanlagen",
+    "Reinigung",
+    "Schlüsseldienst",
+    "Aufzug",
+    "Schadstoffsanierung/Bautrocknung",
+    "Allgemein",
+    "Sonstiges",
+  ];
+  const gewerkVorschlag = (text: string) => {
+    const t = text.toLowerCase();
+    return HANDWERKER_GEWERKE_LISTE.find((g) => t.includes(g.toLowerCase().split("/")[0])) || "Allgemein";
+  };
+
+  const anhang = {
+    id: crypto.randomUUID(),
+    typ: "Sonstiges" as const,
+    dateiName: item.dateiName,
+    storedFileName: item.storedFileName,
+    mimeType: item.mimeType,
+    hochgeladenAm: new Date().toISOString(),
+    extraktText: item.extraktText,
+  };
+
+  const bestaetigen = async () => {
+    onBusy(true);
+    try {
+      let zielId = handwerkerId;
+      if (modus === "neu") {
+        const res = await fetch("/api/handwerker", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: neu.name || "Neuer Handwerker",
+            firma: neu.firma || undefined,
+            gewerk: neu.gewerk || gewerkVorschlag(e.gewerk || ""),
+            email: neu.email || undefined,
+            telefon: neu.telefon || undefined,
+            adresse: neu.adresse || undefined,
+            stundensatz: neu.stundensatz ? Number(neu.stundensatz) : undefined,
+            lebenslauf: neu.lebenslauf || undefined,
+          }),
+        });
+        const json = await res.json();
+        zielId = json.handwerker?.id;
+        if (zielId) {
+          await fetch(`/api/handwerker/${zielId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ dokumente: [anhang] }),
+          });
+        }
+      } else if (zielId) {
+        const bestehend = handwerkerListe.find((h) => h.id === zielId);
+        await fetch(`/api/handwerker/${zielId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dokumente: [...(bestehend?.dokumente || []), anhang] }),
+        });
+      }
+      onErledigt({
+        status: "gespeichert",
+        meldung:
+          modus === "neu"
+            ? `Neuer Handwerker „${neu.name}" angelegt und Stammdatenblatt hinterlegt.`
+            : "Stammdatenblatt dem bestehenden Handwerker hinzugefügt.",
+      });
+      onReload();
+    } finally {
+      onBusy(false);
+    }
+  };
+
+  return (
+    <CardShell item={item} onVerwerfen={verwerfen}>
+      <div className="mb-3 flex gap-2">
+        <button
+          onClick={() => setModus("vorhanden")}
+          className={`rounded-md border px-3 py-1.5 text-sm ${modus === "vorhanden" ? "border-primary bg-primary/10 font-medium" : "border-border"}`}
+        >
+          Vorhandenem Handwerker zuordnen
+        </button>
+        <button
+          onClick={() => setModus("neu")}
+          className={`rounded-md border px-3 py-1.5 text-sm ${modus === "neu" ? "border-primary bg-primary/10 font-medium" : "border-border"}`}
+        >
+          Neu anlegen
+        </button>
+      </div>
+
+      {v.handwerkerId && modus === "vorhanden" && (
+        <p className="mb-2 rounded-md bg-emerald-50 p-2 text-xs text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
+          ✓ Bereits im System erkannt: „{v.handwerkerName}“
+        </p>
+      )}
+      {!v.handwerkerId && (
+        <p className="mb-2 rounded-md bg-muted/60 p-2 text-xs text-muted-foreground">
+          ℹ️ Kein bestehender Handwerker mit diesem Namen/dieser E-Mail gefunden.
+        </p>
+      )}
+
+      {modus === "vorhanden" ? (
+        <select
+          value={handwerkerId}
+          onChange={(ev) => setHandwerkerId(ev.target.value)}
+          className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+        >
+          <option value="">— Handwerker wählen —</option>
+          {handwerkerListe.map((h) => (
+            <option key={h.id} value={h.id}>
+              {h.name} · {h.gewerk}
+              {h.firma ? ` (${h.firma})` : ""}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <div className="grid grid-cols-2 gap-2">
+          <input
+            value={neu.name}
+            onChange={(ev) => setNeu({ ...neu, name: ev.target.value })}
+            placeholder="Name"
+            className="col-span-2 rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
+          <input
+            value={neu.firma}
+            onChange={(ev) => setNeu({ ...neu, firma: ev.target.value })}
+            placeholder="Firma"
+            className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
+          <select
+            value={neu.gewerk || gewerkVorschlag(e.gewerk || "")}
+            onChange={(ev) => setNeu({ ...neu, gewerk: ev.target.value })}
+            className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+          >
+            {HANDWERKER_GEWERKE_LISTE.map((g) => (
+              <option key={g} value={g}>
+                {g}
+              </option>
+            ))}
+          </select>
+          <input
+            value={neu.email}
+            onChange={(ev) => setNeu({ ...neu, email: ev.target.value })}
+            placeholder="E-Mail"
+            className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
+          <input
+            value={neu.telefon}
+            onChange={(ev) => setNeu({ ...neu, telefon: ev.target.value })}
+            placeholder="Telefon"
+            className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
+          <input
+            value={neu.adresse}
+            onChange={(ev) => setNeu({ ...neu, adresse: ev.target.value })}
+            placeholder="Adresse"
+            className="col-span-2 rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
+          <input
+            type="number"
+            value={neu.stundensatz}
+            onChange={(ev) => setNeu({ ...neu, stundensatz: ev.target.value })}
+            placeholder="Stundensatz (€)"
+            className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
+          {neu.lebenslauf && (
+            <textarea
+              value={neu.lebenslauf}
+              onChange={(ev) => setNeu({ ...neu, lebenslauf: ev.target.value })}
+              rows={3}
+              placeholder="Lebenslauf / Werdegang"
+              className="col-span-2 rounded border border-border bg-background px-2 py-1.5 text-sm"
+            />
+          )}
+        </div>
+      )}
+
+      <button
+        onClick={bestaetigen}
+        disabled={busy || (modus === "vorhanden" ? !handwerkerId : !neu.name.trim())}
+        className="mt-3 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+      >
+        {busy ? "Speichere…" : modus === "neu" ? "✓ Handwerker anlegen" : "✓ Dokument hinzufügen"}
       </button>
     </CardShell>
   );

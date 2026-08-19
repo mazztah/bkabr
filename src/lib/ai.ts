@@ -546,6 +546,62 @@ export async function extractPmVertrag(params: {
   );
 }
 
+const SYSTEM_HANDWERKER_STAMMDATEN = `Du bist ein Experte für deutsche Hausverwaltungs-Unterlagen. Analysiere den übergebenen Text eines Handwerker-/Dienstleister-Stammdatenblatts (Steckbrief, Bewerbungsunterlage, Firmenprofil) und extrahiere die Stammdaten.
+
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt in exakt diesem Format:
+{
+  "name": "Name der Ansprechperson bzw. des Handwerkers, sonst leerer String",
+  "firma": "Firmenname, falls vorhanden, sonst leerer String",
+  "gewerk": "Gewerk/Fachrichtung in eigenen Worten des Dokuments, z.B. 'Elektroinstallation' oder 'Sanitär', sonst leerer String",
+  "email": "E-Mail-Adresse, sonst leerer String",
+  "telefon": "Telefonnummer, sonst leerer String",
+  "adresse": "vollständige Anschrift, sonst leerer String",
+  "stundensatz": <Stundensatz in Euro als Zahl, NUR falls explizit genannt, sonst 0>,
+  "qualifikationen": ["Liste von Qualifikationen/Zertifikaten/Meistertiteln, falls genannt, sonst leeres Array"],
+  "lebenslauf": "kurze Zusammenfassung von Werdegang/Erfahrung/Referenzen in 2-4 Sätzen, NUR falls im Text enthalten, sonst leerer String"
+}
+Erfinde niemals Werte. Bei Unsicherheit: leerer String bzw. 0/leeres Array.`;
+
+/**
+ * Extrahiert Stammdaten aus einem hochgeladenen Handwerker-Steckbrief/Stammdatenblatt
+ * für den intelligenten Upload im Ticketsystem-Modul (Handwerker-Verwaltung).
+ */
+export async function extractHandwerkerStammdaten(params: {
+  text: string;
+  fileName: string;
+}): Promise<import("./types").HandwerkerStammdatenExtraktion> {
+  const { text, fileName } = params;
+  const completion = await createChatCompletion({
+    max_completion_tokens: 1200,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM_HANDWERKER_STAMMDATEN },
+      {
+        role: "user",
+        content: `Datei: ${fileName}.\n\nInhalt:\n${text.slice(0, 8000)}\n\nExtrahiere die JSON-Daten.`,
+      },
+    ],
+  });
+  const raw = completion.choices[0]?.message?.content || "";
+  try {
+    const parsed = extractJson(raw) as Record<string, unknown>;
+    return {
+      name: (parsed.name as string) || undefined,
+      firma: (parsed.firma as string) || undefined,
+      gewerk: (parsed.gewerk as string) || undefined,
+      email: (parsed.email as string) || undefined,
+      telefon: (parsed.telefon as string) || undefined,
+      adresse: (parsed.adresse as string) || undefined,
+      stundensatz: typeof parsed.stundensatz === "number" && parsed.stundensatz > 0 ? parsed.stundensatz : undefined,
+      qualifikationen: Array.isArray(parsed.qualifikationen) ? (parsed.qualifikationen as string[]) : undefined,
+      lebenslauf: (parsed.lebenslauf as string) || undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
 const SYSTEM_WOHNUNGSUEBERSICHT = `Du bist ein Experte für deutsche Hausverwaltungs-Objektunterlagen. Analysiere den übergebenen Text (Anlage zum PM-Vertrag, Objektbeschreibung, Mieterliste oder eine hochgeladene Excel-/CSV-Stammdatenliste) und extrahiere daraus eine Übersicht der Gebäude, Wohnungen/Einheiten und – falls vorhanden – der zugehörigen Mieter.
 
 WICHTIGSTE REGEL: Trage NUR Zeilen/Werte ein, die eindeutig als eigene Wohnung/Einheit im Text erkennbar sind (typischerweise eine Tabelle mit Wohnungsbezeichnung/Lage, Fläche/Größe in m², ggf. Zimmerzahl, ggf. Mietername/Miete). Erfinde niemals Wohnungen, Größen oder Namen. Ist gar keine solche Tabelle/Liste im Text enthalten (z.B. reiner Fließtext ohne Einheitenliste), liefere ein leeres "einheiten"-Array.
@@ -676,6 +732,7 @@ const SYSTEM_KLASSIFIZIERUNG = `Du bist ein Dokumenten-Klassifizierer für eine 
 - "grundbuchauszug": Grundbuchauszug / Grundbuchblatt.
 - "kaufvertrag": Notarieller Kaufvertrag / Immobilienkaufvertrag.
 - "liegenschaftskarte": Lageplan, Liegenschafts-/Flurstückskarte, Katasterauszug, Objekt-/Gebäudebeschreibung, Gebäude- oder Mieterlisten-Übersicht (Anlage zu PM-Vertrag/Liegenschaft, keine Einzelrechnung/kein Vertrag).
+- "handwerker_stammdatenblatt": Stammdatenblatt/Steckbrief/Bewerbung eines Handwerkers oder Dienstleisters (Name, Firma, Gewerk, Kontaktdaten, Qualifikationen, Lebenslauf) – KEIN Angebot und KEINE Rechnung eines Handwerkers.
 - "kontoauszug": Bankauszug / Kontoauszug mit Buchungen/Transaktionen.
 - "unbekannt": passt zu keiner der obigen Kategorien oder ist nicht eindeutig zuordenbar.
 

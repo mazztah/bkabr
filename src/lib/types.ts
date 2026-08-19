@@ -369,6 +369,12 @@ export interface EigentuemerExtraktion {
 
 export type PmVertragStatus = "Entwurf" | "Aktiv" | "Beendet";
 
+export interface PmVertragEinheitAngabe {
+  gebaeudeName?: string;
+  wohnungsbezeichnung: string;
+  flaeche?: number;
+}
+
 export interface PmVertrag {
   id: string;
   nummer?: string;
@@ -387,6 +393,11 @@ export interface PmVertrag {
   kuendigungsfrist?: string;
   status: PmVertragStatus;
   extraktText?: string;
+  // Soll-Werte laut Vertragstext (aus KI-Extraktion einer Objekt-/Einheitenübersicht,
+  // z.B. Anlage zum PM-Vertrag) – Grundlage für den Plausibilitätsabgleich gegen die
+  // tatsächlich im System erfassten Gebäude/Wohnungen (siehe lib/pruefung.ts).
+  anzahlGebaeudeLtVertrag?: number;
+  einheitenLtVertrag?: PmVertragEinheitAngabe[];
   // Zusatzunterlagen wie Liegenschaftskarte, Objektbeschreibung, Mieterliste
   anhaenge?: Anhang[];
   createdAt: string;
@@ -404,6 +415,10 @@ export interface PmVertragExtraktion {
   kuendigungsfrist?: string;
   objektAdresse?: string;
   liegenschaftName?: string;
+  // Best-effort miterkannt, falls im selben Dokument/Anhang eine Objekt-/Einheitenübersicht
+  // enthalten ist (siehe extractWohnungsuebersicht) – sonst leer.
+  anzahlGebaeudeLtVertrag?: number;
+  einheitenLtVertrag?: PmVertragEinheitAngabe[];
 }
 
 // -------- Anhänge (Zusatzdokumente an Eigentümer / PM-Vertrag / Mietvertrag) --------
@@ -475,6 +490,7 @@ export const ERKANNTE_DOKUMENT_TYPEN = [
   "grundbuchauszug",
   "kaufvertrag",
   "liegenschaftskarte",
+  "handwerker_stammdatenblatt",
   "kontoauszug",
   "unbekannt",
 ] as const;
@@ -490,6 +506,7 @@ export const DOKUMENT_TYP_LABEL: Record<ErkannterDokumentTyp, string> = {
   grundbuchauszug: "Grundbuchauszug",
   kaufvertrag: "Kaufvertrag",
   liegenschaftskarte: "Liegenschaftskarte / Objektunterlage",
+  handwerker_stammdatenblatt: "Handwerker-Stammdatenblatt",
   kontoauszug: "Kontoauszug",
   unbekannt: "Unbekannt / manuell prüfen",
 };
@@ -498,6 +515,19 @@ export interface DokumentKlassifikation {
   typ: ErkannterDokumentTyp;
   konfidenz: number; // 0..1
   begruendung?: string;
+}
+
+/** KI-Extraktion aus einem hochgeladenen Handwerker-Stammdatenblatt/Steckbrief. */
+export interface HandwerkerStammdatenExtraktion {
+  name?: string;
+  firma?: string;
+  gewerk?: string; // Freitext aus dem Dokument – wird beim Matching auf HandwerkerGewerk gemappt
+  email?: string;
+  telefon?: string;
+  adresse?: string;
+  stundensatz?: number;
+  qualifikationen?: string[];
+  lebenslauf?: string; // zusammengefasster Werdegang/Erfahrung, falls im Dokument enthalten
 }
 
 // Ein Eintrag der Sammel-Upload-Warteschlange, wie ihn /api/smart-upload zurückliefert.
@@ -580,6 +610,14 @@ export interface SmartUploadErgebnis {
       wohnungBezeichnung?: string;
       liegenschaftName?: string;
     }[];
+  };
+  handwerker?: {
+    extraktion: HandwerkerStammdatenExtraktion;
+    vorschlag: {
+      handwerkerId?: string; // gesetzt, falls ein bestehender Handwerker gefunden wurde
+      handwerkerName?: string;
+      istNeu: boolean;
+    };
   };
 }
 
@@ -808,7 +846,7 @@ export interface PruefKorrekturVorschlag {
   zielLiegenschaftId?: string;
   zielPmVertragId?: string;
   // Für "stammdaten_korrigieren": welches Feld welcher Entität ändern
-  entitaet?: { art: "liegenschaft" | "gebaeude" | "wohnung" | "mieter"; id: string; label: string };
+  entitaet?: { art: "liegenschaft" | "gebaeude" | "wohnung" | "mieter" | "pmVertrag" | "handwerker"; id: string; label: string };
   patch?: Record<string, string | number>;
 }
 

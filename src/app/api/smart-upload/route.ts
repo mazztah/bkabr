@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   classifyDocument,
   extractEigentuemerDokument,
+  extractHandwerkerStammdaten,
   extractKontoauszug,
   extractMietvertrag,
   extractMietvertragNachtrag,
@@ -13,6 +14,7 @@ import {
   ablageDb,
   eigentuemerDb,
   gebaeudeDb,
+  handwerkerDb,
   kontoauszuegeDb,
   liegenschaftenDb,
   logEvent,
@@ -237,6 +239,28 @@ async function verarbeiteDatei(
 
       case "pm_vertrag": {
         const extraktion = await extractPmVertrag({ text: ocr.text, fileName: file.name });
+
+        // Best-effort: im selben Dokument (oder einer beigefügten Objekt-/Einheiten-
+        // übersicht) nach einer Gebäude-/Wohnungstabelle suchen, um die im Vertrag
+        // genannte Soll-Struktur (Anzahl Gebäude, Einheiten mit Bezeichnung + m²) für
+        // den späteren Plausibilitätsabgleich (siehe lib/pruefung.ts) festzuhalten.
+        try {
+          const uebersicht = await extractWohnungsuebersicht({ text: ocr.text, fileName: file.name });
+          if (uebersicht.einheiten.length > 0) {
+            const gebaeudeNamen = new Set(
+              uebersicht.einheiten.map((e) => (e.gebaeudeName || "").trim().toLowerCase()).filter(Boolean)
+            );
+            extraktion.anzahlGebaeudeLtVertrag = gebaeudeNamen.size > 0 ? gebaeudeNamen.size : 1;
+            extraktion.einheitenLtVertrag = uebersicht.einheiten.map((e) => ({
+              gebaeudeName: e.gebaeudeName || undefined,
+              wohnungsbezeichnung: e.wohnungsbezeichnung,
+              flaeche: e.flaeche || undefined,
+            }));
+          }
+        } catch (uebersichtErr: any) {
+          console.warn(`Soll-Übersicht aus PM-Vertrag konnte nicht ermittelt werden (${file.name}):`, uebersichtErr?.message || uebersichtErr);
+        }
+
         const alleLiegenschaften = await liegenschaftenDb.list();
         const adresseFuerMatch = extraktion.objektAdresse || extraktion.liegenschaftName || "";
         const treffer = matchLiegenschaft(adresseFuerMatch, alleLiegenschaften);
@@ -527,6 +551,41 @@ async function verarbeiteDatei(
             },
             hierarchie,
           },
+        };
+      }
+
+      case "handwerker_stammdatenblatt": {
+        const extraktion = await extractHandwerkerStammdaten({ text: ocr.text, fileName: file.name });
+
+        // Duplikatsprüfung: existiert bereits ein Handwerker mit (fast) gleichem
+        // Namen oder derselben E-Mail-Adresse? Nur dann wird ein bestehender
+        // Datensatz vorgeschlagen – sonst Neuanlage.
+        const alleHandwerker = await handwerkerDb.list();
+        const zielName = normalize(extraktion.name || extraktion.firma || "");
+        const zielEmail = (extraktion.email || "").trim().toLowerCase();
+        const treffer = alleHandwerker.find((h) => {
+          if (zielEmail && h.email && h.email.trim().toLowerCase() === zielEmail) return true;
+          const n = normalize(h.name);
+          const nFirma = normalize(h.firma || "");
+          return (
+            zielName.length > 2 &&
+            (n === zielName || n.includes(zielName) || zielName.includes(n) || (nFirma && nFirma === zielName))
+          );
+        });
+
+        return {
+          ...ergebnis,
+          handwerker: {
+            extraktion,
+            vorschlag: {
+              handwerkerId: treffer?.id,
+              handwerkerName: treffer?.name,
+              istNeu: !treffer,
+            },
+          },
+          hinweisText: treffer
+            ? `Handwerker „${treffer.name}" ist bereits im System angelegt – Dokument kann als Stammdatenblatt hinterlegt werden.`
+            : `Kein bestehender Handwerker gefunden – Stammdaten können als neuer Handwerker übernommen werden.`,
         };
       }
 

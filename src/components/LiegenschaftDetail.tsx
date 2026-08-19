@@ -444,9 +444,14 @@ export default function LiegenschaftDetail({ data, selection, onSelect, onChange
             laufzeitEnde: e.laufzeitEnde,
             kuendigungsfrist: e.kuendigungsfrist,
             status: "Aktiv",
+            anzahlGebaeudeLtVertrag: e.anzahlGebaeudeLtVertrag,
+            einheitenLtVertrag: e.einheitenLtVertrag,
           }),
         });
-        setPmMsg(`✅ Vertrag mit „${e.verwalterName || "Verwalter"}“ erkannt und zugeordnet.`);
+        const sollHinweis = e.einheitenLtVertrag?.length
+          ? ` Soll-Struktur laut Vertrag erkannt: ${e.anzahlGebaeudeLtVertrag || 1} Gebäude, ${e.einheitenLtVertrag.length} Einheiten – wird bei der nächsten Plausibilitätsprüfung mit den Stammdaten abgeglichen.`
+          : "";
+        setPmMsg(`✅ Vertrag mit „${e.verwalterName || "Verwalter"}“ erkannt und zugeordnet.${sollHinweis}`);
         onChanged();
       }
     } catch {

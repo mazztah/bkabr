@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { extractPmVertrag } from "@/lib/ai";
+import { extractPmVertrag, extractWohnungsuebersicht } from "@/lib/ai";
 import { extractTextFromFile } from "@/lib/document-ocr";
 import { liegenschaftenDb } from "@/lib/db";
 import { storeFile } from "@/lib/storage";
@@ -24,6 +24,26 @@ export async function POST(req: NextRequest) {
     }
 
     const extraktion = await extractPmVertrag({ text: ocr.text, fileName: file.name });
+
+    // Best-effort: Soll-Struktur (Anzahl Gebäude, Einheiten mit Bezeichnung + m²)
+    // aus demselben Dokument miterkennen – Grundlage für den späteren
+    // Plausibilitätsabgleich gegen die tatsächlichen Stammdaten (lib/pruefung.ts).
+    try {
+      const uebersicht = await extractWohnungsuebersicht({ text: ocr.text, fileName: file.name });
+      if (uebersicht.einheiten.length > 0) {
+        const gebaeudeNamen = new Set(
+          uebersicht.einheiten.map((e) => (e.gebaeudeName || "").trim().toLowerCase()).filter(Boolean)
+        );
+        extraktion.anzahlGebaeudeLtVertrag = gebaeudeNamen.size > 0 ? gebaeudeNamen.size : 1;
+        extraktion.einheitenLtVertrag = uebersicht.einheiten.map((e) => ({
+          gebaeudeName: e.gebaeudeName || undefined,
+          wohnungsbezeichnung: e.wohnungsbezeichnung,
+          flaeche: e.flaeche || undefined,
+        }));
+      }
+    } catch (uebersichtErr: any) {
+      console.warn(`Soll-Übersicht aus PM-Vertrag konnte nicht ermittelt werden (${file.name}):`, uebersichtErr?.message || uebersichtErr);
+    }
 
     const tempId = crypto.randomUUID();
     const storedFileName = await storeFile(tempId, file.name, buffer);

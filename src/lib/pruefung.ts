@@ -2,6 +2,7 @@ import {
   ablageDb,
   eigentuemerDb,
   gebaeudeDb,
+  handwerkerDb,
   kontoauszuegeDb,
   liegenschaftenDb,
   logEvent,
@@ -34,6 +35,10 @@ import { isLiegenschaftAktiv } from "./cascade-delete";
 // Wie viele bereits zugeordnete Ablage-Dokumente pro Lauf per LLM stichprobenartig
 // gegengeprüft werden (Kosten-/Zeitbegrenzung).
 const LLM_STICHPROBE_LIMIT = 15;
+
+function normalize(s: string): string {
+  return s.toLowerCase().replace(/[^a-zäöüß0-9]/g, "");
+}
 
 function fileHref(storedFileName?: string, mimeType?: string, dateiName?: string): string | undefined {
   if (!storedFileName) return undefined;
@@ -248,6 +253,125 @@ export async function runPlausibilitaetspruefung(): Promise<PruefLauf> {
           [{ art: "Liegenschaft", id: l.id, label: l.name }]
         )
       );
+    }
+
+    // ---- PM-Vertrag-Vollständigkeitsabgleich: Soll (aus Vertragstext erkannt)
+    // gegen Ist (tatsächlich erfasste Gebäude/Wohnungen) sowie Verwaltervergütung.
+    const aktivePmVertraege = pmVertraege.filter((p) => p.liegenschaftId === l.id && p.status !== "Beendet");
+    const gebaeudeDerLiegenschaft = gebaeude.filter((g) => g.liegenschaftId === l.id);
+    const gebaeudeIdsDerLiegenschaft = new Set(gebaeudeDerLiegenschaft.map((g) => g.id));
+    const wohnungenDerLiegenschaft = wohnungen.filter((w) => gebaeudeIdsDerLiegenschaft.has(w.gebaeudeId));
+
+    for (const pm of aktivePmVertraege) {
+      const pmKontext: PruefBefundKontext = {
+        liegenschaftNummer: l.nummer,
+        liegenschaftName: l.name,
+        liegenschaftAdresse: `${l.strasse} ${l.hausnummer}, ${l.plz} ${l.ort}`.trim(),
+        bearbeitenHref: `/liegenschaften?id=${l.id}`,
+        dokumentHref: fileHref(pm.storedFileName, pm.mimeType, pm.dateiName),
+        dokumentLabel: pm.dateiName,
+      };
+
+      // Verwaltervergütung im PM-Vertrag erfasst?
+      if (!pm.honorarModell && !pm.honorarSatz) {
+        befunde.push(
+          neuerBefund(
+            "pmVertraege",
+            "warnung",
+            "Verwaltervergütung nicht erfasst",
+            `Im PM-Vertrag „${pm.dateiName}" (${l.name}) ist weder ein Honorarmodell noch ein Honorarsatz hinterlegt.`,
+            [{ art: "PM-Vertrag", id: pm.id, label: pm.dateiName }],
+            undefined,
+            undefined,
+            pmKontext
+          )
+        );
+      }
+
+      // Anzahl Gebäude laut Vertrag vs. tatsächlich erfasst
+      if (pm.anzahlGebaeudeLtVertrag && pm.anzahlGebaeudeLtVertrag !== gebaeudeDerLiegenschaft.length) {
+        befunde.push(
+          neuerBefund(
+            "pmVertraege",
+            "warnung",
+            "Gebäudeanzahl weicht vom PM-Vertrag ab",
+            `Laut PM-Vertrag „${pm.dateiName}" hat „${l.name}" ${pm.anzahlGebaeudeLtVertrag} Gebäude, im System sind ${gebaeudeDerLiegenschaft.length} erfasst.`,
+            [{ art: "Liegenschaft", id: l.id, label: l.name }],
+            undefined,
+            "/smart-upload",
+            pmKontext
+          )
+        );
+      }
+
+      // Einheiten laut Vertrag vs. tatsächlich erfasste Wohnungen (Bezeichnung + m²)
+      for (const soll of pm.einheitenLtVertrag || []) {
+        const zielBez = normalize(soll.wohnungsbezeichnung || "");
+        if (!zielBez) continue;
+        const zielGebaeudeName = normalize(soll.gebaeudeName || "");
+        const kandidat = wohnungenDerLiegenschaft.find((w) => {
+          const n = normalize(w.bezeichnung);
+          if (!(n === zielBez || n.includes(zielBez) || zielBez.includes(n))) return false;
+          if (!zielGebaeudeName) return true;
+          const g = gebaeudeById.get(w.gebaeudeId);
+          const gn = normalize(g?.name || "");
+          return !gn || gn.includes(zielGebaeudeName) || zielGebaeudeName.includes(gn);
+        });
+
+        if (!kandidat) {
+          befunde.push(
+            neuerBefund(
+              "pmVertraege",
+              "hinweis",
+              "Einheit aus PM-Vertrag fehlt in den Stammdaten",
+              `Einheit „${soll.wohnungsbezeichnung}"${soll.gebaeudeName ? ` (${soll.gebaeudeName})` : ""} laut PM-Vertrag „${pm.dateiName}" konnte keiner erfassten Wohnung bei „${l.name}" zugeordnet werden.`,
+              [{ art: "Liegenschaft", id: l.id, label: l.name }],
+              undefined,
+              "/smart-upload",
+              pmKontext
+            )
+          );
+          continue;
+        }
+
+        if (soll.flaeche && kandidat.flaeche && Math.abs(soll.flaeche - kandidat.flaeche) > 0.5) {
+          befunde.push(
+            neuerBefund(
+              "pmVertraege",
+              "hinweis",
+              "Wohnfläche weicht vom PM-Vertrag ab",
+              `Laut PM-Vertrag „${pm.dateiName}" hat „${kandidat.bezeichnung}" ${soll.flaeche} m², im System sind ${kandidat.flaeche} m² erfasst.`,
+              [{ art: "Wohnung", id: kandidat.id, label: kandidat.bezeichnung }],
+              {
+                art: "stammdaten_korrigieren",
+                beschreibung: `Wohnfläche von „${kandidat.bezeichnung}" auf ${soll.flaeche} m² (laut PM-Vertrag) korrigieren.`,
+                entitaet: { art: "wohnung", id: kandidat.id, label: kandidat.bezeichnung },
+                patch: { flaeche: soll.flaeche },
+              },
+              undefined,
+              pmKontext
+            )
+          );
+        } else if (soll.flaeche && !kandidat.flaeche) {
+          befunde.push(
+            neuerBefund(
+              "pmVertraege",
+              "hinweis",
+              "Wohnfläche aus PM-Vertrag nicht übernommen",
+              `Laut PM-Vertrag „${pm.dateiName}" hat „${kandidat.bezeichnung}" ${soll.flaeche} m² – im System ist noch keine Fläche erfasst.`,
+              [{ art: "Wohnung", id: kandidat.id, label: kandidat.bezeichnung }],
+              {
+                art: "stammdaten_korrigieren",
+                beschreibung: `Wohnfläche von „${kandidat.bezeichnung}" auf ${soll.flaeche} m² (laut PM-Vertrag) nachtragen.`,
+                entitaet: { art: "wohnung", id: kandidat.id, label: kandidat.bezeichnung },
+                patch: { flaeche: soll.flaeche },
+              },
+              undefined,
+              pmKontext
+            )
+          );
+        }
+      }
     }
   }
 
@@ -807,7 +931,14 @@ export async function wendeBefundAn(befund: PruefBefund): Promise<{ ok: boolean;
 
   if (vorschlag.art === "stammdaten_korrigieren" && vorschlag.entitaet && vorschlag.patch) {
     const { art, id, label } = vorschlag.entitaet;
-    const dbMap = { liegenschaft: liegenschaftenDb, gebaeude: gebaeudeDb, wohnung: wohnungenDb, mieter: mieterDb } as const;
+    const dbMap = {
+      liegenschaft: liegenschaftenDb,
+      gebaeude: gebaeudeDb,
+      wohnung: wohnungenDb,
+      mieter: mieterDb,
+      pmVertrag: pmVertraegeDb,
+      handwerker: handwerkerDb,
+    } as const;
     const zielDb = dbMap[art];
     if (!zielDb) return { ok: false, meldung: "Unbekannter Entitätstyp." };
     const aktualisiert = await zielDb.update(id, vorschlag.patch as any);
