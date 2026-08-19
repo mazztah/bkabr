@@ -23,6 +23,11 @@ export async function appendTicketHistorie(
   const historie = [...(ticket.historie || []), eintrag];
   const patch: Partial<Ticket> = { historie };
   if (opts.status) patch.status = opts.status;
+  // SLA-Reaktionszeit: der erste Vorgang NACH der Ticket-Anlage gilt als
+  // "erste Reaktion" der Verwaltung (Freigabe, Zuweisung, Statuswechsel, ...).
+  if (!ticket.ersteReaktionAm && (ticket.historie || []).length >= 1) {
+    patch.ersteReaktionAm = eintrag.zeitpunkt;
+  }
   const updated = await ticketsDb.update(ticket.id, patch);
   return updated || { ...ticket, ...patch };
 }

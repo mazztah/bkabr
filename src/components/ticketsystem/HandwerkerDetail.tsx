@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
 import {
   AnhangTyp,
@@ -84,6 +84,52 @@ function InlineField({
       <div className="text-xs font-medium text-muted-foreground">{label}</div>
       <div className="mt-0.5 text-sm">{value || <span className="text-muted-foreground/60">—</span>}</div>
     </button>
+  );
+}
+
+function LebenslaufUploadButton({
+  handwerkerId,
+  label,
+  onDone,
+}: {
+  handwerkerId: string;
+  label: string;
+  onDone: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+
+  const handleFile = async (file: File | null) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const anhang = await hochladenUndAnhaengen(file, "Lebenslauf");
+      if (!anhang) return;
+      await patchHandwerker(handwerkerId, { lebenslaufDokument: anhang });
+      onDone();
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  return (
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+        className="hidden"
+        onChange={(e) => handleFile(e.target.files?.[0] || null)}
+      />
+      <button
+        onClick={() => inputRef.current?.click()}
+        disabled={busy}
+        className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+      >
+        {busy ? "Lade hoch…" : label}
+      </button>
+    </>
   );
 }
 
@@ -317,13 +363,50 @@ export default function HandwerkerDetail({
 
       {tab === "Lebenslauf" && (
         <div>
+          <div className="mb-3 rounded-lg border border-border p-3">
+            <div className="mb-1 text-xs font-medium text-muted-foreground">CV-Datei (PDF/Bild)</div>
+            {handwerker.lebenslaufDokument ? (
+              <div className="flex items-center justify-between gap-2 text-sm">
+                <a
+                  href={`/api/files/${handwerker.lebenslaufDokument.storedFileName}?mime=${encodeURIComponent(
+                    handwerker.lebenslaufDokument.mimeType
+                  )}&name=${encodeURIComponent(handwerker.lebenslaufDokument.dateiName)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="truncate text-primary hover:underline"
+                >
+                  📄 {handwerker.lebenslaufDokument.dateiName}
+                </a>
+                <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                  <span>{formatDate(handwerker.lebenslaufDokument.hochgeladenAm)}</span>
+                  <LebenslaufUploadButton
+                    label="Ersetzen"
+                    handwerkerId={handwerker.id}
+                    onDone={onChanged}
+                  />
+                  <button
+                    onClick={() => patchHandwerker(handwerker.id, { lebenslaufDokument: undefined }).then(onChanged)}
+                    className="hover:text-red-600"
+                    title="CV-Datei entfernen"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-muted-foreground">Noch keine CV-Datei hinterlegt.</p>
+                <LebenslaufUploadButton label="+ CV hochladen" handwerkerId={handwerker.id} onDone={onChanged} />
+              </div>
+            )}
+          </div>
           <p className="mb-2 text-xs text-muted-foreground">
             Werdegang, Qualifikationen, Erfahrung, Referenzen – frei editierbar.
           </p>
           <textarea
             defaultValue={handwerker.lebenslauf}
             onBlur={(e) => patchHandwerker(handwerker.id, { lebenslauf: e.target.value }).then(onChanged)}
-            rows={14}
+            rows={12}
             placeholder="z.B. Ausbildung, Meistertitel, Jahre Erfahrung, Spezialisierungen, Referenzobjekte …"
             className="w-full rounded border border-border bg-background px-3 py-2 text-sm leading-relaxed"
           />

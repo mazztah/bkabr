@@ -1737,10 +1737,14 @@ export type HandwerkerGewerk =
   | "Maler/Lackierer"
   | "Schreiner/Tischler"
   | "Dach/Fassade"
+  | "Fliesenleger"
+  | "Bodenleger"
+  | "Maurer/Verputzer"
   | "Garten-/Außenanlagen"
   | "Reinigung"
   | "Schlüsseldienst"
   | "Aufzug"
+  | "Schadstoffsanierung/Bautrocknung"
   | "Allgemein"
   | "Sonstiges";
 
@@ -1750,10 +1754,14 @@ export const HANDWERKER_GEWERKE: HandwerkerGewerk[] = [
   "Maler/Lackierer",
   "Schreiner/Tischler",
   "Dach/Fassade",
+  "Fliesenleger",
+  "Bodenleger",
+  "Maurer/Verputzer",
   "Garten-/Außenanlagen",
   "Reinigung",
   "Schlüsseldienst",
   "Aufzug",
+  "Schadstoffsanierung/Bautrocknung",
   "Allgemein",
   "Sonstiges",
 ];
@@ -1791,6 +1799,8 @@ export interface Handwerker {
   status: HandwerkerStatus;
   /** Freitext-Karteikarte: Werdegang, Qualifikationen, Erfahrung, Referenzen */
   lebenslauf?: string;
+  /** Echte Datei (PDF/Bild) des Lebenslaufs – separat vom allgemeinen Dokumente-Tab. */
+  lebenslaufDokument?: Anhang;
   qualifikationen?: string[];
   notizen?: string;
   /** Karteikarte "Dokumente": Gewerbeschein, Versicherungsnachweis, Zertifikate, Meisterbrief etc. */
@@ -1845,6 +1855,100 @@ export const TICKET_QUELLEN: TicketQuelle[] = [
   "Aufträge",
 ];
 
+// -------- Schadensart / Melder / Kostenart / Sanierungsart (Taxonomien) --------
+
+export type TicketSchadensart =
+  | "Wasserschaden"
+  | "Schimmel/Feuchtigkeit"
+  | "Verschleiß/Vandalismus"
+  | "Elektro-Defekt"
+  | "Heizungsausfall"
+  | "Glasbruch"
+  | "Schädlingsbefall"
+  | "Sonstiges";
+
+export const TICKET_SCHADENSARTEN: TicketSchadensart[] = [
+  "Wasserschaden",
+  "Schimmel/Feuchtigkeit",
+  "Verschleiß/Vandalismus",
+  "Elektro-Defekt",
+  "Heizungsausfall",
+  "Glasbruch",
+  "Schädlingsbefall",
+  "Sonstiges",
+];
+
+export type TicketMelderTyp =
+  | "Mietpartei"
+  | "Gewerbemieter"
+  | "Eigentümer (WEG)"
+  | "Hausmeister"
+  | "Drittperson"
+  | "Intern";
+
+export const TICKET_MELDERTYPEN: TicketMelderTyp[] = [
+  "Mietpartei",
+  "Gewerbemieter",
+  "Eigentümer (WEG)",
+  "Hausmeister",
+  "Drittperson",
+  "Intern",
+];
+
+export type TicketKostenart =
+  | "Instandhaltung"
+  | "Kleinreparaturklausel"
+  | "Versicherungsschaden"
+  | "Vandalismus/Mieterverschulden"
+  | "Sonstiges";
+
+export const TICKET_KOSTENARTEN: TicketKostenart[] = [
+  "Instandhaltung",
+  "Kleinreparaturklausel",
+  "Versicherungsschaden",
+  "Vandalismus/Mieterverschulden",
+  "Sonstiges",
+];
+
+export type TicketSchluesselstatus =
+  | "Beim Mieter"
+  | "Schlüsselbox vor Ort"
+  | "Hausverwaltung"
+  | "Hausmeister-Generalzugang"
+  | "Nicht erforderlich";
+
+export const TICKET_SCHLUESSELSTATUS: TicketSchluesselstatus[] = [
+  "Beim Mieter",
+  "Schlüsselbox vor Ort",
+  "Hausverwaltung",
+  "Hausmeister-Generalzugang",
+  "Nicht erforderlich",
+];
+
+export type TicketArt = "Reparatur" | "Teilsanierung" | "Vollsanierung";
+
+export const TICKET_ARTEN: TicketArt[] = ["Reparatur", "Teilsanierung", "Vollsanierung"];
+
+export type TicketRechnungsstatus = "offen" | "gestellt" | "geprüft" | "bezahlt";
+
+export const TICKET_RECHNUNGSSTATUS: TicketRechnungsstatus[] = ["offen", "gestellt", "geprüft", "bezahlt"];
+
+/**
+ * Budget-Freigabegrenze (Bagatellgrenze): bis zu diesem Betrag darf ein
+ * Ticket ohne gesonderte Freigabe direkt beauftragt werden. Wird beim
+ * Anlegen eines Tickets herangezogen, um `freigabeErforderlich` automatisch
+ * vorzuschlagen, sobald eine Kostenschätzung über der Grenze liegt.
+ */
+export const TICKET_BAGATELLGRENZE_EUR = 500;
+
+/** SLA-Zielzeiten (in Stunden) je Priorität – Reaktion = erste Rückmeldung, Lösung = Erledigung. */
+export const TICKET_SLA_STUNDEN: Record<TicketPrioritaet, { reaktion: number; loesung: number }> = {
+  notfall: { reaktion: 1, loesung: 24 },
+  hoch: { reaktion: 4, loesung: 48 },
+  mittel: { reaktion: 24, loesung: 120 },
+  niedrig: { reaktion: 48, loesung: 336 },
+};
+
 /** Chronologischer Status-/Ereignisverlauf eines Tickets (Audit-Trail). */
 export interface TicketHistorieEintrag {
   id: string;
@@ -1875,6 +1979,8 @@ export interface Ticket {
   prioritaet: TicketPrioritaet;
   quelle: TicketQuelle;
   kategorie?: string;
+  ticketArt?: TicketArt;
+  schadensart?: TicketSchadensart;
   // Optionaler Objektbezug (Liegenschaftshierarchie) – alles optional, damit
   // Tickets auch ohne Zuordnung zu einem konkreten Objekt angelegt werden können.
   liegenschaftId?: string;
@@ -1886,6 +1992,8 @@ export interface Ticket {
   zugewiesenAm?: string;
   // Melder / Auftraggeber
   erstelltVon?: string;
+  melderTyp?: TicketMelderTyp;
+  zustaendigerMitarbeiter?: string;
   // Freigabe-Workflow
   freigabeErforderlich: boolean;
   freigegebenVon?: string;
@@ -1895,9 +2003,28 @@ export interface Ticket {
   ablehnungsgrund?: string;
   abgelehntVon?: string;
   abgelehntAm?: string;
+  // SLA (automatisch aus Priorität berechnet, siehe TICKET_SLA_STUNDEN)
+  slaReaktionBis?: string;
+  slaLoesungBis?: string;
+  ersteReaktionAm?: string;
+  // Kaufmännisch
+  kostenstelle?: string; // i.d.R. = Liegenschaft/Objekt-ID, frei überschreibbar
+  kostenart?: TicketKostenart;
+  bestellnummer?: string;
+  kostenSchaetzung?: number;
+  rechnungssumme?: number;
+  rechnungsstatus?: TicketRechnungsstatus;
+  // Terminierung & Zugang
+  vereinbarterTermin?: string;
+  mieterVerfuegbarkeit?: string;
+  schluesselstatus?: TicketSchluesselstatus;
+  // Gewerbe-spezifische Zusatzdaten (nur relevant bei Wohnung.typ === "Gewerbe")
+  betriebsunterbrechungRisiko?: boolean;
+  sicherheitsfreigabeErforderlich?: boolean;
+  wartungsvertragVorhanden?: boolean;
+  wartungspartner?: string;
   // Sonstiges
   faelligkeitsdatum?: string;
-  kostenSchaetzung?: number;
   dokumente?: Anhang[];
   historie: TicketHistorieEintrag[];
   createdAt: string;

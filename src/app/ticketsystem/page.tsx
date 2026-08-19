@@ -24,6 +24,13 @@ const STATUS_FILTER: ("Alle" | TicketStatus)[] = [
   "Storniert",
 ];
 
+const ABGESCHLOSSEN: TicketStatus[] = ["Erledigt", "Abgelehnt", "Storniert"];
+
+function isSlaUeberfaellig(t: { status: TicketStatus; slaLoesungBis?: string }): boolean {
+  if (!t.slaLoesungBis || ABGESCHLOSSEN.includes(t.status)) return false;
+  return new Date(t.slaLoesungBis).getTime() < Date.now();
+}
+
 export default function TicketsystemPage() {
   const { data, loading, refresh } = useTicketData();
   const [view, setView] = useState<View>("tickets");
@@ -41,6 +48,7 @@ export default function TicketsystemPage() {
 
   const eingangAnzahl = data.tickets.filter((t) => t.status === "Eingang").length;
   const freigabeAnzahl = data.tickets.filter((t) => t.status === "Zur Freigabe").length;
+  const ueberfaelligAnzahl = data.tickets.filter(isSlaUeberfaellig).length;
 
   const selectedTicket = data.tickets.find((t) => t.id === selectedTicketId);
   const selectedHandwerker = data.handwerker.find((h) => h.id === selectedHandwerkerId);
@@ -90,6 +98,14 @@ export default function TicketsystemPage() {
               ⚠️ {freigabeAnzahl} Ticket{freigabeAnzahl > 1 ? "s" : ""} warten auf Freigabe
             </button>
           )}
+          {ueberfaelligAnzahl > 0 && view === "tickets" && (
+            <button
+              onClick={() => setStatusFilter("Alle")}
+              className="mt-2 w-full rounded-md bg-red-100 px-2 py-1.5 text-left text-xs font-medium text-red-800 hover:bg-red-200 dark:bg-red-900/40 dark:text-red-300"
+            >
+              ⏰ {ueberfaelligAnzahl} Ticket{ueberfaelligAnzahl > 1 ? "s" : ""} über SLA-Lösungsfrist
+            </button>
+          )}
         </div>
 
         {view === "tickets" ? (
@@ -117,6 +133,7 @@ export default function TicketsystemPage() {
 
             {showNewTicket && (
               <NewTicketForm
+                data={data}
                 onCreated={(id) => {
                   setShowNewTicket(false);
                   refresh().then(() => setSelectedTicketId(id));
@@ -145,7 +162,10 @@ export default function TicketsystemPage() {
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate font-medium">{t.titel}</span>
-                        {t.prioritaet === "notfall" && <span className="shrink-0">🔴</span>}
+                        <div className="flex shrink-0 items-center gap-1">
+                          {isSlaUeberfaellig(t) && <span title="SLA überfällig">⏰</span>}
+                          {t.prioritaet === "notfall" && <span>🔴</span>}
+                        </div>
                       </div>
                       <div
                         className={cn(
@@ -239,6 +259,7 @@ export default function TicketsystemPage() {
             <TicketDetail
               ticket={selectedTicket}
               handwerker={data.handwerker}
+              data={data}
               onChanged={refresh}
               onSelectHandwerker={gotoHandwerker}
             />

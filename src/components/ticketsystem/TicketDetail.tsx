@@ -2,9 +2,27 @@
 
 import { useEffect, useState } from "react";
 import { cn, formatDate } from "@/lib/utils";
-import { AnhangTyp, Handwerker, Ticket, TicketNachricht, TicketPrioritaet } from "@/lib/types";
+import {
+  AnhangTyp,
+  Handwerker,
+  Ticket,
+  TicketKostenart,
+  TicketMelderTyp,
+  TicketNachricht,
+  TicketPrioritaet,
+  TicketSchadensart,
+  TicketSchluesselstatus,
+  TicketArt,
+  TICKET_ARTEN,
+  TICKET_KOSTENARTEN,
+  TICKET_MELDERTYPEN,
+  TICKET_RECHNUNGSSTATUS,
+  TICKET_SCHADENSARTEN,
+  TICKET_SCHLUESSELSTATUS,
+} from "@/lib/types";
 import { PrioBadge, PRIO_LABEL, StatusBadge } from "./badges";
 import { Anhaenge, hochladenUndAnhaengen } from "@/components/Anhaenge";
+import { objektPfad, TicketSystemData } from "@/lib/use-ticket-data";
 
 const TICKET_DOK_TYPEN: AnhangTyp[] = ["Angebot", "Rechnung", "Foto", "Sonstiges"];
 
@@ -16,14 +34,38 @@ async function patchTicket(id: string, patch: Record<string, unknown>) {
   });
 }
 
+/** Zeigt Reaktions-/Lösungsfrist mit Ampel (grün=erledigt/im Plan, gelb=<25% Restzeit, rot=überfällig). */
+function SlaZeile({ label, deadline, erreichtAm }: { label: string; deadline?: string; erreichtAm?: string }) {
+  if (!deadline) return null;
+  const now = Date.now();
+  const zielMs = new Date(deadline).getTime();
+  const erreicht = !!erreichtAm;
+  const ueberfaellig = !erreicht && zielMs < now;
+  const restMs = zielMs - now;
+  const farbe = erreicht
+    ? "text-emerald-600"
+    : ueberfaellig
+      ? "text-red-600 font-medium"
+      : restMs < 6 * 3600 * 1000
+        ? "text-amber-600"
+        : "text-muted-foreground";
+  return (
+    <div className={cn("text-xs", farbe)}>
+      {label}: {formatDate(deadline)} {erreicht ? "✓ erreicht" : ueberfaellig ? "⚠️ überfällig" : ""}
+    </div>
+  );
+}
+
 export default function TicketDetail({
   ticket,
   handwerker,
+  data,
   onChanged,
   onSelectHandwerker,
 }: {
   ticket: Ticket;
   handwerker: Handwerker[];
+  data: TicketSystemData;
   onChanged: () => void;
   onSelectHandwerker?: (id: string) => void;
 }) {
@@ -140,9 +182,28 @@ export default function TicketDetail({
           <div className="mt-1 flex flex-wrap items-center gap-2">
             <StatusBadge status={ticket.status} />
             <PrioBadge prioritaet={ticket.prioritaet} />
-            {ticket.erstelltVon && (
-              <span className="text-xs text-muted-foreground">gemeldet von {ticket.erstelltVon}</span>
+            {ticket.ticketArt && ticket.ticketArt !== "Reparatur" && (
+              <span className="rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800 dark:bg-purple-900/40 dark:text-purple-300">
+                {ticket.ticketArt}
+              </span>
             )}
+            {ticket.erstelltVon && (
+              <span className="text-xs text-muted-foreground">
+                gemeldet von {ticket.erstelltVon}
+                {ticket.melderTyp ? ` (${ticket.melderTyp})` : ""}
+              </span>
+            )}
+          </div>
+          {(ticket.liegenschaftId || ticket.gebaeudeId || ticket.wohnungId || ticket.mieterId) && (
+            <div className="mt-1 text-xs text-muted-foreground">📍 {objektPfad(data, ticket)}</div>
+          )}
+          <div className="mt-1 flex flex-wrap gap-3">
+            <SlaZeile label="SLA Reaktion" deadline={ticket.slaReaktionBis} erreichtAm={ticket.ersteReaktionAm} />
+            <SlaZeile
+              label="SLA Lösung"
+              deadline={ticket.slaLoesungBis}
+              erreichtAm={ticket.status === "Erledigt" ? ticket.updatedAt : undefined}
+            />
           </div>
         </div>
         <select
@@ -189,6 +250,58 @@ export default function TicketDetail({
           </select>
         </div>
         <div>
+          <div className="text-xs font-medium text-muted-foreground">Ticket-Art</div>
+          <select
+            value={ticket.ticketArt || "Reparatur"}
+            onChange={(e) => patchTicket(ticket.id, { ticketArt: e.target.value as TicketArt }).then(onChanged)}
+            className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+          >
+            {TICKET_ARTEN.map((a) => (
+              <option key={a} value={a}>
+                {a}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <div className="text-xs font-medium text-muted-foreground">Schadensart</div>
+          <select
+            value={ticket.schadensart || ""}
+            onChange={(e) => patchTicket(ticket.id, { schadensart: (e.target.value || undefined) as TicketSchadensart }).then(onChanged)}
+            className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+          >
+            <option value="">—</option>
+            {TICKET_SCHADENSARTEN.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <div className="text-xs font-medium text-muted-foreground">Melder-Typ</div>
+          <select
+            value={ticket.melderTyp || ""}
+            onChange={(e) => patchTicket(ticket.id, { melderTyp: (e.target.value || undefined) as TicketMelderTyp }).then(onChanged)}
+            className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+          >
+            <option value="">—</option>
+            {TICKET_MELDERTYPEN.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <div className="text-xs font-medium text-muted-foreground">Zuständiger Mitarbeiter</div>
+          <input
+            defaultValue={ticket.zustaendigerMitarbeiter}
+            onBlur={(e) => patchTicket(ticket.id, { zustaendigerMitarbeiter: e.target.value || undefined }).then(onChanged)}
+            className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+          />
+        </div>
+        <div>
           <div className="text-xs font-medium text-muted-foreground">Fälligkeit</div>
           <input
             type="date"
@@ -197,16 +310,163 @@ export default function TicketDetail({
             className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
           />
         </div>
-        <div>
-          <div className="text-xs font-medium text-muted-foreground">Kostenschätzung</div>
-          <input
-            type="number"
-            defaultValue={ticket.kostenSchaetzung}
-            onBlur={(e) => patchTicket(ticket.id, { kostenSchaetzung: Number(e.target.value) || undefined }).then(onChanged)}
-            className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
-          />
+      </div>
+
+      {/* Kaufmännische Daten */}
+      <div className="mb-4 rounded-lg border border-border p-3">
+        <div className="mb-2 text-sm font-medium">Kaufmännisch</div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <div>
+            <div className="text-xs font-medium text-muted-foreground">Kostenstelle</div>
+            <input
+              defaultValue={ticket.kostenstelle}
+              onBlur={(e) => patchTicket(ticket.id, { kostenstelle: e.target.value || undefined }).then(onChanged)}
+              className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+            />
+          </div>
+          <div>
+            <div className="text-xs font-medium text-muted-foreground">Kostenart</div>
+            <select
+              value={ticket.kostenart || ""}
+              onChange={(e) => patchTicket(ticket.id, { kostenart: (e.target.value || undefined) as TicketKostenart }).then(onChanged)}
+              className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+            >
+              <option value="">—</option>
+              {TICKET_KOSTENARTEN.map((k) => (
+                <option key={k} value={k}>
+                  {k}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div className="text-xs font-medium text-muted-foreground">Bestellnummer</div>
+            <input
+              defaultValue={ticket.bestellnummer}
+              onBlur={(e) => patchTicket(ticket.id, { bestellnummer: e.target.value || undefined }).then(onChanged)}
+              className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+            />
+          </div>
+          <div>
+            <div className="text-xs font-medium text-muted-foreground">Kostenschätzung (€)</div>
+            <input
+              type="number"
+              defaultValue={ticket.kostenSchaetzung}
+              onBlur={(e) => patchTicket(ticket.id, { kostenSchaetzung: Number(e.target.value) || undefined }).then(onChanged)}
+              className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+            />
+          </div>
+          <div>
+            <div className="text-xs font-medium text-muted-foreground">Rechnungssumme (€)</div>
+            <input
+              type="number"
+              defaultValue={ticket.rechnungssumme}
+              onBlur={(e) => patchTicket(ticket.id, { rechnungssumme: Number(e.target.value) || undefined }).then(onChanged)}
+              className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+            />
+          </div>
+          <div>
+            <div className="text-xs font-medium text-muted-foreground">Rechnungsstatus</div>
+            <select
+              value={ticket.rechnungsstatus || ""}
+              onChange={(e) => patchTicket(ticket.id, { rechnungsstatus: e.target.value || undefined }).then(onChanged)}
+              className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+            >
+              <option value="">—</option>
+              {TICKET_RECHNUNGSSTATUS.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
+
+      {/* Terminierung & Zugang */}
+      <div className="mb-4 rounded-lg border border-border p-3">
+        <div className="mb-2 text-sm font-medium">Terminierung &amp; Zugang</div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <div className="text-xs font-medium text-muted-foreground">Vereinbarter Termin</div>
+            <input
+              type="datetime-local"
+              defaultValue={ticket.vereinbarterTermin?.slice(0, 16)}
+              onBlur={(e) =>
+                patchTicket(ticket.id, {
+                  vereinbarterTermin: e.target.value ? new Date(e.target.value).toISOString() : undefined,
+                }).then(onChanged)
+              }
+              className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+            />
+          </div>
+          <div>
+            <div className="text-xs font-medium text-muted-foreground">Schlüsselstatus</div>
+            <select
+              value={ticket.schluesselstatus || ""}
+              onChange={(e) => patchTicket(ticket.id, { schluesselstatus: (e.target.value || undefined) as TicketSchluesselstatus }).then(onChanged)}
+              className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+            >
+              <option value="">—</option>
+              {TICKET_SCHLUESSELSTATUS.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="col-span-2">
+            <div className="text-xs font-medium text-muted-foreground">Verfügbarkeit des Mieters</div>
+            <input
+              defaultValue={ticket.mieterVerfuegbarkeit}
+              placeholder="z.B. werktags ab 16 Uhr, Rufnummer vorab abstimmen"
+              onBlur={(e) => patchTicket(ticket.id, { mieterVerfuegbarkeit: e.target.value || undefined }).then(onChanged)}
+              className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Gewerbe-Zusatzdaten – nur wenn Ticket an eine Gewerbeeinheit gebunden ist */}
+      {data.wohnungen.find((w) => w.id === ticket.wohnungId)?.typ === "Gewerbe" && (
+        <div className="mb-4 rounded-lg border border-border p-3">
+          <div className="mb-2 text-sm font-medium">🏢 Gewerbe-Zusatzdaten</div>
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={!!ticket.betriebsunterbrechungRisiko}
+                onChange={(e) => patchTicket(ticket.id, { betriebsunterbrechungRisiko: e.target.checked }).then(onChanged)}
+              />
+              Betriebsunterbrechungs-Risiko
+            </label>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={!!ticket.sicherheitsfreigabeErforderlich}
+                onChange={(e) => patchTicket(ticket.id, { sicherheitsfreigabeErforderlich: e.target.checked }).then(onChanged)}
+              />
+              Sicherheitsfreigabe/Begleitperson erforderlich
+            </label>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={!!ticket.wartungsvertragVorhanden}
+                onChange={(e) => patchTicket(ticket.id, { wartungsvertragVorhanden: e.target.checked }).then(onChanged)}
+              />
+              Wartungsvertrag vorhanden
+            </label>
+            {ticket.wartungsvertragVorhanden && (
+              <input
+                defaultValue={ticket.wartungspartner}
+                placeholder="Wartungspartner (Firma)"
+                onBlur={(e) => patchTicket(ticket.id, { wartungspartner: e.target.value || undefined }).then(onChanged)}
+                className="w-full rounded border border-border bg-background px-2 py-1 text-sm"
+              />
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Freigabe-Workflow */}
       {ticket.freigabeErforderlich && ticket.status !== "Freigegeben" && !["Erledigt", "Abgelehnt", "Storniert"].includes(ticket.status) && (
