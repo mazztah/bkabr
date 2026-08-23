@@ -1176,8 +1176,7 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
     }
 
     try {
-      // Branching-Logik als Closure, damit sie bei Bedarf ein zweites Mal mit
-      // anderen Params (s.u.) aufgerufen werden kann, ohne Code zu duplizieren.
+      // Branching-Logik als Closure (Cerebras/Cloudflare/NVIDIA/Groq).
       const attempt = async (p: ChatParams): Promise<ChatCompletion> => {
         if (isCerebrasModel(model)) {
           return createCerebrasChatCompletion(stripCerebrasPrefix(model), p);
@@ -1199,32 +1198,22 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
         return groq.chat.completions.create({ ...rest, model }, { timeout: 15_000 });
       };
 
-      let completion: ChatCompletion;
-      try {
-        completion = await attempt(budgeted);
-      } catch (innerErr: any) {
-        // Groq (und teils andere OpenAI-kompatible Provider) lehnen den KOMPLETTEN
-        // Request mit einem harten 400 ab, wenn tool_choice="required" gesetzt ist,
-        // das Modell aber reinen Text statt eines Tool-Calls liefern wollte — z.B.
-        // eine legitime Rückfrage wie "Ich warte auf Ihre Anweisung...". Bisher
-        // wurde das wie jeder andere Fehler behandelt und hat die GESAMTE (teure,
-        // langsame) Fallback-Kette durchlaufen, obwohl dasselbe Modell mit
-        // tool_choice="auto" i.d.R. sofort erfolgreich antwortet. Ein einmaliger,
-        // günstiger Retry auf demselben Modell spart typischerweise 1-2 Minuten
-        // (siehe Live-Logs: identischer Fehler bei gpt-oss-120b UND gpt-oss-20b,
-        // danach mehrere Timeouts bei Cerebras/Cloudflare/NVIDIA) und liefert dem
-        // Nutzer eine echte Antwort statt einer Fehlermeldung.
-        const innerMsg = String(innerErr?.message || innerErr?.error?.message || "");
-        const isToolChoiceRejected = /tool choice is required, but model did not call a tool/i.test(innerMsg);
-        if (isToolChoiceRejected && (budgeted as any).tool_choice === "required") {
-          console.warn(
-            `[${providerNameOf(model)}] ${stripProviderPrefix(model)}: tool_choice="required" abgelehnt (Modell wollte Text liefern) — Retry mit tool_choice="auto" auf demselben Modell statt Fallback-Kette.`
-          );
-          completion = await attempt({ ...budgeted, tool_choice: "auto" } as ChatParams);
-        } else {
-          throw innerErr;
-        }
-      }
+      // WICHTIG (Regression aus vorherigem Fix behoben): HIER bewusst KEIN
+      // Retry mit tool_choice="auto" bei "Tool choice is required, but model
+      // did not call a tool" (400). agent.ts setzt tool_choice="required"
+      // NUR dort, wo ein ECHTER Tool-Aufruf fachlich zwingend ist (Schritt 0
+      // / erzwungener Folgeschritt nach z.B. search_investoren_web) — ein
+      // Retry mit "auto" liefert in genau diesen Fällen bloß Text zurück
+      // ("Ich warte auf Ihre Anweisung..."), was von agent.ts als
+      // "Modell hat trotz tool_choice=required keinen Tool-Aufruf geliefert"
+      // erkannt und als komplett fehlgeschlagener Lauf abgebrochen wird —
+      // OHNE dass die Fallback-Kette je ein anderes Modell probiert, das den
+      // Tool-Call ggf. tatsächlich ausführt. Ergebnis: Investorensuche brach
+      // sofort ab, statt (wie vor diesem Fehler) über den Fallback letztlich
+      // doch noch ein kooperierendes Modell zu erreichen. Dieser Fehler wird
+      // daher jetzt wieder wie jeder andere Modellfehler behandelt (siehe
+      // äußeren catch-Block unten) und führt zum nächsten Fallback-Modell.
+      const completion = await attempt(budgeted);
       // "Erfolgreich, aber leer" ist KEIN echter Erfolg: manche Modelle
       // (v.a. die schwächeren Fallback-Stufen wie glm-4.7-flash) liefern
       // gelegentlich HTTP 200 mit leerem content zurück, ohne dass ein Fehler
