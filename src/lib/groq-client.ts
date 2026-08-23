@@ -906,16 +906,50 @@ function applyTokenBudget(model: string, params: ChatParams): ChatParams {
         trialMsgs = trialMsgs.map((m, idx) => {
           if (idx < trialMsgs.length - 1) return m;
           const c = (m as any).content;
-          if (typeof c !== "string") return m;
           const maxChars = Math.floor(budgetForLast * CHARS_PER_TOKEN);
-          if (c.length <= maxChars) return m;
-          return {
-            ...m,
-            content:
-              c.slice(0, Math.floor(maxChars * 0.7)) +
-              "\n…[gekürzt wegen Token-Budget]…\n" +
-              c.slice(-Math.floor(maxChars * 0.25)),
-          } as any;
+
+          if (typeof c === "string") {
+            if (c.length <= maxChars) return m;
+            return {
+              ...m,
+              content:
+                c.slice(0, Math.floor(maxChars * 0.7)) +
+                "\n…[gekürzt wegen Token-Budget]…\n" +
+                c.slice(-Math.floor(maxChars * 0.25)),
+            } as any;
+          }
+
+          // BUGFIX: strukturierter/array-basierter Content (z.B. Tool-Ergebnis-
+          // Nachrichten, multimodale Parts) wurde hier bisher komplett
+          // ÜBERSPRUNGEN ("if (typeof c !== 'string') return m;"), statt
+          // gekürzt zu werden — dadurch blieb die letzte Nachricht in solchen
+          // Fällen auf voller Größe, egal wie oft/aggressiv budgetForLast
+          // weiter verkleinert wurde. Erklärt exakt das beobachtete Muster in
+          // den Logs: "input≈8312" identisch bei ALLEN Fallback-Modellen,
+          // weil gar keine Kürzung stattfand. Jetzt: Text-Anteile innerhalb
+          // des Arrays proportional kürzen, alles andere (z.B. Bild-Parts,
+          // deren Pauschale bereits in estimateMessagesTokens eingepreist ist)
+          // unverändert lassen.
+          if (Array.isArray(c)) {
+            const textLen = c.reduce(
+              (sum: number, part: any) => sum + (typeof part?.text === "string" ? part.text.length : 0),
+              0
+            );
+            if (textLen <= maxChars || textLen === 0) return m;
+            let remaining = maxChars;
+            const newContent = c.map((part: any) => {
+              if (typeof part?.text !== "string" || !part.text) return part;
+              const share = Math.floor(maxChars * (part.text.length / textLen));
+              remaining -= share;
+              if (part.text.length <= share) return part;
+              const head = Math.max(0, Math.floor(share * 0.7));
+              const tail = Math.max(0, Math.floor(share * 0.25));
+              return { ...part, text: part.text.slice(0, head) + " …[gekürzt]… " + part.text.slice(-tail) };
+            });
+            return { ...m, content: newContent } as any;
+          }
+
+          return m; // unbekannter Content-Typ (z.B. null/undefined): unverändert lassen
         });
         t = estimateMessagesTokens(trialMsgs) + toolsTax;
         if (t + MIN_COMPLETION <= TPM_SAFE || budgetForLast <= 200) break;
@@ -1080,6 +1114,39 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
     const budgeted = applyTokenBudget(model, params);
+
+    // Letztes Sicherheitsnetz VOR dem eigentlichen API-Call: greift zusätzlich
+    // zur Vorab-Skip-Prüfung weiter oben (die nur System+Tools ohne Verlauf
+    // schätzt) UND unabhängig davon, ob applyTokenBudget()'s eigene Kürzung
+    // ihr eigenes (konservatives) 5000er-Ziel erreicht hat. Prüft stattdessen
+    // gegen das REALE, in der Praxis beobachtete ~8000-Token-Limit der
+    // Groq-On-Demand-Modelle (inkl. compound/compound-mini) — verhindert
+    // Requests, die garantiert mit 413 scheitern würden, weil z.B. die letzte
+    // Nachricht trotz Kürzungsversuch (Bug behoben, aber als zusätzliche
+    // Absicherung für unbekannte/zukünftige Edge-Cases) oder ein sehr großer
+    // Verlauf über mehrere Agent-Turns hinweg immer noch zu groß ist.
+    const isGroqOnDemand =
+      !isCerebrasModel(model) && !isCloudflareModel(model) && !isNvidiaModel(model);
+    if (isGroqOnDemand) {
+      const HARD_LIMIT_GROQ = 7900; // realer On-Demand-Ceiling (~8000), kleiner Sicherheitsabstand
+      const finalEstimate =
+        estimateMessagesTokens(budgeted.messages) +
+        (budgeted.tools?.length ? estimateTokens(JSON.stringify(budgeted.tools)) : 0);
+      const finalTotal = finalEstimate + ((budgeted as any).max_completion_tokens ?? 256);
+      if (finalTotal > HARD_LIMIT_GROQ) {
+        const hasMoreModels = i < models.length - 1;
+        console.warn(
+          `[groq] ${model}: bleibt nach Kürzung zu groß für das reale Limit (input+completion≈${finalTotal}, hard_limit≈${HARD_LIMIT_GROQ}) — übersprungen` +
+            (hasMoreModels ? `, Fallback → ${stripProviderPrefix(models[i + 1])}.` : ".")
+        );
+        trackModelCall(model, { success: false });
+        lastError = new Error(
+          `Prompt bleibt für ${model} zu groß (input+completion≈${finalTotal}, hard_limit≈${HARD_LIMIT_GROQ})`
+        );
+        continue;
+      }
+    }
+
     try {
       let completion: ChatCompletion;
       if (isCerebrasModel(model)) {
