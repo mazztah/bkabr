@@ -22,8 +22,8 @@ import type { AiProvider } from "./types";
  *
  * Zusätzlich (nur wenn CEREBRAS_API_KEY gesetzt):
  *   6. cerebras:gemma-4-31b  – Cerebras Preview, eigenes Kontingent (5 RPM / 2.4k RPD)
- *   7. cerebras:zai-glm-4.7  – Cerebras Preview, eigenes Kontingent (5 RPM / 2.4k RPD)
- *      Hinweis: zai-glm-4.7 ist laut Cerebras bis 17.08.2026 terminiert.
+ *      (zai-glm-4.7 wurde entfernt: seit 17.08.2026 von Cerebras terminiert,
+ *      seither 100% reproduzierbares 404 "archived" — siehe DEFAULT_CEREBRAS_TEXT_MODELS)
  *
  * Zusätzlich (nur wenn CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN gesetzt):
  *   8. cloudflare:@cf/zai-org/glm-4.7-flash
@@ -93,8 +93,19 @@ const DEFAULT_TEXT_MODELS = [
   "groq/compound",
 ];
 
-/** Default-Cerebras-Fallbacks (nur aktiv, wenn CEREBRAS_API_KEY gesetzt). */
-const DEFAULT_CEREBRAS_TEXT_MODELS = ["gemma-4-31b", "zai-glm-4.7"];
+/**
+ * Default-Cerebras-Fallbacks (nur aktiv, wenn CEREBRAS_API_KEY gesetzt).
+ *
+ * zai-glm-4.7 ENTFERNT (vormals hier gelistet): laut Cerebras bis 17.08.2026
+ * terminiert — Live-Logs bestätigen seither 100% reproduzierbar "404 Model
+ * zai-glm-4.7 is archived and unavailable for the organization." bei JEDEM
+ * einzelnen Aufruf. Reine Verschwendung einer Fallback-Stufe (Zeit + ein
+ * kompletter Cooldown-Eintrag) ohne jede Erfolgschance. Falls Cerebras
+ * inzwischen ein Nachfolgemodell anbietet, über die Umgebungsvariable
+ * CEREBRAS_TEXT_MODELS eintragen (z.B. "gemma-4-31b,neues-modell") — dort
+ * lässt sich das ohne Code-Änderung jederzeit aktualisieren.
+ */
+const DEFAULT_CEREBRAS_TEXT_MODELS = ["gemma-4-31b"];
 
 /**
  * Default-Cloudflare-Workers-AI-Fallbacks (nur aktiv, wenn Account-ID + Token gesetzt).
@@ -545,6 +556,7 @@ async function createCerebrasChatCompletion(
   if (rest.tools?.length) {
     body.tools = rest.tools;
     if (rest.tool_choice != null) body.tool_choice = rest.tool_choice;
+    if (rest.parallel_tool_calls != null) body.parallel_tool_calls = rest.parallel_tool_calls;
   }
   if (rest.stop != null) body.stop = rest.stop;
 
@@ -628,6 +640,7 @@ async function createCloudflareChatCompletion(
   if (rest.tools?.length) {
     body.tools = rest.tools;
     if (rest.tool_choice != null) body.tool_choice = rest.tool_choice;
+    if (rest.parallel_tool_calls != null) body.parallel_tool_calls = rest.parallel_tool_calls;
   }
   if (rest.stop != null) body.stop = rest.stop;
 
@@ -715,6 +728,7 @@ async function createNvidiaChatCompletion(
   if (rest.tools?.length) {
     body.tools = rest.tools;
     if (rest.tool_choice != null) body.tool_choice = rest.tool_choice;
+    if (rest.parallel_tool_calls != null) body.parallel_tool_calls = rest.parallel_tool_calls;
   }
   if (rest.stop != null) body.stop = rest.stop;
 
@@ -851,7 +865,19 @@ function safeTpmForModel(model: string): number {
  */
 function applyTokenBudget(model: string, params: ChatParams): ChatParams {
   const TPM_SAFE = safeTpmForModel(model);
-  const MIN_COMPLETION = 256;
+  // Bei Tool-Calling-Requests etwas großzügiger als bei reinem Text: eine
+  // vollständige, valide Tool-Call-JSON-Struktur (Funktionsname + mehrere
+  // Argumente + Klammern/Escaping) braucht mehr Luft als 256 Tokens, sonst
+  // reißt die Generierung mitten im JSON ab ("Failed to parse tool call
+  // arguments as JSON", beobachtet in Produktion mit abgeschnittenem/leerem
+  // Argumente-Objekt).
+  const MIN_COMPLETION = params.tools?.length ? 500 : 256;
+  // NVIDIA NIM meldet bei manchen Modellen hart "This model only supports
+  // single tool-calls at once!", wenn parallele Tool-Calls erlaubt sind
+  // (Default vieler OpenAI-kompatibler APIs). Der Agent-Loop verarbeitet
+  // Tool-Calls ohnehin sequenziell (ein Schritt = ein Tool), daher generell
+  // deaktiviert — schadet bei Providern ohne diese Einschränkung nicht.
+  const parallelToolCalls = params.tools?.length ? false : undefined;
   const messages = [...(params.messages || [])];
 
   // System + letzte User-Nachricht priorisieren; ältere Turns kürzen
@@ -967,6 +993,7 @@ function applyTokenBudget(model: string, params: ChatParams): ChatParams {
       ...params,
       messages: trialMsgs,
       max_completion_tokens: maxCompletion,
+      ...(parallelToolCalls !== undefined ? { parallel_tool_calls: parallelToolCalls } : {}),
     } as ChatParams;
   }
 
@@ -978,6 +1005,7 @@ function applyTokenBudget(model: string, params: ChatParams): ChatParams {
   return {
     ...params,
     max_completion_tokens: maxCompletion,
+    ...(parallelToolCalls !== undefined ? { parallel_tool_calls: parallelToolCalls } : {}),
   } as ChatParams;
 }
 
@@ -1148,17 +1176,18 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
     }
 
     try {
-      let completion: ChatCompletion;
-      if (isCerebrasModel(model)) {
-        const cerebrasId = stripCerebrasPrefix(model);
-        completion = await createCerebrasChatCompletion(cerebrasId, budgeted);
-      } else if (isCloudflareModel(model)) {
-        const cfId = stripCloudflarePrefix(model);
-        completion = await createCloudflareChatCompletion(cfId, budgeted);
-      } else if (isNvidiaModel(model)) {
-        const nvId = stripNvidiaPrefix(model);
-        completion = await createNvidiaChatCompletion(nvId, budgeted);
-      } else {
+      // Branching-Logik als Closure, damit sie bei Bedarf ein zweites Mal mit
+      // anderen Params (s.u.) aufgerufen werden kann, ohne Code zu duplizieren.
+      const attempt = async (p: ChatParams): Promise<ChatCompletion> => {
+        if (isCerebrasModel(model)) {
+          return createCerebrasChatCompletion(stripCerebrasPrefix(model), p);
+        }
+        if (isCloudflareModel(model)) {
+          return createCloudflareChatCompletion(stripCloudflarePrefix(model), p);
+        }
+        if (isNvidiaModel(model)) {
+          return createNvidiaChatCompletion(stripNvidiaPrefix(model), p);
+        }
         if (!groq) {
           const err: any = new Error(
             "GROQ_API_KEY ist nicht gesetzt und kein Cerebras-/Cloudflare-/NVIDIA-Modell verfügbar."
@@ -1166,14 +1195,35 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
           err.status = 401;
           throw err;
         }
-        const { model: _ignored, ...rest } = budgeted;
-        completion = await groq.chat.completions.create(
-          {
-            ...rest,
-            model,
-          },
-          { timeout: 15_000 }
-        );
+        const { model: _ignored, ...rest } = p;
+        return groq.chat.completions.create({ ...rest, model }, { timeout: 15_000 });
+      };
+
+      let completion: ChatCompletion;
+      try {
+        completion = await attempt(budgeted);
+      } catch (innerErr: any) {
+        // Groq (und teils andere OpenAI-kompatible Provider) lehnen den KOMPLETTEN
+        // Request mit einem harten 400 ab, wenn tool_choice="required" gesetzt ist,
+        // das Modell aber reinen Text statt eines Tool-Calls liefern wollte — z.B.
+        // eine legitime Rückfrage wie "Ich warte auf Ihre Anweisung...". Bisher
+        // wurde das wie jeder andere Fehler behandelt und hat die GESAMTE (teure,
+        // langsame) Fallback-Kette durchlaufen, obwohl dasselbe Modell mit
+        // tool_choice="auto" i.d.R. sofort erfolgreich antwortet. Ein einmaliger,
+        // günstiger Retry auf demselben Modell spart typischerweise 1-2 Minuten
+        // (siehe Live-Logs: identischer Fehler bei gpt-oss-120b UND gpt-oss-20b,
+        // danach mehrere Timeouts bei Cerebras/Cloudflare/NVIDIA) und liefert dem
+        // Nutzer eine echte Antwort statt einer Fehlermeldung.
+        const innerMsg = String(innerErr?.message || innerErr?.error?.message || "");
+        const isToolChoiceRejected = /tool choice is required, but model did not call a tool/i.test(innerMsg);
+        if (isToolChoiceRejected && (budgeted as any).tool_choice === "required") {
+          console.warn(
+            `[${providerNameOf(model)}] ${stripProviderPrefix(model)}: tool_choice="required" abgelehnt (Modell wollte Text liefern) — Retry mit tool_choice="auto" auf demselben Modell statt Fallback-Kette.`
+          );
+          completion = await attempt({ ...budgeted, tool_choice: "auto" } as ChatParams);
+        } else {
+          throw innerErr;
+        }
       }
       // "Erfolgreich, aber leer" ist KEIN echter Erfolg: manche Modelle
       // (v.a. die schwächeren Fallback-Stufen wie glm-4.7-flash) liefern
