@@ -1241,3 +1241,204 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
   }
   throw lastError;
 }
+
+// ============================================================
+// AUTOMATISCHE FORTSETZUNG BEI ABGESCHNITTENER ANTWORT (finish_reason === "length")
+// ============================================================
+// Portiert aus dem immoticker-Projekt (dort erfolgreich für lange Standortanalyse-
+// Berichte eingesetzt): löst ein ANDERES Problem als die LOW_TPM_GROQ_MODELS-Skip-
+// Liste weiter oben. Die Skip-Liste verhindert "413 Request Entity Too Large"
+// (Prompt schon zu groß, um überhaupt zu starten). Diese Fortsetzungslogik fängt
+// den Fall ab, dass ein Call zwar erfolgreich startet (HTTP 200), die Antwort aber
+// durch max_completion_tokens mitten im Text abgeschnitten wird (finish_reason
+// === "length") — z.B. beobachtet bei der Investoren-Strategie-Generierung
+// ("Keine gültige JSON-Antwort erhalten... Expected ',' or ']' after array
+// element"), wenn ein schwaches Fallback-Modell mit kleinem Budget die Antwort
+// vorzeitig abbricht.
+//
+// Nur für REINEN FREITEXT sicher (keine tools, kein response_format=json_object):
+// bei strukturierten Ausgaben würde naives Aneinanderhängen zweier Text-Fragmente
+// leicht ungültiges JSON erzeugen. Für Tool-Calls/JSON-Mode wird deshalb die
+// unveränderte Antwort von createChatCompletion() durchgereicht.
+const CONTINUATION_MAX_BLOCKS = 5;
+const CONTINUATION_TAIL_CHARS = 900;
+
+/**
+ * Wie createChatCompletion(), fordert aber bei abgeschnittener Freitext-Antwort
+ * automatisch bis zu CONTINUATION_MAX_BLOCKS Fortsetzungs-Blöcke an. Jeder
+ * Fortsetzungs-Block bekommt bewusst NUR einen kompakten Kontext (kurze
+ * System-Anweisung + die letzten ~900 Zeichen des bisherigen Texts) statt des
+ * kompletten Ursprungs-Prompts — dadurch bleibt auch Block 2+ sicher unter dem
+ * TPM-Limit UND kann wieder die starken Primärmodelle nutzen (die beim ersten,
+ * großen Block ggf. via LOW_TPM_GROQ_MODELS übersprungen wurden). Die Blöcke
+ * werden nahtlos aneinandergehängt zurückgegeben — für Aufrufer nicht sichtbar,
+ * dass mehrere Requests dahinterstecken.
+ */
+export async function createChatCompletionWithContinuation(
+  params: ChatParams,
+  opts?: { maxBlocks?: number; continuationHint?: string }
+): Promise<ChatCompletion> {
+  const usesStructuredOutput =
+    Boolean(params.tools?.length) || params.response_format?.type === "json_object";
+  const maxBlocks = opts?.maxBlocks ?? CONTINUATION_MAX_BLOCKS;
+
+  let completion = await createChatCompletion(params);
+  if (usesStructuredOutput) return completion; // Konkatenation hier nicht sicher
+
+  let choice = completion.choices?.[0] as { message?: { content?: string | null }; finish_reason?: string } | undefined;
+  let accumulated = String(choice?.message?.content ?? "");
+  let finishReason = choice?.finish_reason;
+  let blocks = 1;
+
+  while (finishReason === "length" && blocks < maxBlocks) {
+    const tail = accumulated.slice(-CONTINUATION_TAIL_CHARS);
+    const continueParams: ChatParams = {
+      ...params,
+      messages: [
+        {
+          role: "system",
+          content:
+            `${opts?.continuationHint ? opts.continuationHint + " " : ""}` +
+            "Setze den folgenden Text NAHTLOS genau dort fort, wo er endet. Keine Wiederholung, " +
+            "kein neuer Vorspann, keine erneute Einleitung. Endet der Text mitten im Satz oder " +
+            "mitten in einer Aufzählung, vervollständige diesen zuerst und mache dann im gleichen " +
+            "Stil und Format weiter.",
+        },
+        {
+          role: "user",
+          content: `Bisheriges Textende:\n\n…${tail}\n\nSetze hier nahtlos fort:`,
+        },
+      ],
+      tools: undefined,
+      tool_choice: undefined,
+      response_format: undefined,
+    };
+
+    let next: ChatCompletion;
+    try {
+      next = await createChatCompletion(continueParams);
+    } catch (err) {
+      console.warn(
+        `[continuation] Fortsetzungs-Block ${blocks + 1} fehlgeschlagen, gebe bisherigen Text zurück:`,
+        err
+      );
+      break;
+    }
+
+    const nextChoice = next.choices?.[0] as { message?: { content?: string | null }; finish_reason?: string } | undefined;
+    accumulated += String(nextChoice?.message?.content ?? "");
+    finishReason = nextChoice?.finish_reason;
+    completion = next; // Metadaten (Modell/Usage) der letzten Stufe für Logging/Tracking behalten
+    blocks++;
+  }
+
+  if (blocks >= maxBlocks && finishReason === "length") {
+    console.warn(`[continuation] Maximale Blockzahl (${maxBlocks}) erreicht, Antwort könnte unvollständig sein.`);
+  }
+
+  const firstChoice = (completion.choices?.[0] ?? {}) as unknown as Record<string, unknown>;
+  const firstMessage = (firstChoice.message ?? {}) as Record<string, unknown>;
+  return {
+    ...completion,
+    choices: [
+      {
+        ...firstChoice,
+        message: { ...firstMessage, content: accumulated },
+        finish_reason: finishReason === "length" ? "length" : "stop",
+      },
+      ...(completion.choices?.slice(1) ?? []),
+    ],
+  } as ChatCompletion;
+}
+
+/**
+ * Wie createChatCompletionWithContinuation, aber sicher für response_format=
+ * json_object: bei abgeschnittener Antwort (finish_reason === "length", z.B.
+ * beobachtet bei generateInvestorStrategieBericht: "Keine gültige JSON-Antwort
+ * erhalten... Expected ',' or ']' after array element") wird der ROHE,
+ * unvollständige JSON-Text als Kontext mitgegeben und das Modell gebeten, GENAU
+ * an der Abbruchstelle mit reinem JSON-Fragment fortzufahren (kein neuer Prolog,
+ * keine Wiederholung, keine Code-Fences) — Anfang + Fortsetzung ergeben
+ * zusammengefügt gültiges JSON. Bricht ab, sobald das Ergebnis gültiges JSON ist
+ * oder maxBlocks erreicht ist (dann wird der bestmögliche — ggf. weiterhin
+ * unvollständige — Text zurückgegeben, der Aufrufer muss wie bisher mit einem
+ * JSON.parse-Fehlschlag rechnen können).
+ */
+export async function createJsonChatCompletionWithContinuation(
+  params: ChatParams,
+  opts?: { maxBlocks?: number }
+): Promise<ChatCompletion> {
+  const maxBlocks = opts?.maxBlocks ?? CONTINUATION_MAX_BLOCKS;
+  const isValidJson = (s: string): boolean => {
+    try {
+      JSON.parse(s);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  let completion = await createChatCompletion(params);
+  let choice = completion.choices?.[0] as { message?: { content?: string | null }; finish_reason?: string } | undefined;
+  let accumulated = String(choice?.message?.content ?? "");
+  let finishReason = choice?.finish_reason;
+  let blocks = 1;
+
+  while (finishReason === "length" && blocks < maxBlocks && !isValidJson(accumulated)) {
+    const tail = accumulated.slice(-CONTINUATION_TAIL_CHARS);
+    const continueParams: ChatParams = {
+      ...params,
+      max_completion_tokens: params.max_completion_tokens ?? 2000,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Der folgende Text ist eine UNVOLLSTÄNDIGE, mitten abgeschnittene JSON-Antwort. Setze GENAU an " +
+            "der Abbruchstelle fort und schreibe NUR den fehlenden Rest des JSON (keine Wiederholung des " +
+            "bisherigen Texts, kein neuer Prolog, keine Code-Fences/Markdown) — so, dass bisheriger Text + " +
+            "dein Rest zusammen syntaktisch gültiges JSON ergeben.",
+        },
+        {
+          role: "user",
+          content: `Bisheriges (abgeschnittenes) JSON-Ende:\n\n${tail}\n\nSchreibe NUR den fehlenden Rest ab hier:`,
+        },
+      ],
+      tools: undefined,
+      tool_choice: undefined,
+      response_format: undefined, // Fortsetzung ist ein Fragment, kein eigenständiges JSON-Objekt
+    };
+
+    let next: ChatCompletion;
+    try {
+      next = await createChatCompletion(continueParams);
+    } catch (err) {
+      console.warn(`[json-continuation] Block ${blocks + 1} fehlgeschlagen, gebe bisherigen Text zurück:`, err);
+      break;
+    }
+
+    const nextChoice = next.choices?.[0] as { message?: { content?: string | null }; finish_reason?: string } | undefined;
+    accumulated += String(nextChoice?.message?.content ?? "");
+    finishReason = nextChoice?.finish_reason;
+    completion = next;
+    blocks++;
+  }
+
+  const validNow = isValidJson(accumulated);
+  if (!validNow && blocks >= maxBlocks) {
+    console.warn(`[json-continuation] Maximale Blockzahl (${maxBlocks}) erreicht, JSON weiterhin ungültig.`);
+  }
+
+  const firstChoiceJ = (completion.choices?.[0] ?? {}) as unknown as Record<string, unknown>;
+  const firstMessageJ = (firstChoiceJ.message ?? {}) as Record<string, unknown>;
+  return {
+    ...completion,
+    choices: [
+      {
+        ...firstChoiceJ,
+        message: { ...firstMessageJ, content: accumulated },
+        finish_reason: validNow ? "stop" : finishReason,
+      },
+      ...(completion.choices?.slice(1) ?? []),
+    ],
+  } as ChatCompletion;
+}

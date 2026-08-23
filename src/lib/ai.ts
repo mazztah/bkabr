@@ -16,7 +16,12 @@ import {
   InvestorStrategiePunkt,
 } from "./types";
 import { mietRueckstand } from "./mietkonto";
-import { createChatCompletion, VISION_MODEL } from "./groq-client";
+import {
+  createChatCompletion,
+  createChatCompletionWithContinuation,
+  createJsonChatCompletionWithContinuation,
+  VISION_MODEL,
+} from "./groq-client";
 import { INVESTOR_KRITERIEN, empfehlungAusScore } from "./investoren";
 import { webSearch } from "./websearch";
 import { v4 as uuidv4 } from "uuid";
@@ -895,7 +900,12 @@ export async function generateAnschreiben(abr: Abrechnung, anlass: string): Prom
 }
 
 export async function rechtCheck(abr: Abrechnung | null, staticContent: string): Promise<string> {
-  const completion = await createChatCompletion({
+  // createChatCompletionWithContinuation: die strukturierte Markdown-Antwort
+  // (Hinweise + Quellen + Entscheidungsdatum) kann bei ausführlichem
+  // staticContent-Rechtsstand-Kontext das max_completion_tokens-Budget
+  // ausschöpfen und mitten im Text abreißen — wird jetzt automatisch nahtlos
+  // fortgesetzt statt abgeschnitten zurückgegeben.
+  const completion = await createChatCompletionWithContinuation({
     max_completion_tokens: 1500,
     messages: [
       {
@@ -1197,7 +1207,11 @@ ${JSON.stringify(overview, null, space)}`;
 
   // 1. Versuch: normal kompakt (ohne Pretty-Print)
   try {
-    const completion = await createChatCompletion({
+    // createChatCompletionWithContinuation: ausführliche Chat-Antworten (z.B.
+    // Portfolio-Zusammenfassungen, mehrteilige Erklärungen) können das
+    // max_completion_tokens-Budget (1200) ausschöpfen und mitten im Satz
+    // abbrechen — wird jetzt automatisch nahtlos fortgesetzt.
+    const completion = await createChatCompletionWithContinuation({
       max_completion_tokens: 1200,
       messages: [
         { role: "system", content: buildSystem(true) },
@@ -1229,7 +1243,7 @@ bestand:${JSON.stringify(miniPortfolio)}
 rs:${JSON.stringify(mietrueckstaende.slice(0, 20))}
 abr:${JSON.stringify(currentKurz ? { id: currentKurz.id, name: currentKurz.name, status: currentKurz.status } : null)}`;
 
-    const completion = await createChatCompletion({
+    const completion = await createChatCompletionWithContinuation({
       max_completion_tokens: 1000,
       messages: [
         { role: "system", content: miniSystem },
@@ -1484,7 +1498,10 @@ export async function generateInvestorAnschreiben(
   investor: Pick<Investor, "firma" | "ansprechpartnerName" | "land" | "sektoren" | "kurzprofil" | "sprache">,
   kontext: { absenderName?: string; philosophie?: string; anlass?: string } = {}
 ): Promise<{ betreff: string; body: string }> {
-  const completion = await createChatCompletion({
+  // createJsonChatCompletionWithContinuation: gleiche Absicherung wie bei
+  // generateInvestorStrategieBericht — response_format=json_object kann bei
+  // knappem Fallback-Modell-Budget mitten im JSON abreißen.
+  const completion = await createJsonChatCompletionWithContinuation({
     max_completion_tokens: 1400,
     temperature: 0.4,
     response_format: { type: "json_object" },
@@ -1537,7 +1554,16 @@ export async function generateInvestorStrategieBericht(
   investor: Pick<Investor, "firma" | "land" | "sektoren" | "kurzprofil" | "tickeGroesse" | "hub">,
   wirtschaftlicheZiele?: string
 ): Promise<{ zusammenfassung: string; punkte: InvestorStrategiePunkt[] }> {
-  const completion = await createChatCompletion({
+  // createJsonChatCompletionWithContinuation statt createChatCompletion: die
+  // 20-25 angeforderten Strategiepunkte als json_object-Antwort wurden in der
+  // Praxis von schwächeren Fallback-Modellen (kleines max_completion_tokens-
+  // Budget) mitten im JSON-Array abgeschnitten (siehe Server-Logs: "Keine
+  // gültige JSON-Antwort erhalten... Expected ',' or ']' after array element").
+  // Bei finish_reason === "length" wird jetzt automatisch ein Fortsetzungs-
+  // Block angefordert, der GENAU an der Abbruchstelle weiterschreibt, statt
+  // die abgeschnittene (und damit für extractJson unbrauchbare) Antwort
+  // direkt zurückzugeben.
+  const completion = await createJsonChatCompletionWithContinuation({
     max_completion_tokens: 3000,
     temperature: 0.3,
     response_format: { type: "json_object" },
