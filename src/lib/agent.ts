@@ -3928,6 +3928,43 @@ find_mieter / get_mietrueckstaende / create_brief – Mahnungen nur bei positive
 - Löschen nur mit klarer Nutzer-Freigabe.
 - Antworten auf Deutsch, kurz und strukturiert.`;
 
+/**
+ * Schlanke Investoren-only-Variante von AGENT_SYSTEM (Durchgang: Token-Budget-
+ * Fix). Wird verwendet, wenn ohnehin nur INVESTOR_AGENT_TOOLS (11 Tools)
+ * aktiv sind — dann sind die Abschnitte "Wichtige Tools (Stammdaten)",
+ * "Module der Plausibilitätsprüfung", "Bereinigungs-Workflow", "Schriftverkehr"
+ * und "Buchhaltung" komplett irrelevant: das Modell KANN diese Tools ohnehin
+ * nicht aufrufen (sie sind gar nicht im tools-Array), das Beschreiben kostet
+ * also nur Tokens ohne jeden Nutzen. Vorher wurde bei JEDEM Investoren-Aufruf
+ * trotzdem der KOMPLETTE AGENT_SYSTEM (~4500 Tokens) + die vollen
+ * INVESTOR_AGENT_TOOLS (~4400 Tokens) gesendet = ~8900 Tokens zusammen –
+ * dadurch wurden ALLE fünf Groq-On-Demand-Modelle (8000-Token-Limit,
+ * inkl. compound/compound-mini) bei praktisch jedem Investoren-Request
+ * übersprungen, obwohl deren TPM-Kontingent kostenlos ist. Diese schlanke
+ * Variante enthält nur Intro + kompaktes Routing + den vollständigen
+ * "## Investoren"-Abschnitt (unverändert, da fachlich nötig) + "## Regeln" –
+ * spart ca. 2500-3000 Tokens und bringt den Gesamt-Payload wieder unter das
+ * reale ~8000-Token-Limit, sodass die schnellen/kostenlosen Groq-Modelle
+ * wieder tatsächlich genutzt werden können statt immer übersprungen zu werden.
+ */
+const AGENT_SYSTEM_INVESTOR = `Du bist "BetriebsKostenBot Agent" – ein Handlungs-Assistent in einer deutschen Hausverwaltungs-App, hier im Investoren-Modus (nur Investoren-Tools verfügbar).
+Du hast Schreibrechte über Tools (Datenbank-Updates). Behaupte NIEMALS, du könntest Stammdaten nicht speichern oder hättest keine Schreibrechte.
+
+## Investoren
+- Nennt der Nutzer bereits konkrete Angaben zu EINEM Investor (Firma + mind. ein weiteres Merkmal wie Typ/Land/Kontakt) und bittet darum, diese zu erfassen/anzulegen/zu speichern/nachzutragen (z.B. „Stammdaten nachtragen: MAGAN Immobilien (Private Equity, Österreich)", „erfasse den Investor X"): NIEMALS behaupten, du könntest keine Informationen zu Unternehmen/Personen abrufen oder erst manuelle Schritte vorschlagen – das sind vom Nutzer bereits gelieferte Daten, keine Recherche-Anfrage. Stattdessen SOFORT save_investor aufrufen (ohne investor_id, status="vorschlag") mit genau den genannten Feldern (firma, land, sektoren/kurzprofil aus dem Typ ableiten, …) und danach kurz bestätigen, was gespeichert wurde. Keine Websuche und keine Rückfrage nötig, außer die Firma (Pflichtfeld) fehlt ganz.
+- Bei vagen Aufträgen ("suche neue Investoren") sinnvolle Standardannahmen treffen (breite Sektoren/Top-Wissenshubs) und SOFORT recherchieren statt erst nachzufragen – der Nutzer kann danach verfeinern.
+- Recherche/Suche: mehrere gezielte search_investoren_web-Aufrufe (pro Sektor/Region, mind. 3-4 unterschiedliche Suchen für "10 Investoren" statt nur einer einzigen breiten Anfrage – eine einzelne Suche liefert erfahrungsgemäß zu wenige verwertbare Treffer) → für JEDEN gefundenen Kandidaten SOFORT einzeln save_investor (ohne investor_id) mit status="vorschlag" + quelle=URL (nie ungeprüft "freigegeben"). WICHTIG: hier bewusst KEIN evaluate_investor_kriterien und KEINE Passungs-Bewertung – die Kandidaten sollen roh und zügig in der Investoren-Liste erscheinen, damit der Nutzer sie dort nach und nach durchgehen und einzeln freigeben kann. Die Bewertung/Vertiefung passiert erst später, siehe „Stammdaten updaten" unten. Liefert die Recherche weniger Kandidaten als gewünscht, das offen sagen (nicht so tun, als sei die Zielzahl erreicht) und ggf. weitere Suchen anbieten.
+- Nach der Suche NICHT nachfragen, was mit den Kandidaten passieren soll – sie sind bereits als Vorschlag gespeichert und sofort in der Investoren-Liste sichtbar. Kurz bestätigen wie viele gefunden/gespeichert wurden, fertig.
+- Stammdaten updaten (Vertiefung nach Freigabe): Wenn der Nutzer im Chat sinngemäß bittet, für freigegebene/bereits recherchierte Investoren die (vollständigen) Stammdaten anzulegen/zu vervollständigen/zu aktualisieren (z.B. „lege die Stammdaten der freigegebenen Investoren an", „Stammdaten updaten") → update_investoren_stammdaten aufrufen. Ohne investor_ids werden automatisch alle freigegebenen Investoren ohne bisheriges Update verarbeitet; mit investor_ids gezielt einzelne. Das Tool sucht pro Investor selbstständig nach und ergänzt Kontakt/Ansprechpartner/Score – NICHT versuchen, das stattdessen manuell über mehrere search_investoren_web + save_investor-Aufrufe nachzubauen.
+- Freigabe: approve_investoren/reject_investor. Anschreiben: generate_investor_anschreiben (Vorstellung/Philosophie/App, offen für Zusammenarbeit/Kauf/Job). Strategie: generate_investor_strategie_bericht (≥20 Punkte, wirtschaftliche_ziele nutzen falls genannt).
+- Cronjobs: create_agent_schedule (einzeln) / create_agent_schedules_batch (bis 10), z.B. "alle 2 Tage" = intervall_minuten=2880.
+- delete_investor: erst ohne user_confirmed fragen, dann bestätigt ausführen.
+
+## Regeln
+- Tools nutzen, nicht ablehnen. Keine erfundenen Beträge.
+- Löschen nur mit klarer Nutzer-Freigabe.
+- Antworten auf Deutsch, kurz und strukturiert.`;
+
 export interface AgentResult {
   reply: string;
   steps: { tool: string; args: Record<string, unknown>; result: unknown }[];
@@ -4019,8 +4056,19 @@ export async function runAgent(params: {
   // erst list_liegenschaften/list_wohnungen aufrufen muss — spart Tool-Calls und Tokens.
   const seitenKontext = await buildSeitenKontext(params.path);
 
+  // VOR der messages-Konstruktion ermittelt (statt danach), damit sowohl die
+  // Tool-Auswahl als auch der Systemprompt selbst davon abhängen können —
+  // siehe AGENT_SYSTEM_INVESTOR-Kommentar oben: bei reinen Investoren-Anfragen
+  // spart die schlanke Variante ca. 2500-3000 Tokens gegenüber dem vollen
+  // AGENT_SYSTEM, was den Gesamt-Payload wieder unter Groqs reales
+  // ~8000-Token-Limit bringt.
+  const wantsInvestorTools =
+    mentionsInvestor(params.message) ||
+    Boolean(params.path && params.path.startsWith("/investoren")) ||
+    (params.history || []).slice(-4).some((h) => mentionsInvestor(h.content));
+
   const messages: Groq.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: "system", content: AGENT_SYSTEM },
+    { role: "system", content: wantsInvestorTools ? AGENT_SYSTEM_INVESTOR : AGENT_SYSTEM },
     ...(seitenKontext ? [{ role: "system", content: seitenKontext } as Groq.Chat.Completions.ChatCompletionMessageParam] : []),
     ...(params.history || []).map(
       (h) =>
@@ -4037,10 +4085,6 @@ export async function runAgent(params: {
     },
   ];
 
-  const wantsInvestorTools =
-    mentionsInvestor(params.message) ||
-    Boolean(params.path && params.path.startsWith("/investoren")) ||
-    (params.history || []).slice(-4).some((h) => mentionsInvestor(h.content));
   // WICHTIG: bei Investoren-Anfragen NUR die 11 Investoren-Tools senden, nicht
   // zusätzlich alle 47 CORE_AGENT_TOOLS obendrauf. Investoren-Workflows
   // brauchen keines der Mieter-/Gebäude-/Buchhaltungs-/Schriftverkehr-Tools –
