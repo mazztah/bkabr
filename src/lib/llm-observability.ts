@@ -71,8 +71,17 @@ function baseCapabilities() {
  *
  * groq/compound und groq/compound-mini sind Meta-Modelle: Groq routet sie
  * intern an llama-4-scout-17b-16e-instruct bzw. llama-3.3-70b-versatile –
- * die Limits gelten für DIESE zugrunde liegenden Modelle, nicht für
- * "compound" selbst.
+ * ursprüngliche Annahme war, die Limits dieser zugrunde liegenden Modelle
+ * (30000 TPM bzw. 100000 TPD) würden auch für "compound" selbst gelten.
+ *
+ * WIDERLEGT durch reale Produktionslogs: beide Modelle scheiterten
+ * nacheinander mit echtem 413 "Request Entity Too Large" bei
+ * input≈8196 Tokens – deutlich unter der angenommenen 30000/100000-Grenze.
+ * Effektiv verhalten sie sich also wie die anderen On-Demand-Modelle mit
+ * ~8000-Token-Limit (siehe groq-client.ts LOW_TPM_GROQ_MODELS, wo beide
+ * inzwischen ebenfalls eingetragen sind). Werte hier auf die real
+ * beobachtete Grenze korrigiert, damit das Dashboard nicht weiter ein
+ * großzügigeres Budget vorspiegelt, als tatsächlich nutzbar ist.
  */
 export const KNOWN_FREE_TIER_LIMITS: Record<
   string,
@@ -81,8 +90,14 @@ export const KNOWN_FREE_TIER_LIMITS: Record<
   "groq:openai/gpt-oss-120b": { tpm: 8000, tpd: 200000 },
   "groq:openai/gpt-oss-20b": { tpm: 8000 },
   "groq:qwen/qwen3.6-27b": { tpm: 8000 },
-  "groq:groq/compound-mini": { tpd: 100000, hinweis: "Limit gilt für llama-3.3-70b-versatile (intern genutzt)" },
-  "groq:groq/compound": { tpm: 30000, hinweis: "Limit gilt für llama-4-scout-17b-16e-instruct (intern genutzt)" },
+  "groq:groq/compound-mini": {
+    tpm: 8000,
+    hinweis: "Real beobachtet: 413 bei input≈8196 Tokens, trotz früherer Annahme (100000 TPD via llama-3.3-70b-versatile)",
+  },
+  "groq:groq/compound": {
+    tpm: 8000,
+    hinweis: "Real beobachtet: 413 bei input≈8196 Tokens, trotz früherer Annahme (30000 TPM via llama-4-scout-17b-16e-instruct)",
+  },
   "groq:meta-llama/llama-4-scout-17b-16e-instruct": { tpm: 30000 },
 };
 

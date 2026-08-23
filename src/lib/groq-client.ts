@@ -163,11 +163,29 @@ const STRUCTURED_OUTPUT_UNSAFE_MODELS = new Set([
  * der Praxis beobachtet: "Limit 8000" für gpt-oss-120b, gpt-oss-20b und
  * qwen3.6-27b). Wird das Tools-Schema allein schon zu groß für dieses Limit,
  * werden diese Modelle übersprungen statt garantiert zu scheitern.
+ *
+ * groq/compound und groq/compound-mini NACHTRÄGLICH ergänzt (waren hier
+ * bewusst ausgenommen, in der Annahme sie hätten ein großzügigeres Budget) —
+ * Produktionslogs zeigen aber dasselbe Muster: "Token-Budget angepasst
+ * (input≈8196, max_completion=256, safe=5000)" gefolgt von einem echten
+ * 413 "Request Entity Too Large" für BEIDE Modelle nacheinander, bevor der
+ * Fallback erst bei zai-glm-4 (Cerebras) durchkommt. Ursache: applyTokenBudget()
+ * kann nur den Nachrichtenverlauf/die letzte Nachricht kürzen, NICHT den
+ * System-Prompt oder das Tools-Schema — sind diese beiden allein schon >6500
+ * Tokens (irreducibleEstimate), bleibt der Request für JEDES 8000-TPM-Modell
+ * garantiert zu groß, unabhängig davon, wie sehr der Rest gekürzt wird. Ohne
+ * diesen Eintrag wurden compound/compound-mini deshalb bei jedem größeren
+ * Tool-/System-Prompt-Kontext zweimal sinnlos angefragt (je bis zu 15s Timeout)
+ * und erst danach auf eine funktionierende Stufe zurückgefallen — das hat
+ * spürbar zur Serverlast beigetragen und fiel zeitlich mit fehlgeschlagenen
+ * Fly.io-Health-Checks zusammen (1 vCPU, siehe fly.toml).
  */
 const LOW_TPM_GROQ_MODELS = new Set([
   "openai/gpt-oss-120b",
   "openai/gpt-oss-20b",
   "qwen/qwen3.6-27b",
+  "groq/compound",
+  "groq/compound-mini",
 ]);
 /**
  * Schwelle in Tokens für System-Prompt + Tools-Schema zusammen (siehe
