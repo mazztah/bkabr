@@ -3424,7 +3424,13 @@ async function executeTool(
       if (!query) return { error: "query erforderlich" };
       try {
         const treffer = await webSearch(query, {
-          maxResults: typeof args.max_results === "number" ? args.max_results : 5,
+          // Default von 5 auf 8 erhöht: nach der Dedup-Prüfung in save_investor
+          // (s.o.) sind bekannte/bereits vorhandene Investoren aus den rohen
+          // Suchtreffern nicht automatisch neue Kandidaten — ein etwas
+          // größerer Rohtreffer-Pool pro Suchrunde erhöht die Chance auf
+          // genug tatsächlich NEUE Kandidaten, ohne dass das Modell
+          // zwangsläufig noch mehr Suchrunden braucht.
+          maxResults: typeof args.max_results === "number" ? args.max_results : 8,
         });
         return { anzahl: treffer.length, treffer };
       } catch (err: any) {
@@ -3487,6 +3493,36 @@ async function executeTool(
       const firma = String(args.firma || "").trim();
       const land = String(args.land || "").trim();
       if (!firma || !land) return { error: "firma und land erforderlich (zum Aktualisieren stattdessen investor_id angeben)" };
+
+      // DEDUP-PRÜFUNG (Fix: bisher fehlend — jeder Suchtreffer wurde blind
+      // als neuer Investor angelegt, auch wenn die Firma bereits existierte.
+      // Sichtbare Folge in Produktion: mehrfache Einträge für dieselbe Firma,
+      // z.B. "Khosla Ventures", "Andreessen Horowitz", "Insight Partners",
+      // "AI.FUND", "RPA GROUP" jeweils doppelt in der Investoren-Liste.
+      // Normalisierter Vergleich (klein geschrieben, Rechtsformen/Suffixe wie
+      // "SGR"/"S.p.A."/"GmbH"/"Inc."/"Ltd" sowie Satz-/Sonderzeichen entfernt),
+      // damit auch leicht abweichende Schreibweisen ("Khosla Ventures" vs.
+      // "Khosla Ventures LLC") erkannt werden.
+      const normalizeFirma = (s: string) =>
+        s
+          .toLowerCase()
+          .replace(/\b(gmbh|ag|s\.?p\.?a\.?|sgr|s\.?r\.?l\.?|llc|inc\.?|ltd\.?|plc|co\.?|corp\.?|group|fund|partners|ventures|capital)\b/g, "")
+          .replace(/[^a-z0-9]+/g, "")
+          .trim();
+      const firmaNormalisiert = normalizeFirma(firma);
+      if (firmaNormalisiert) {
+        const bestehende = await investorenDb.list();
+        const duplikat = bestehende.find((inv) => normalizeFirma(inv.firma) === firmaNormalisiert);
+        if (duplikat) {
+          return {
+            ok: true,
+            duplicate: true,
+            investor: { id: duplikat.id, firma: duplikat.firma, status: duplikat.status },
+            hinweis: `Investor "${duplikat.firma}" existiert bereits (Status: ${duplikat.status}) — kein Duplikat angelegt. Bitte mit anderen/weiteren Kandidaten fortfahren, bis die gewünschte Anzahl NEUER Investoren erreicht ist.`,
+          };
+        }
+      }
+
       const now = new Date().toISOString();
       const kriterienErgebnisRoh = Array.isArray(args.kriterien_ergebnis)
         ? (args.kriterien_ergebnis as Record<string, unknown>[])
@@ -4104,10 +4140,33 @@ export async function runAgent(params: {
     // akzeptiert, weil ab Schritt 1 normalerweise tool_choice="auto" gilt.
     const FORCED_FOLLOWUP_TOOLS = new Set(["search_investoren_web"]);
 
+    // Fix: "sucht nur noch 2 statt 15 Investoren" — bisher wurde tool_choice
+    // nur für GENAU EINEN Schritt nach einer erfolgreichen Suche erzwungen
+    // (s.o.). Nach dem Speichern der Treffer aus RUNDE 1 galt sofort wieder
+    // tool_choice="auto", und schwächere Modelle haben dann einfach
+    // aufgehört, statt (wie im Systemprompt "## Investoren" explizit
+    // gefordert: "mind. 3-4 unterschiedliche Suchen") weitere Suchrunden zu
+    // starten. Jetzt: Zielanzahl aus der Nutzer-Nachricht parsen (z.B. "15
+    // neue KI-Investoren") und daraus eine Mindest-Anzahl an Suchrunden
+    // ableiten (grobe Faustregel: 1 Suchrunde pro ~4 gewünschte Investoren,
+    // da nach Abzug von Duplikaten/Dedup i.d.R. nicht jeder Treffer neu ist),
+    // gedeckelt auf 2-6 Runden. Ohne erkennbare Zahl: Standardmäßig 3 Runden
+    // (entspricht der im Systemprompt selbst genannten Faustregel).
+    const zielAnzahlMatch = params.message.match(/(\d{1,3})\s*(?:neue[nr]?\s*)?(?:ki[- ]?)?investoren/i);
+    const zielAnzahl = zielAnzahlMatch ? Math.min(50, Math.max(1, parseInt(zielAnzahlMatch[1], 10))) : undefined;
+    const zielSuchrunden = zielAnzahl ? Math.min(6, Math.max(2, Math.ceil(zielAnzahl / 4))) : 3;
+
     for (let step = 0; step < MAX_AGENT_STEPS; step++) {
       const lastStep = capabilitySteps[capabilitySteps.length - 1];
+      const bisherigeSuchrunden = capabilitySteps.filter(
+        (s) => s.tool === "search_investoren_web" && s.success
+      ).length;
+      const wantsMoreSearchRounds =
+        wantsInvestorTools && bisherigeSuchrunden > 0 && bisherigeSuchrunden < zielSuchrunden;
       const mustContinueWithTool =
-        step > 0 && Boolean(lastStep?.success) && FORCED_FOLLOWUP_TOOLS.has(lastStep.tool);
+        step > 0 &&
+        Boolean(lastStep?.success) &&
+        (FORCED_FOLLOWUP_TOOLS.has(lastStep.tool) || wantsMoreSearchRounds);
       const completion = await createChatCompletion({
         max_completion_tokens: 2000,
         temperature: 0.2,
