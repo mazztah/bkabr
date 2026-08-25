@@ -855,7 +855,26 @@ function safeTpmForModel(model: string): number {
     return 24000;
   }
   if (model.startsWith("cerebras:")) return 16000; // aktuell meist per 402 blockiert; großzügig für den Fall reaktivierten Guthabens
-  return 5000; // groq/* inkl. compound, compound-mini: Sicherheitsabstand zum beobachteten 8000-TPM-Limit
+
+  // groq/* inkl. compound, compound-mini: 7200 statt vormals 5000.
+  //
+  // Grund für die Anhebung: seit dem HARD_LIMIT_GROQ-Sicherheitsnetz weiter
+  // unten (prüft das TATSÄCHLICH gekürzte Ergebnis gegen das reale ~8000-
+  // Token-Limit, unabhängig davon, ob applyTokenBudget()'s eigenes Ziel hier
+  // erreicht wurde) ist TPM_SAFE nur noch das AGGRESSIVITÄTS-Ziel der
+  // Kürzung selbst, nicht mehr die einzige Schutzschicht vor 413ern. Der
+  // bisherige Wert 5000 lag damit doppelt konservativ: einmal hier, einmal
+  // im Sicherheitsnetz (7900) — mit der Folge, dass praktisch JEDE
+  // Investoren-Anfrage (System+Tools ≈ 6100-6300 Tokens, siehe
+  // AGENT_SYSTEM_INVESTOR/INVESTOR_AGENT_TOOLS in agent.ts) unnötig durch
+  // die aggressive Kürzung lief UND max_completion_tokens praktisch immer
+  // auf den Mindestwert (500 bei Tool-Calls) gedeckelt wurde (siehe Live-
+  // Logs: "input≈4946-5138, max_completion=500, safe=5000" bei praktisch
+  // jedem einzelnen Aufruf). 7200 lässt ~700 Tokens Puffer bis zum echten
+  // Sicherheitsnetz (7900) und deckt den Investoren-Payload i.d.R. OHNE
+  // Kürzung ab — weniger Kontextverlust, mehr Spielraum für die Antwort
+  // (Tool-Call-JSON), seltenere "Token-Budget angepasst"-Meldungen.
+  return 7200;
 }
 
 /**

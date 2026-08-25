@@ -4079,8 +4079,26 @@ export async function runAgent(params: {
   const createdBriefIds: string[] = [];
   const capabilitySteps: AgentRunStep[] = [];
 
+  // VOR dem deterministischen Cleanup-Shortcut ermittelt (Bugfix): "Stammdaten"
+  // wird sowohl im Mieter-Kontext ("Mieter-Stammdaten aktualisieren") als auch im
+  // Investoren-Kontext ("Investoren-Stammdaten aktualisieren") verwendet — die
+  // Wörter überschneiden sich. tryDeterministicCleanup()'s wantsMieterSync-Regex
+  // kennt nur "stammdaten"+"aktualis..." und griff daher bisher AUCH bei reinen
+  // Investoren-Anfragen wie "Stammdaten aktualisieren" oder "Stammdaten für
+  // Asgard - human VC for AI aktualisieren" — mit der Folge, dass der
+  // Mieter-Mietvertrags-Sync lief und ein völlig falscher, aber täuschend
+  // detailliert wirkender "Ergebnis"-Text zurückkam (Diagnose zu Mietverträgen
+  // statt Investor-Recherche). Bei erkanntem Investoren-Kontext wird der
+  // deterministische Cleanup-Shortcut daher jetzt übersprungen, sodass die
+  // Anfrage stattdessen den vollen LLM-Agent-Loop mit INVESTOR_AGENT_TOOLS /
+  // AGENT_SYSTEM_INVESTOR durchläuft (dort korrekt: update_investoren_stammdaten).
+  const wantsInvestorTools =
+    mentionsInvestor(params.message) ||
+    Boolean(params.path && params.path.startsWith("/investoren")) ||
+    (params.history || []).slice(-4).some((h) => mentionsInvestor(h.content));
+
   // Bei klarem Bereinigungsauftrag: deterministisch ausführen (zuverlässig, kein Timeout)
-  const det = await tryDeterministicCleanup(params.message);
+  const det = wantsInvestorTools ? null : await tryDeterministicCleanup(params.message);
   if (det) return det;
 
   // Agent-Gedächtnis (Durchgang 9): 1 von max. 2 Supabase-Writes für diesen Lauf.
@@ -4091,17 +4109,6 @@ export async function runAgent(params: {
   // kompakte Liegenschafts-Übersicht auf, damit der Agent nicht bei fast jeder Anfrage
   // erst list_liegenschaften/list_wohnungen aufrufen muss — spart Tool-Calls und Tokens.
   const seitenKontext = await buildSeitenKontext(params.path);
-
-  // VOR der messages-Konstruktion ermittelt (statt danach), damit sowohl die
-  // Tool-Auswahl als auch der Systemprompt selbst davon abhängen können —
-  // siehe AGENT_SYSTEM_INVESTOR-Kommentar oben: bei reinen Investoren-Anfragen
-  // spart die schlanke Variante ca. 2500-3000 Tokens gegenüber dem vollen
-  // AGENT_SYSTEM, was den Gesamt-Payload wieder unter Groqs reales
-  // ~8000-Token-Limit bringt.
-  const wantsInvestorTools =
-    mentionsInvestor(params.message) ||
-    Boolean(params.path && params.path.startsWith("/investoren")) ||
-    (params.history || []).slice(-4).some((h) => mentionsInvestor(h.content));
 
   const messages: Groq.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: wantsInvestorTools ? AGENT_SYSTEM_INVESTOR : AGENT_SYSTEM },
@@ -4381,7 +4388,7 @@ export async function runAgent(params: {
       reply: e?.message,
     });
 
-    const cleanupFallback = await tryDeterministicCleanup(params.message);
+    const cleanupFallback = wantsInvestorTools ? null : await tryDeterministicCleanup(params.message);
     if (cleanupFallback) {
       return {
         reply:
