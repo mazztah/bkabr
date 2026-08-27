@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buchungenDb, buchungErstellen } from "@/lib/db";
 import { Buchung } from "@/lib/types";
+import { requirePermission } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 export async function GET(req: NextRequest) {
+  const auth = await requirePermission("finanzen", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const { searchParams } = new URL(req.url);
   const typ = searchParams.get("typ");
   const buchungen = await buchungenDb.list(typ ? ({ typ } as Partial<Buchung>) : undefined);
@@ -12,6 +17,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("finanzen", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const body = await req.json().catch(() => ({}));
 
   if (body.typ !== "Einnahme" && body.typ !== "Ausgabe") {
@@ -35,5 +43,6 @@ export async function POST(req: NextRequest) {
   if (!result.ok) {
     return NextResponse.json({ error: result.fehler }, { status: 400 });
   }
+  await logAudit({ table: "buchungen", recordId: result.buchung.id, aktion: "insert", changedBy: auth.id, newData: result.buchung });
   return NextResponse.json({ buchung: result.buchung, split: result.split });
 }

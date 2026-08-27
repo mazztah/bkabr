@@ -2,13 +2,21 @@ import { NextRequest, NextResponse } from "next/server";
 import { kontenDb, logEvent, seedStandardKontenrahmen } from "@/lib/db";
 import { Konto } from "@/lib/types";
 import { uid } from "@/lib/utils";
+import { requirePermission } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 export async function GET() {
+  const auth = await requirePermission("finanzen", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const konten = await kontenDb.list();
   return NextResponse.json({ konten });
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("finanzen", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const body = await req.json().catch(() => ({}));
 
   // Sonderfall: Standard-Kontenrahmen anlegen (nur wenn noch keine Konten existieren)
@@ -41,5 +49,6 @@ export async function POST(req: NextRequest) {
     art: "Konto",
     id: saved.id,
   });
+  await logAudit({ table: "konten", recordId: saved.id, aktion: "insert", changedBy: auth.id, newData: saved });
   return NextResponse.json({ konto: saved });
 }

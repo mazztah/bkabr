@@ -1,21 +1,20 @@
-# Durchgang 16 – RBAC/Audit-Log Rollout: Ticket- und Mietvertrags-Restposten
+# Durchgang 17 – RBAC/Audit-Log Rollout: Finanzen-Block
 
-Enthält NUR die in diesem Durchlauf geänderten Dateien.
+Enthält NUR die in diesem Durchlauf geänderten Dateien (12 Stück).
 
-## Enthalten
+## Enthalten (alle Modul `finanzen`)
 
-- `src/app/api/tickets/[id]/ablehnen/route.ts`
-- `src/app/api/tickets/[id]/freigeben/route.ts`
-- `src/app/api/tickets/[id]/zuweisen/route.ts`
-- `src/app/api/tickets/[id]/nachrichten/route.ts`
-- `src/app/api/mietvertraege/[id]/nachtrag/route.ts`
-- `src/app/api/mietvertraege/analyze/route.ts`
-
-Alle sechs: Modul `ticketsystem` bzw. `vertraege`, `write`-Recht
-erforderlich (die beiden Mietvertrags-Routen sind reine KI-Analyse-
-Endpunkte, die nichts persistieren, deswegen kein `logAudit()` nötig —
-analog zu den bereits abgesicherten `analyze`-Routen in eigentuemer/
-pm-vertrag).
+- `src/app/api/abrechnungen/route.ts` + `[id]/route.ts`
+- `src/app/api/buchhaltung/konten/route.ts` + `[id]/route.ts`
+- `src/app/api/buchhaltung/buchungen/route.ts` + `[id]/route.ts` +
+  `[id]/stornieren/route.ts`
+- `src/app/api/buchhaltung/abrechnungskreise/route.ts` + `[id]/route.ts` +
+  `vorschau/route.ts` (reine Berechnung, kein Persistieren → nur `read`)
+- `src/app/api/buchhaltung/uebersicht/route.ts` (Dashboard-Aggregation,
+  nur `read`)
+- `src/app/api/kontoauszug/analyze/route.ts` (persistiert tatsächlich einen
+  `Kontoauszug`-Datensatz, deswegen `write` + `logAudit()`, anders als die
+  meisten anderen `analyze`-Routen, die nichts speichern)
 
 ## Einspielen
 
@@ -24,25 +23,25 @@ Dateien 1:1 an gleicher Stelle ersetzen, dann `npm run build` zur Kontrolle.
 ## Verifiziert vor Paketierung
 
 - `npx tsc --noEmit` — sauber
-- `npm run lint` — keine neuen Fehler (verbleibende `any`-Meldungen sind
-  vorbestehend, an unveränderten Zeilen — geprüft)
+- `npm run lint` — keine neuen Fehler (eine vorbestehende `any`-Meldung in
+  unverändertem Code, geprüft)
 - `npm run build` — vollständig erfolgreich
 
 ## Stand nach diesem Durchlauf
 
-**Damit sind alle "kleineren Restposten" abgeschlossen.** Ticketsystem und
-Mietverträge sind jetzt vollständig abgesichert (Basis-CRUD + alle
-Unterrouten). 19 von ~35 API-Routen-Dateien insgesamt abgesichert.
+**31 von ~35 API-Routen-Dateien abgesichert.** Der komplette Kernumfang des
+ursprünglichen Betriebskostenabrechnungs-Tools (Buchhaltung, Abrechnungen,
+Kontoauszüge) läuft jetzt durch `requirePermission("finanzen", ...)`.
 
-## Noch offen (größere Blöcke)
+## Noch offen
 
-- **Finanzen-Block**: Buchhaltung (9 Dateien), Abrechnungen (2), Kontoauszug
-  (1) — größter verbleibender zusammenhängender Block, inhaltlicher Kern
-  der ursprünglichen App
-- **Investoren** (10 Dateien) — kein Pflichtenheft-Modul, niedrige Priorität
+- **Investoren** (10 Dateien) — kein Pflichtenheft-Modul, bewusst niedrige
+  Priorität, aber für Vollständigkeit irgendwann fällig
 - **Dashboard/Export/Generate/Agent/Chat/Smart-Upload** — aggregierende/
-  interne Endpunkte, brauchen ggf. nur `requireUser()` statt granularer
-  Modul-Rechte
-- RLS-Policies für alle neu abgesicherten Tabellen (bisher nur
-  liegenschaften/gebaeude)
-- Nutzerverwaltungs-UI
+  interne Endpunkte, meist nur `requireUser()` statt granularer Modul-Rechte
+  sinnvoll
+- RLS-Policies für alle jetzt abgesicherten Tabellen (bisher nur
+  liegenschaften/gebaeude haben welche — reines "defense in depth", da die
+  eigentliche Durchsetzung ohnehin in der App-Schicht via
+  `requirePermission()` passiert, siehe AUTH_AND_RBAC.md)
+- Nutzerverwaltungs-UI (aktuell nur per SQL Editor)

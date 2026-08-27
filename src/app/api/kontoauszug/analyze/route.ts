@@ -4,6 +4,8 @@ import { extractTextFromFile } from "@/lib/document-ocr";
 import { mieterDb, wohnungenDb, gebaeudeDb, liegenschaftenDb, kontoauszuegeDb } from "@/lib/db";
 import { storeFile } from "@/lib/storage";
 import { uid } from "@/lib/utils";
+import { requirePermission } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -13,6 +15,8 @@ function normalize(s: string): string {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("finanzen", "write");
+  if (auth instanceof NextResponse) return auth;
   try {
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
@@ -72,6 +76,7 @@ export async function POST(req: NextRequest) {
       createdAt: now,
       updatedAt: now,
     });
+    await logAudit({ table: "kontoauszuege", recordId: kontoauszug.id, aktion: "insert", changedBy: auth.id, newData: kontoauszug });
 
     return NextResponse.json({ vorschlaege, mieter, kontoauszugId: kontoauszug.id });
   } catch (e: any) {

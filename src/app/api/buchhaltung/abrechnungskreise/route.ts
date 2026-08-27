@@ -2,13 +2,21 @@ import { NextRequest, NextResponse } from "next/server";
 import { abrechnungskreiseDb, logEvent, seedStandardAbrechnungskreise } from "@/lib/db";
 import { Abrechnungskreis } from "@/lib/types";
 import { uid } from "@/lib/utils";
+import { requirePermission } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 export async function GET() {
+  const auth = await requirePermission("finanzen", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const kreise = await abrechnungskreiseDb.list();
   return NextResponse.json({ kreise });
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("finanzen", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const body = await req.json().catch(() => ({}));
 
   if (body.seed === true) {
@@ -41,5 +49,6 @@ export async function POST(req: NextRequest) {
     art: "Abrechnungskreis",
     id: saved.id,
   });
+  await logAudit({ table: "abrechnungskreise", recordId: saved.id, aktion: "insert", changedBy: auth.id, newData: saved });
   return NextResponse.json({ kreis: saved });
 }
