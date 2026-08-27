@@ -390,6 +390,39 @@ export interface Flurstueck {
   updatedAt: string;
 }
 
+// ————— Liegenschaftsverwaltung: Grundbuch (LIE-006/007) —————
+
+/**
+ * Die drei Abteilungen des Grundbuchblatts (GBO-Systematik):
+ * I   Eigentümer und Eigentumsübergänge
+ * II  Lasten und Beschränkungen (außer Grundpfandrechte) — z.B. Wegerecht,
+ *     Nießbrauch, Vorkaufsrecht, Erbbaurecht, Reallast
+ * III Grundpfandrechte — Hypotheken, Grundschulden, Rentenschulden
+ */
+export type GrundbuchAbteilung = "I" | "II" | "III";
+
+export interface GrundbuchEintrag {
+  id: string;
+  flurstueckId: string;
+  abteilung: GrundbuchAbteilung;
+  lfdNummer: string;
+  art: string; // z.B. "Eigentümer", "Wegerecht", "Grundschuld", "Nießbrauch"
+  berechtigter: string;
+  betrag?: number; // v.a. Abteilung III: Grundpfandrecht-Summe
+  waehrung?: string;
+  beschreibung?: string;
+  eingetragenAm: string;
+  // Historisierung: ein Eintrag wird nie hart gelöscht, sondern bei
+  // Wegfall/Ablösung mit geloeschtAm "gerötet" — bleibt so im Grundbuchblatt
+  // nachvollziehbar sichtbar, statt spurlos zu verschwinden. null/undefined
+  // = aktuell gültig.
+  geloeschtAm?: string;
+  geloeschtGrund?: string;
+  notizen?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface EigentuemerExtraktion {
   eigentuemerName?: string;
   anschrift?: string;

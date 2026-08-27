@@ -29,6 +29,7 @@ import {
   DashboardVerlauf,
   Eigentuemer,
   Flurstueck,
+  GrundbuchEintrag,
   Gebaeude,
   Handwerker,
   Investor,
@@ -71,6 +72,7 @@ interface DbShape {
   mietvertraege: Mietvertrag[];
   eigentuemer: Eigentuemer[];
   flurstuecke: Flurstueck[];
+  grundbuchEintraege: GrundbuchEintrag[];
   pmVertraege: PmVertrag[];
   schriftverkehr: SchriftverkehrDokument[];
   kontoauszuege: Kontoauszug[];
@@ -141,6 +143,7 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     mietvertraege: db.mietvertraege || [],
     eigentuemer: db.eigentuemer || [],
     flurstuecke: db.flurstuecke || [],
+    grundbuchEintraege: db.grundbuchEintraege || [],
     pmVertraege: db.pmVertraege || [],
     schriftverkehr: db.schriftverkehr || [],
     kontoauszuege: db.kontoauszuege || [],
@@ -365,6 +368,7 @@ export const mietvertraegeDb = pickBackend(
 );
 export const eigentuemerDb = makeCrud<Eigentuemer>("eigentuemer", "EG");
 export const flurstueckeDb = makeCrud<Flurstueck>("flurstuecke", "FL");
+export const grundbuchDb = makeCrud<GrundbuchEintrag>("grundbuchEintraege", "GB");
 export const pmVertraegeDb = makeCrud<PmVertrag>("pmVertraege", "PM");
 export const schriftverkehrDb = makeCrud<SchriftverkehrDokument>("schriftverkehr", "SV");
 export const kontoauszuegeDb = makeCrud<Kontoauszug>("kontoauszuege", "KA");

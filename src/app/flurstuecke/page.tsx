@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { MapPin, Plus, Trash2 } from "lucide-react";
+import { MapPin, Plus, Trash2, BookOpen, X } from "lucide-react";
 import Modal from "@/components/Modal";
-import { Flurstueck, FlurstueckWirtschaftsart, Liegenschaft } from "@/lib/types";
+import { Flurstueck, FlurstueckWirtschaftsart, GrundbuchAbteilung, GrundbuchEintrag, Liegenschaft } from "@/lib/types";
 
 const WIRTSCHAFTSARTEN: FlurstueckWirtschaftsart[] = [
   "Gebäude- und Freifläche",
@@ -37,6 +37,7 @@ export default function FlurstueckePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [formularOffen, setFormularOffen] = useState<Flurstueck | null | "neu">(null);
+  const [grundbuchOffen, setGrundbuchOffen] = useState<Flurstueck | null>(null);
 
   const refresh = () => {
     setLoading(true);
@@ -143,22 +144,38 @@ export default function FlurstueckePage() {
                   </td>
                   <td className="px-4 py-3">{f.grundbuchblatt || "—"}</td>
                   <td className="px-4 py-3 text-right">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDelete(f.id);
-                      }}
-                      className="text-muted-foreground hover:text-[var(--destructive)]"
-                      title="Löschen"
-                    >
-                      <Trash2 size={15} />
-                    </button>
+                    <div className="flex items-center justify-end gap-3">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setGrundbuchOffen(f);
+                        }}
+                        className="text-muted-foreground hover:text-primary"
+                        title="Grundbuch"
+                      >
+                        <BookOpen size={15} />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(f.id);
+                        }}
+                        className="text-muted-foreground hover:text-[var(--destructive)]"
+                        title="Löschen"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+
+      {grundbuchOffen && (
+        <GrundbuchModal flurstueck={grundbuchOffen} onClose={() => setGrundbuchOffen(null)} />
       )}
 
       {formularOffen && (
@@ -349,6 +366,268 @@ function FlurstueckFormular({
           className="w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
         >
           {busy ? "Speichere …" : flurstueck ? "Speichern" : "Anlegen"}
+        </button>
+      </form>
+    </Modal>
+  );
+}
+
+const ABTEILUNGEN: { id: GrundbuchAbteilung; titel: string; hinweis: string }[] = [
+  { id: "I", titel: "Abteilung I — Eigentümer", hinweis: "Eigentümer und Eigentumsübergänge" },
+  {
+    id: "II",
+    titel: "Abteilung II — Lasten und Beschränkungen",
+    hinweis: "z.B. Wegerecht, Nießbrauch, Vorkaufsrecht, Erbbaurecht",
+  },
+  { id: "III", titel: "Abteilung III — Grundpfandrechte", hinweis: "Hypotheken, Grundschulden, Rentenschulden" },
+];
+
+function GrundbuchModal({ flurstueck, onClose }: { flurstueck: Flurstueck; onClose: () => void }) {
+  const [eintraege, setEintraege] = useState<GrundbuchEintrag[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [neuFuer, setNeuFuer] = useState<GrundbuchAbteilung | null>(null);
+
+  const refresh = () => {
+    setLoading(true);
+    fetch(`/api/grundbuch?flurstueckId=${flurstueck.id}`)
+      .then((r) => r.json())
+      .then((j) => {
+        setEintraege(j.eintraege || []);
+        setError(null);
+      })
+      .catch(() => setError("Fehler beim Laden."))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(refresh, [flurstueck.id]);
+
+  async function handleRoeten(id: string) {
+    const grund = prompt("Grund der Löschung/Ablösung (optional):") || undefined;
+    const r = await fetch(`/api/grundbuch/${id}/roeten`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ grund }),
+    });
+    if (r.ok) refresh();
+    else setError((await r.json()).error || "Röten fehlgeschlagen.");
+  }
+
+  return (
+    <Modal
+      title={`Grundbuch — ${flurstueck.gemarkung} Flur ${flurstueck.flur} Nr. ${flurstueck.flurstueckNummer}`}
+      onClose={onClose}
+    >
+      <div className="max-h-[70vh] space-y-5 overflow-y-auto pr-1">
+        {error && (
+          <div className="rounded-md bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--destructive)]">
+            {error}
+          </div>
+        )}
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Lädt …</p>
+        ) : (
+          ABTEILUNGEN.map((abt) => {
+            const eintraegeAbt = eintraege.filter((e) => e.abteilung === abt.id);
+            return (
+              <div key={abt.id}>
+                <div className="mb-2 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold">{abt.titel}</h3>
+                    <p className="text-xs text-muted-foreground">{abt.hinweis}</p>
+                  </div>
+                  <button
+                    onClick={() => setNeuFuer(abt.id)}
+                    className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-card"
+                  >
+                    <Plus size={12} />
+                    Eintrag
+                  </button>
+                </div>
+                {eintraegeAbt.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">Keine Einträge.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {eintraegeAbt.map((e) => (
+                      <div
+                        key={e.id}
+                        className={`flex items-center justify-between rounded-md border border-border px-3 py-2 text-xs ${
+                          e.geloeschtAm ? "opacity-50" : ""
+                        }`}
+                      >
+                        <div>
+                          <div className="font-medium">
+                            {e.lfdNummer ? `Nr. ${e.lfdNummer} — ` : ""}
+                            {e.art} · {e.berechtigter}
+                            {e.geloeschtAm && (
+                              <span className="ml-2 text-[var(--destructive)]">
+                                (gerötet {new Date(e.geloeschtAm).toLocaleDateString("de-DE")})
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-muted-foreground">
+                            eingetragen {new Date(e.eingetragenAm).toLocaleDateString("de-DE")}
+                            {typeof e.betrag === "number" &&
+                              ` · ${e.betrag.toLocaleString("de-DE")} ${e.waehrung || "EUR"}`}
+                            {e.beschreibung && ` · ${e.beschreibung}`}
+                          </div>
+                        </div>
+                        {!e.geloeschtAm && (
+                          <button
+                            onClick={() => handleRoeten(e.id)}
+                            className="text-muted-foreground hover:text-[var(--destructive)]"
+                            title="Röten (erloschen/abgelöst)"
+                          >
+                            <X size={13} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {neuFuer && (
+        <GrundbuchEintragFormular
+          flurstueckId={flurstueck.id}
+          abteilung={neuFuer}
+          onClose={() => setNeuFuer(null)}
+          onDone={() => {
+            setNeuFuer(null);
+            refresh();
+          }}
+        />
+      )}
+    </Modal>
+  );
+}
+
+function GrundbuchEintragFormular({
+  flurstueckId,
+  abteilung,
+  onClose,
+  onDone,
+}: {
+  flurstueckId: string;
+  abteilung: GrundbuchAbteilung;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [werte, setWerte] = useState({
+    lfdNummer: "",
+    art: "",
+    berechtigter: "",
+    betrag: "",
+    beschreibung: "",
+    eingetragenAm: new Date().toISOString().slice(0, 10),
+    notizen: "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [fehler, setFehler] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setFehler(null);
+    try {
+      const r = await fetch("/api/grundbuch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          flurstueckId,
+          abteilung,
+          ...werte,
+          betrag: werte.betrag ? Number(werte.betrag) : undefined,
+        }),
+      });
+      const json = await r.json();
+      if (!r.ok) throw new Error(json.error || "Speichern fehlgeschlagen.");
+      onDone();
+    } catch (e) {
+      setFehler(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={`Neuer Eintrag — Abteilung ${abteilung}`} onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Lfd. Nummer</label>
+            <input
+              value={werte.lfdNummer}
+              onChange={(e) => setWerte({ ...werte, lfdNummer: e.target.value })}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Eingetragen am</label>
+            <input
+              type="date"
+              required
+              value={werte.eingetragenAm}
+              onChange={(e) => setWerte({ ...werte, eingetragenAm: e.target.value })}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+            />
+          </div>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">
+            Art {abteilung === "I" ? "(z.B. Eigentümer)" : abteilung === "II" ? "(z.B. Wegerecht)" : "(z.B. Grundschuld)"}
+          </label>
+          <input
+            required
+            value={werte.art}
+            onChange={(e) => setWerte({ ...werte, art: e.target.value })}
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">Berechtigter</label>
+          <input
+            required
+            value={werte.berechtigter}
+            onChange={(e) => setWerte({ ...werte, berechtigter: e.target.value })}
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+          />
+        </div>
+        {abteilung === "III" && (
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Betrag (EUR)</label>
+            <input
+              type="number"
+              step="0.01"
+              value={werte.betrag}
+              onChange={(e) => setWerte({ ...werte, betrag: e.target.value })}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+            />
+          </div>
+        )}
+        <div>
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">Beschreibung</label>
+          <input
+            value={werte.beschreibung}
+            onChange={(e) => setWerte({ ...werte, beschreibung: e.target.value })}
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+          />
+        </div>
+        {fehler && (
+          <div className="rounded-md bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--destructive)]">
+            {fehler}
+          </div>
+        )}
+        <button
+          type="submit"
+          disabled={busy}
+          className="w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        >
+          {busy ? "Speichere …" : "Anlegen"}
         </button>
       </form>
     </Modal>
