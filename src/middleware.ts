@@ -50,6 +50,16 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
+  // Next.js 15.5 hat die Node.js-Middleware-Runtime stabilisiert (statt der
+  // restriktiven Edge-Runtime). Wichtig für dieses Projekt: Ohne diese Zeile
+  // zwingt allein die EXISTENZ von middleware.ts Next.js dazu, auch
+  // src/instrumentation.ts für die Edge-Runtime zu kompilieren (Instrumentation
+  // muss in Middleware-Runtime-Umgebungen mitlaufen können) — und die dort
+  // dynamisch importierte Kette (scheduler.ts → db.ts/agent.ts → fs/path,
+  // fly-logs.ts → nats → crypto) bricht den Build, weil Node-Builtins in der
+  // Edge-Runtime nicht auflösbar sind. Mit runtime: "nodejs" bleibt die App
+  // durchgehend im Node-Kontext, genau wie vor Einführung dieser Middleware.
+  runtime: "nodejs",
   matcher: [
     // Alles außer statischen Assets und Next-internem Kram.
     "/((?!_next/static|_next/image|favicon|apple-touch-icon|site.webmanifest).*)",
