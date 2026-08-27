@@ -30,6 +30,7 @@ import {
   Eigentuemer,
   Flurstueck,
   GrundbuchEintrag,
+  Vertrag,
   Gebaeude,
   Handwerker,
   Investor,
@@ -73,6 +74,7 @@ interface DbShape {
   eigentuemer: Eigentuemer[];
   flurstuecke: Flurstueck[];
   grundbuchEintraege: GrundbuchEintrag[];
+  vertraege: Vertrag[];
   pmVertraege: PmVertrag[];
   schriftverkehr: SchriftverkehrDokument[];
   kontoauszuege: Kontoauszug[];
@@ -144,6 +146,7 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     eigentuemer: db.eigentuemer || [],
     flurstuecke: db.flurstuecke || [],
     grundbuchEintraege: db.grundbuchEintraege || [],
+    vertraege: db.vertraege || [],
     pmVertraege: db.pmVertraege || [],
     schriftverkehr: db.schriftverkehr || [],
     kontoauszuege: db.kontoauszuege || [],
@@ -369,6 +372,7 @@ export const mietvertraegeDb = pickBackend(
 export const eigentuemerDb = makeCrud<Eigentuemer>("eigentuemer", "EG");
 export const flurstueckeDb = makeCrud<Flurstueck>("flurstuecke", "FL");
 export const grundbuchDb = makeCrud<GrundbuchEintrag>("grundbuchEintraege", "GB");
+export const vertraegeDb = makeCrud<Vertrag>("vertraege", "VT");
 export const pmVertraegeDb = makeCrud<PmVertrag>("pmVertraege", "PM");
 export const schriftverkehrDb = makeCrud<SchriftverkehrDokument>("schriftverkehr", "SV");
 export const kontoauszuegeDb = makeCrud<Kontoauszug>("kontoauszuege", "KA");
@@ -1331,6 +1335,24 @@ export async function getAbgeleiteteKalenderEreignisse(): Promise<AbgeleitetesKa
         kategorie: "Frist",
         quelle: "Mietvertrag",
         link: "/mieter",
+      });
+    }
+  }
+
+  // Generisches Vertragsmodul (Pacht, Dienstleistung, Wartung, ...): jeder
+  // befristete Vertrag mit Enddatum erzeugt automatisch eine Kalender-Frist —
+  // genau die im Pflichtenheft geforderte modulübergreifende Fristenführung
+  // (KAL-002), ohne dass ein Sachbearbeiter den Termin doppelt anlegen muss.
+  for (const v of db.vertraege) {
+    if (v.status === "Beendet" || v.status === "Gekündigt") continue;
+    if (v.ende && !v.unbefristet) {
+      ereignisse.push({
+        id: `vertrag-ende-${v.id}`,
+        titel: `Vertragsende (${v.art}): ${v.bezeichnung}`,
+        datum: v.ende,
+        kategorie: "Frist",
+        quelle: "Vertrag",
+        link: "/vertraege",
       });
     }
   }

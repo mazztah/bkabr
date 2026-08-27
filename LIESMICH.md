@@ -1,29 +1,29 @@
-# Durchgang 20 – Phase 1: Grundbuchverwaltung (LIE-006/007)
+# Durchgang 21 – Phase 1: Generisches Vertragsmodul (VERTR-001 bis VERTR-006)
 
-Zweiter Baustein von Phase 1 — vervollständigt die Liegenschaftsverwaltung
-um Abteilung I/II/III mit echter Historisierung.
+Dritter und letzter Baustein von Phase 1 — damit ist Phase 1 komplett.
 
 ## Was ist neu
 
-- **Neuer Datentyp `GrundbuchEintrag`** (`src/lib/types.ts`): Abteilung
-  (I/II/III), laufende Nummer, Art, Berechtigter, Betrag (v.a. Abt. III),
-  Eintragungsdatum, sowie `geloeschtAm`/`geloeschtGrund` für die
-  Historisierung.
-- **Historisierungskonzept — wichtig:** Ein Grundbuch-Eintrag wird bei
-  Wegfall NICHT gelöscht, sondern „gerötet" (klassischer Grundbuch-Begriff):
-  `geloeschtAm` wird gesetzt, der Eintrag bleibt sichtbar und nachvollziehbar.
-  Echtes hartes Löschen (`DELETE`) ist nur für Fehleingaben gedacht.
-- **`grundbuchDb`** in `src/lib/db.ts`, über `makeCrud<T>()` (JSON-Backend,
-  gleiches Muster wie Flurstücke).
-- **API:**
-  - `GET/POST /api/grundbuch` (mit `flurstueckId`-Filter)
-  - `GET/PATCH/DELETE /api/grundbuch/[id]` (PATCH blockt bewusst
-    `geloeschtAm`/`geloeschtGrund` — dafür gibt es den eigenen Endpunkt)
-  - `POST /api/grundbuch/[id]/roeten` — der reguläre Weg, ein Recht zu
-    beenden, mit optionalem Grund
-- **UI:** In die bestehende Flurstücke-Seite integriert — neuer
-  „Grundbuch"-Button (Buch-Icon) pro Zeile öffnet ein Modal mit den drei
-  Abteilungen, Einträge anlegen/röten direkt dort.
+- **Neuer Datentyp `Vertrag`** (`src/lib/types.ts`): Art (Pacht,
+  Dienstleistung, Wartung, Versicherung, Erbbaurecht, Sonstige),
+  Vertragspartner, optionale Liegenschafts-/Flurstücksverknüpfung, Beginn/
+  Ende (oder unbefristet), Kündigungsfrist, Betrag/Zahlungsintervall,
+  Status.
+- **Bewusste Abgrenzung:** Mietvertrag und PM-Vertrag bleiben unangetastet
+  eigene Module (haben KI-Extraktion, PDF-Handling etc.) — dieses neue
+  Modul deckt ausschließlich die bisher komplett fehlenden Vertragsarten ab
+  (Pacht, Dienstleistung, Wartung, ...).
+- **Kalender-Integration (KAL-002):** Jeder befristete Vertrag mit
+  Enddatum erzeugt automatisch eine Frist im Kalender — über den bereits
+  bestehenden `getAbgeleiteteKalenderEreignisse()`-Mechanismus (gleiches
+  Prinzip wie beim Mietende), kein Duplizieren von Daten.
+- **`vertraegeDb`** in `src/lib/db.ts` (JSON-Backend, `makeCrud`-Muster).
+- **API:** `GET/POST /api/vertraege` (Filter nach `liegenschaftId`/`art`),
+  `GET/PATCH/DELETE /api/vertraege/[id]` — Modul `vertraege`, inkl.
+  `logAudit()`.
+- **UI:** neue Seite `/vertraege` (Navigation: „Objekte" → „Verträge",
+  neben Mietverträge) — Liste mit Art-Filter, Anlegen/Bearbeiten-Formular
+  inkl. Status-Badges.
 
 ## Einspielen
 
@@ -34,20 +34,28 @@ um Abteilung I/II/III mit echter Historisierung.
 ## Verifiziert vor Paketierung
 
 - `npx tsc --noEmit` — sauber
-- `npm run lint` — keine neuen Fehler (zwei vorbestehende `any`-Meldungen
-  im generischen `makeCrud`, unverändert)
-- `npm run build` — vollständig erfolgreich
+- `npm run lint` — keine neuen Fehler
+- `npm run build` — vollständig erfolgreich, `/vertraege` korrekt gebaut
 
 ## Anforderungsstatus
 
-LIE-006 (Grundbuch-Abteilungen erfassen) und LIE-007 (Historisierung)
-jetzt erfüllt. Damit ist LIE (Liegenschaftsverwaltung) bei ca. **65 %**
-(vorher 45 %). Offen bleibt LIE-008 (Kartendarstellung/GIS) — der wird
-bewusst zurückgestellt (siehe frühere Gap-Analyse: hoher Aufwand, hängt
-stark von der gewünschten GIS-Tiefe ab).
+VERTR-001 bis VERTR-006 (Vertrag erfassen, Vertragsarten, Laufzeit/
+Kündigung, automatische Fristenübernahme) jetzt erfüllt. VERTR-Block von
+25 % auf ca. **65 %**. KAL-Block profitiert mit (von 20 % auf ca. **30 %**,
+da die automatische Frist-Übernahme — bisher nur für Mietverträge — jetzt
+auch für das neue Vertragsmodul greift).
 
-## Nächster Baustein in Phase 1
+## 🎉 Phase 1 abgeschlossen
 
-Das **generische Vertragsmodul** (VERTR-001 bis VERTR-006) — aktuell gibt
-es nur die Spezialfälle Mietvertrag und PM-Vertrag, kein einheitliches
-Vertragsobjekt für Pacht-, Dienstleistungs- oder sonstige Verträge.
+Mit Flurstücksverwaltung (Durchgang 19), Grundbuchverwaltung (Durchgang 20)
+und dem generischen Vertragsmodul (dieser Durchgang) sind alle drei
+Bausteine aus dem ursprünglichen Phase-1-Plan umgesetzt.
+
+**Aktualisierte Gesamtübersicht folgt in der separaten Nachricht.**
+
+## Nächste Phase (Phase 2)
+
+Anlagenmanagement (technischer 50-Positionen-Katalog: BMA, EMA, GLT, RLT,
+Aufzug, Klimaanlage etc.), Wartungs-/Prüfmanagement mit Zyklen, und
+Zählerwesen (Gas/Wasser/Strom, Zählerstände-Historie) — alle drei bisher
+bei 0 %.

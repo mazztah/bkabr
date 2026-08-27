@@ -99,6 +99,7 @@ const GROUPS: NavGroup[] = [
       { href: "/kontoauszuege", label: "Kontoauszüge", icon: CreditCard },
       { href: "/vorauszahlungen", label: "Vorauszahlungen", icon: Wallet },
       { href: "/mietvertraege", label: "Mietverträge", icon: FileSignature },
+      { href: "/vertraege", label: "Verträge", icon: FileSignature },
       { href: "/rechnungen", label: "Rechnungen", icon: FileInput },
       { href: "/dienstleistungsvertraege", label: "Dienstleistungsverträge", icon: Handshake },
     ],

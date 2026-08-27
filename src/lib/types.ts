@@ -423,6 +423,56 @@ export interface GrundbuchEintrag {
   updatedAt: string;
 }
 
+// ————— Generisches Vertragsmodul (VERTR-001 bis VERTR-006) —————
+// Deckt alle Vertragsarten AUSSER Mietvertrag und PM-Vertrag ab, die
+// bereits eigene, spezialisierte Module (inkl. KI-Extraktion) haben und
+// bewusst unangetastet bleiben. Dieses Modul ist der einheitliche
+// Querschnitts-Container für Pacht-, Dienstleistungs-, Wartungs- und
+// sonstige Verträge (§VERTR im Pflichtenheft).
+
+export type VertragArt =
+  | "Pacht"
+  | "Dienstleistung"
+  | "Wartung"
+  | "Versicherung"
+  | "Erbbaurecht"
+  | "Sonstige";
+
+export type VertragStatus = "Entwurf" | "Aktiv" | "Gekündigt" | "Beendet";
+
+export type Zahlungsintervall =
+  | "Einmalig"
+  | "Monatlich"
+  | "Quartalsweise"
+  | "Halbjährlich"
+  | "Jährlich";
+
+export interface Vertrag {
+  id: string;
+  nummer?: string;
+  art: VertragArt;
+  bezeichnung: string;
+  vertragspartner: string;
+  // Optionale Objektverknüpfung — ein Pachtvertrag bezieht sich typischerweise
+  // auf ein Flurstück, ein Dienstleistungsvertrag eher auf eine Liegenschaft.
+  liegenschaftId?: string;
+  flurstueckId?: string;
+  beginn: string;
+  ende?: string;
+  unbefristet: boolean;
+  kuendigungsfrist?: string; // Freitext, z.B. "3 Monate zum Quartalsende"
+  betrag?: number;
+  zahlungsintervall?: Zahlungsintervall;
+  status: VertragStatus;
+  dateiName?: string;
+  storedFileName?: string;
+  mimeType?: string;
+  notizen?: string;
+  anhaenge?: Anhang[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface EigentuemerExtraktion {
   eigentuemerName?: string;
   anschrift?: string;
@@ -1636,7 +1686,7 @@ export interface AbgeleitetesKalenderEreignis {
   titel: string;
   datum: string;
   kategorie: KalenderKategorie;
-  quelle: "Mietvertrag" | "Routine" | "Pruefung" | "Buchung";
+  quelle: "Mietvertrag" | "Routine" | "Pruefung" | "Buchung" | "Vertrag";
   link?: string;
 }
 
