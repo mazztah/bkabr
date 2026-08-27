@@ -2,8 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { ticketNachrichtenDb, ticketsDb } from "@/lib/db";
 import { TicketNachricht } from "@/lib/types";
 import { uid } from "@/lib/utils";
+import { requirePermission } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("ticketsystem", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const nachrichten = await ticketNachrichtenDb.list({ ticketId: id } as any);
   nachrichten.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
@@ -11,6 +16,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("ticketsystem", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const ticket = await ticketsDb.get(id);
   if (!ticket) return NextResponse.json({ error: "Ticket nicht gefunden" }, { status: 404 });
@@ -30,5 +38,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     updatedAt: now,
   };
   const saved = await ticketNachrichtenDb.create(nachricht);
+  await logAudit({ table: "ticket_nachrichten", recordId: saved.id, aktion: "insert", changedBy: auth.id, newData: saved });
   return NextResponse.json({ nachricht: saved });
 }

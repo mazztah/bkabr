@@ -3,6 +3,7 @@ import { extractMietvertragNachtrag } from "@/lib/ai";
 import { extractTextFromFile } from "@/lib/document-ocr";
 import { mietvertraegeDb } from "@/lib/db";
 import { storeFile } from "@/lib/storage";
+import { requirePermission } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -14,6 +15,9 @@ export const maxDuration = 60;
  * automatisch übernehmen (Stammdaten aktualisieren).
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("vertraege", "write");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const { id } = await params;
     const mietvertrag = await mietvertraegeDb.get(id);
