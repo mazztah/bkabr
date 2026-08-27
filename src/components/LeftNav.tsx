@@ -37,6 +37,7 @@ import {
   ChevronDown,
   X,
   Activity,
+  Shield,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -113,6 +114,10 @@ const GROUPS: NavGroup[] = [
   {
     title: "Verwaltung",
     items: [{ href: "/kalender", label: "Kalender", icon: CalendarClock }],
+  },
+  {
+    title: "Systemadministration",
+    items: [{ href: "/systemadministration/nutzer", label: "Nutzerverwaltung", icon: Shield }],
   },
 ];
 

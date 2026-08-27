@@ -105,13 +105,16 @@ create table if not exists role_permissions (
 );
 
 -- Default-Rechtematrix, aus §3 des Pflichtenhefts abgeleitet.
--- 'systemadministration' bekommt admin auf alle bisher bekannten Module.
+-- 'systemadministration' bekommt admin auf alle bisher bekannten Module —
+-- EINSCHLIESSLICH des Moduls "systemadministration" selbst (Nutzer-/
+-- Rollenverwaltung, §3), sonst könnte sich nicht mal ein echter
+-- Systemadministrator selbst verwalten.
 do $$
 declare
   m text;
 begin
   for m in select unnest(array[
-    'immobilien','liegenschaften','pacht_nutzung','veranstaltungen','vertraege',
+    'systemadministration','immobilien','liegenschaften','pacht_nutzung','veranstaltungen','vertraege',
     'kalender','anlagen','ticketsystem','zaehler','dokumente','finanzen'
   ])
   loop
