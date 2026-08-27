@@ -352,6 +352,44 @@ export interface Eigentuemer {
   updatedAt: string;
 }
 
+// ————— Liegenschaftsverwaltung: Flurstücke (Pflichtenheft LIE-001 bis LIE-005) —————
+
+/**
+ * Nutzungs-/Wirtschaftsart eines Flurstücks, angelehnt an die im
+ * Liegenschaftskataster (ALKIS) üblichen Hauptkategorien sowie die im
+ * Pflichtenheft genannten Pacht-/Nutzungsformen (Jagd, Fischerei,
+ * Kleingarten). Bewusst als String-Union statt DB-Enum, damit künftige
+ * Ergänzungen ohne Schemaänderung möglich bleiben.
+ */
+export type FlurstueckWirtschaftsart =
+  | "Gebäude- und Freifläche"
+  | "Landwirtschaftsfläche"
+  | "Waldfläche"
+  | "Verkehrsfläche"
+  | "Wasserfläche"
+  | "Grünfläche"
+  | "Kleingarten"
+  | "Jagd"
+  | "Fischerei"
+  | "Sonstige Nutzung";
+
+export interface Flurstueck {
+  id: string;
+  nummer?: string;
+  liegenschaftId: string;
+  gemarkung: string;
+  flur: string;
+  flurstueckNummer: string;
+  wirtschaftsart: FlurstueckWirtschaftsart;
+  flaecheQm?: number;
+  grundbuchblatt?: string;
+  grundbuchamt?: string;
+  notizen?: string;
+  anhaenge?: Anhang[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface EigentuemerExtraktion {
   eigentuemerName?: string;
   anschrift?: string;

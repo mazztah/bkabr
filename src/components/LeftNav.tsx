@@ -38,6 +38,7 @@ import {
   X,
   Activity,
   Shield,
+  MapPin,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -82,6 +83,7 @@ const GROUPS: NavGroup[] = [
     title: "Objekte",
     items: [
       { href: "/liegenschaften", label: "Liegenschaften", icon: Home },
+      { href: "/flurstuecke", label: "Flurstücke", icon: MapPin },
       { href: "/gebaeude", label: "Gebäude", icon: Building2 },
       { href: "/wohnungen", label: "Wohnungen", icon: Building },
       { href: "/mieter", label: "Mieter", icon: Users },

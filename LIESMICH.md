@@ -1,78 +1,45 @@
-# Durchgang 18 – Nutzerverwaltungs-UI (§3 Systemadministration)
+# Durchgang 19 – Phase 1: Flurstücksverwaltung (LIE-001 bis LIE-005)
 
-## ⚠️ Wichtig: DB-Migration erneut ausführen (Bugfix)
-
-`supabase/schema_auth.sql` ist enthalten und hat sich geändert — die
-`systemadministration`-Rolle hatte im ursprünglichen Seed KEIN Recht auf
-das Modul `systemadministration` selbst. Ohne diesen Fix hätten selbst
-echte Admins einen 403-Fehler in der neuen Nutzerverwaltung bekommen. Die
-Datei ist idempotent (`on conflict do nothing`) — **einfach im Supabase
-SQL Editor komplett erneut ausführen**, das ist gefahrlos und ergänzt nur
-die fehlende Zeile.
+Erster Baustein von Phase 1 aus dem ursprünglichen Umsetzungsplan — bisher
+0 % Erfüllungsgrad, jetzt Basis-CRUD vollständig funktionsfähig.
 
 ## Was ist neu
 
-Endlich eine echte Oberfläche statt SQL Editor, um Nutzer einzuladen und
-Rollen zuzuweisen — direkt umgesetzt aus Pflichtenheft §3
-("Systemadministration: Benutzer, Rollen, ...").
-
-**Neue Seite:** `/systemadministration/nutzer` (auch in der linken
-Navigation verlinkt, neue Gruppe „Systemadministration")
-
-- Liste aller Nutzer mit E-Mail, Rollen-Badges, Aktiv/Deaktiviert-Status
-- „Nutzer einladen": versendet einen Supabase-Auth-Magic-Link (kein
-  Passwort-Vergeben durch den Admin — der Nutzer setzt sein Passwort selbst
-  beim ersten Login)
-- Rollen direkt in der Liste zuweisen/entfernen (Dropdown „+ Rolle" /
-  ✕-Button auf jedem Badge)
-- Nutzer deaktivieren/reaktivieren (Klick auf den Status-Badge) — ein
-  deaktivierter Nutzer kann sich laut `getCurrentUser()` in `auth.ts` nicht
-  mehr einloggen
-
-**Neue API-Routen** (alle `requirePermission("systemadministration", "admin")`,
-außer GET-Liste = `"read"`):
-- `GET/POST /api/systemadministration/nutzer`
-- `PATCH /api/systemadministration/nutzer/[id]`
-- `POST /api/systemadministration/nutzer/[id]/rollen`
-- `DELETE /api/systemadministration/nutzer/[id]/rollen/[roleId]`
-
-**Eingebauter Schutz:** Die letzte verbleibende
-`systemadministration`-Rollenzuweisung im gesamten System kann nicht
-entfernt werden — sonst könnte sich niemand mehr einloggen, um den Fehler
-zu reparieren.
+- **Neuer Datentyp `Flurstueck`** (`src/lib/types.ts`): Gemarkung, Flur,
+  Flurstücksnummer, Wirtschaftsart (10 Kategorien nach ALKIS-Kataster +
+  Pflichtenheft-Nutzungsformen: Jagd, Fischerei, Kleingarten), Fläche in m²,
+  Grundbuchblatt/-amt als Freitextfeld (echte Grundbuchverwaltung mit
+  Abteilung I/II/III folgt in einem späteren Durchgang), Notizen.
+- **`flurstueckeDb`** in `src/lib/db.ts`, über den bestehenden
+  `makeCrud<T>()`-Factory angebunden — folgt demselben Muster wie
+  `eigentuemerDb`, `handwerkerDb` etc. (JSON-Datei-Backend, kein
+  Postgres-Umbau nötig für diesen Schritt).
+- **API:** `GET/POST /api/flurstuecke` (mit `liegenschaftId`-Filter),
+  `GET/PATCH/DELETE /api/flurstuecke/[id]` — Modul `liegenschaften`,
+  inkl. `logAudit()`.
+- **UI:** neue Seite `/flurstuecke` (Navigation: „Objekte" →
+  „Flurstücke", zwischen Liegenschaften und Gebäude einsortiert) — Liste
+  mit Liegenschafts-Filter, Anlegen/Bearbeiten-Formular, Löschen.
 
 ## Einspielen
 
-1. `supabase/schema_auth.sql` im Supabase SQL Editor erneut ausführen
-   (Bugfix, siehe oben).
-2. Restliche Dateien 1:1 an gleicher Stelle im Repo ersetzen/ergänzen.
-3. `npm run build` zur Kontrolle.
+Dateien 1:1 ersetzen (`types.ts` und `db.ts` sind vollständige Dateien,
+keine Patches — bitte komplett überschreiben, nicht manuell mergen), dann
+`npm run build` zur Kontrolle. Keine SQL-Migration nötig für diesen
+Durchgang (JSON-Backend).
 
 ## Verifiziert vor Paketierung
 
-- `npx tsc --noEmit` — sauber
-- `npm run lint` — 5 Fehler in der neuen Seite gefunden UND behoben (any-
-  Typen in catch-Blöcken, ein escapetes Anführungszeichen) — sauber danach
-- `npm run build` — vollständig erfolgreich, `/systemadministration/nutzer`
-  korrekt als statische Seite gebaut
+- `npx tsc --noEmit` — sauber (ein Syntaxfehler beim ersten Einfügen des
+  neuen Typs selbst gefunden und korrigiert)
+- `npm run lint` — eine Warnung (ungenutzter Import) gefunden und behoben,
+  danach sauber
+- `npm run build` — vollständig erfolgreich, `/flurstuecke` korrekt gebaut
 
-## Stand nach diesem Durchlauf
+## Anforderungsstatus (siehe eigene Übersicht in der separaten Nachricht)
 
-Alle Kernanforderungen aus §3 (Rollen, Rechte, Nutzerverwaltung) sind jetzt
-sowohl im Backend (RBAC-Durchsetzung in 31 API-Routen) als auch im Frontend
-(bedienbare Oberfläche für Admins) umgesetzt.
-
-## Noch offen
-
-- Investoren-Modul (10 Dateien, kein Pflichtenheft-Bezug)
-- Interne/aggregierende Endpunkte (Dashboard, Export, Agent-Chat) — eher
-  `requireUser()` als granulare Rechte
-- RLS-Policies für die meisten Tabellen (nur "defense in depth", da
-  Durchsetzung ohnehin app-seitig passiert)
-- Objekt-Scope-Zuweisung (`user_object_scope`, welche Liegenschaften ein
-  Nutzer sehen darf) hat noch keine UI — nur die Rollen-Ebene ist bedienbar,
-  nicht die feinere Liegenschafts-Einschränkung
-- Damit ist Phase 0 aus der ursprünglichen Gap-Analyse
-  (`bkabr_Pflichtenheft_Analyse_und_Angebot.md`) inhaltlich abgeschlossen —
-  nächster sinnvoller Schritt wäre laut damaligem Plan **Phase 1**
-  (Flurstücksverwaltung, Grundbuch, generisches Vertragsmodul)
+LIE-001 bis LIE-005 (Flurstück anlegen/bearbeiten/löschen, Wirtschaftsart,
+Flächenangabe, Grundbuchbezug als Feld) jetzt erfüllt. LIE-006/007
+(vollständige Grundbuchverwaltung mit Abteilung I/II/III und
+Historisierung) sowie LIE-008 (Kartendarstellung/GIS) sind noch offen —
+nächster Baustein in Phase 1.
