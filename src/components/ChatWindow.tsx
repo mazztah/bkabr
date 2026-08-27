@@ -42,6 +42,8 @@ export default function ChatWindow() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [chatHistory.length, chatSending]);
 
+  if (pathname.startsWith("/login")) return null;
+
   const handleSend = async () => {
     if (!input.trim() || chatSending) return;
     const msg = input;

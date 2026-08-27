@@ -292,7 +292,7 @@ export default function LeftNav() {
       .slice(0, 8);
   }, [liegenschaften, switcherQuery]);
 
-  if (pathname?.startsWith("/marketing")) return null;
+  if (pathname?.startsWith("/marketing") || pathname?.startsWith("/login")) return null;
 
   const effectiveWidth = expanded ? width : RAIL_WIDTH;
 

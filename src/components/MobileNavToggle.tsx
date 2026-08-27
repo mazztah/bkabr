@@ -6,7 +6,7 @@ import { useStore } from "@/lib/store";
 export default function MobileNavToggle() {
   const pathname = usePathname();
   const { toggleMobileNav, mobileNavOpen } = useStore();
-  if (pathname?.startsWith("/marketing")) return null;
+  if (pathname?.startsWith("/marketing") || pathname?.startsWith("/login")) return null;
   // The drawer has its own close (✕) button once open, so hide this to
   // avoid it sitting on top of the drawer's logo/header.
   if (mobileNavOpen) return null;

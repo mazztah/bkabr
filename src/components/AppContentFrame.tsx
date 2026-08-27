@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 export default function AppContentFrame({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isMarketing = pathname?.startsWith("/marketing");
+  const isMarketing = pathname?.startsWith("/marketing") || pathname?.startsWith("/login");
 
   return (
     <div

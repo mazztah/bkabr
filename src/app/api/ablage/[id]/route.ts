@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ablageDb, logEvent } from "@/lib/db";
 import { deleteStoredFile } from "@/lib/storage";
+import { requirePermission } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("dokumente", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
   const bestehend = await ablageDb.get(id);
@@ -18,6 +23,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   }
 
   const aktualisiert = await ablageDb.update(id, patch as any);
+  await logAudit({ table: "ablage", recordId: id, aktion: "update", changedBy: auth.id, oldData: bestehend, newData: aktualisiert });
 
   if (body.status === "zugeordnet" && body.zugeordnetAn) {
     await logEvent(
@@ -39,6 +45,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("dokumente", "delete");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const bestehend = await ablageDb.get(id);
   if (!bestehend) return NextResponse.json({ error: "Nicht gefunden" }, { status: 404 });
@@ -46,6 +55,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   await deleteStoredFile(bestehend.storedFileName);
   await ablageDb.remove(id);
   await logEvent("loeschung", `„${bestehend.dateiName}" aus der Ablage gelöscht.`, { art: "Ablage", id });
+  await logAudit({ table: "ablage", recordId: id, aktion: "delete", changedBy: auth.id, oldData: bestehend });
 
   return NextResponse.json({ ok: true });
 }

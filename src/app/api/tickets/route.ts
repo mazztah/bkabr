@@ -2,8 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { logEvent, ticketsDb } from "@/lib/db";
 import { Ticket, TicketHistorieEintrag, TICKET_BAGATELLGRENZE_EUR, TICKET_SLA_STUNDEN } from "@/lib/types";
 import { uid } from "@/lib/utils";
+import { requirePermission } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 export async function GET(req: NextRequest) {
+  const auth = await requirePermission("ticketsystem", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const status = req.nextUrl.searchParams.get("status") || undefined;
   const handwerkerId = req.nextUrl.searchParams.get("handwerkerId") || undefined;
   const liegenschaftId = req.nextUrl.searchParams.get("liegenschaftId") || undefined;
@@ -32,6 +37,9 @@ function addHours(iso: string, hours: number): string {
  * vorgibt - eine Freigabepflicht vorgeschlagen.
  */
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("ticketsystem", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const body = await req.json().catch(() => ({}));
   if (!body.titel) {
     return NextResponse.json({ error: "titel ist erforderlich" }, { status: 400 });
@@ -95,5 +103,6 @@ export async function POST(req: NextRequest) {
     art: "Ticket",
     id: saved.id,
   });
+  await logAudit({ table: "tickets", recordId: saved.id, aktion: "insert", changedBy: auth.id, newData: saved });
   return NextResponse.json({ ticket: saved });
 }

@@ -2,14 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 import { logEvent, mieterDb } from "@/lib/db";
 import { Mieter } from "@/lib/types";
 import { uid } from "@/lib/utils";
+import { requirePermission } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 export async function GET(req: NextRequest) {
+  const auth = await requirePermission("immobilien", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const wohnungId = req.nextUrl.searchParams.get("wohnungId") || undefined;
   const mieter = await mieterDb.list(wohnungId ? { wohnungId } : undefined);
   return NextResponse.json({ mieter });
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("immobilien", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const body = await req.json().catch(() => ({}));
   if (!body.wohnungId) {
     return NextResponse.json({ error: "wohnungId erforderlich" }, { status: 400 });
@@ -32,5 +40,6 @@ export async function POST(req: NextRequest) {
   };
   const saved = await mieterDb.create(mieter);
   await logEvent("anlage", `Mieter „${saved.name}" angelegt.`, { art: "Mieter", id: saved.id });
+  await logAudit({ table: "mieter", recordId: saved.id, aktion: "insert", changedBy: auth.id, newData: saved });
   return NextResponse.json({ mieter: saved });
 }
