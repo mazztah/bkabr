@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { schriftverkehrDb } from "@/lib/db";
 import { saveBriefManuell } from "@/lib/agent";
+import { requirePermission } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 export async function GET(req: NextRequest) {
+  const auth = await requirePermission("dokumente", "read");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const { searchParams } = new URL(req.url);
     const mieterId = searchParams.get("mieterId") || undefined;
@@ -20,6 +25,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("dokumente", "write");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const body = await req.json();
     if (!body.mieterId || !body.templateId || !body.text) {
@@ -36,6 +44,7 @@ export async function POST(req: NextRequest) {
       werte: body.werte || {},
       status: body.status === "Versandbereit" ? "Versandbereit" : "Entwurf",
     });
+    await logAudit({ table: "schriftverkehr", recordId: doc.id, aktion: "insert", changedBy: auth.id, newData: doc });
     return NextResponse.json({ dokument: doc });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });

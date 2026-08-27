@@ -2,8 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { handwerkerDb, logEvent } from "@/lib/db";
 import { Handwerker } from "@/lib/types";
 import { uid } from "@/lib/utils";
+import { requirePermission } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 export async function GET(req: NextRequest) {
+  const auth = await requirePermission("ticketsystem", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const gewerk = req.nextUrl.searchParams.get("gewerk") || undefined;
   const status = req.nextUrl.searchParams.get("status") || undefined;
   const handwerker = await handwerkerDb.list(
@@ -13,6 +18,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("ticketsystem", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const body = await req.json().catch(() => ({}));
   if (!body.name || !body.gewerk) {
     return NextResponse.json({ error: "name und gewerk sind erforderlich" }, { status: 400 });
@@ -41,5 +49,6 @@ export async function POST(req: NextRequest) {
     art: "Handwerker",
     id: saved.id,
   });
+  await logAudit({ table: "handwerker", recordId: saved.id, aktion: "insert", changedBy: auth.id, newData: saved });
   return NextResponse.json({ handwerker: saved });
 }

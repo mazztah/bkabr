@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handwerkerDb, logEvent, ticketsDb } from "@/lib/db";
+import { requirePermission } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("ticketsystem", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const handwerker = await handwerkerDb.get(id);
   if (!handwerker) return NextResponse.json({ error: "Nicht gefunden" }, { status: 404 });
@@ -9,7 +14,11 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("ticketsystem", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
+  const vorher = await handwerkerDb.get(id);
   const patch = await req.json().catch(() => ({}));
   const handwerker = await handwerkerDb.update(id, patch);
   if (!handwerker) return NextResponse.json({ error: "Nicht gefunden" }, { status: 404 });
@@ -17,10 +26,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     art: "Handwerker",
     id,
   });
+  await logAudit({ table: "handwerker", recordId: id, aktion: "update", changedBy: auth.id, oldData: vorher, newData: handwerker });
   return NextResponse.json({ handwerker });
 }
 
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("ticketsystem", "delete");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const bestehend = await handwerkerDb.get(id);
   if (!bestehend) return NextResponse.json({ error: "Nicht gefunden" }, { status: 404 });
@@ -38,6 +51,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
       art: "Handwerker",
       id,
     });
+    await logAudit({ table: "handwerker", recordId: id, aktion: "delete", changedBy: auth.id, oldData: bestehend });
   }
   return NextResponse.json({ success });
 }

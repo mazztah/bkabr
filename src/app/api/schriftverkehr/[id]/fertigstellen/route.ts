@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { schriftverkehrDb } from "@/lib/db";
 import { buildSchriftverkehrPdf } from "@/lib/pdf";
 import { storeFile } from "@/lib/storage";
+import { requirePermission } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -14,6 +16,9 @@ export const maxDuration = 60;
  * einer manuellen Korrektur).
  */
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("dokumente", "write");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const { id } = await params;
     const doc = await schriftverkehrDb.get(id);
@@ -36,6 +41,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       finalDateiName: fileName,
       finalisiertAm: new Date().toISOString(),
     });
+    await logAudit({ table: "schriftverkehr", recordId: id, aktion: "update", changedBy: auth.id, oldData: doc, newData: updated });
 
     return NextResponse.json({ dokument: updated });
   } catch (e: any) {

@@ -2,8 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { logEvent, pmVertraegeDb } from "@/lib/db";
 import { PmVertrag } from "@/lib/types";
 import { uid } from "@/lib/utils";
+import { requirePermission } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 export async function GET(req: NextRequest) {
+  const auth = await requirePermission("vertraege", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const liegenschaftId = req.nextUrl.searchParams.get("liegenschaftId") || undefined;
   const pmVertraege = await pmVertraegeDb.list(
     liegenschaftId ? ({ liegenschaftId } as any) : undefined
@@ -12,6 +17,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("vertraege", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const body = await req.json().catch(() => ({}));
   if (!body.liegenschaftId) {
     return NextResponse.json({ error: "liegenschaftId erforderlich" }, { status: 400 });
@@ -41,5 +49,6 @@ export async function POST(req: NextRequest) {
   };
   const saved = await pmVertraegeDb.create(pmVertrag);
   await logEvent("anlage", `PM-Vertrag „${saved.dateiName}" angelegt.`, { art: "PM-Vertrag", id: saved.id });
+  await logAudit({ table: "pm_vertraege", recordId: saved.id, aktion: "insert", changedBy: auth.id, newData: saved });
   return NextResponse.json({ pmVertrag: saved });
 }

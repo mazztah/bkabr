@@ -4,11 +4,15 @@ import { extractTextFromFile } from "@/lib/document-ocr";
 import { liegenschaftenDb } from "@/lib/db";
 import { storeFile } from "@/lib/storage";
 import { matchLiegenschaft, parseAddress } from "@/lib/matching";
+import { requirePermission } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("vertraege", "write");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
