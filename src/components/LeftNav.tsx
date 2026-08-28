@@ -110,6 +110,7 @@ const GROUPS: NavGroup[] = [
       { href: "/instandhaltung", label: "Instandhaltung", icon: Wrench },
       { href: "/auftraege", label: "Aufträge", icon: ClipboardList },
       { href: "/ticketsystem", label: "Ticketsystem", icon: Ticket },
+      { href: "/anlagen", label: "Anlagenmanagement", icon: Wrench },
       { href: "/assetmanagement", label: "Assetmanagement", icon: PieChart },
       { href: "/budgetierung", label: "Budgetierung", icon: TrendingUp },
     ],

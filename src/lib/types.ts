@@ -473,6 +473,78 @@ export interface Vertrag {
   updatedAt: string;
 }
 
+// ————— Technisches Anlagenmanagement (ANL-001 bis ANL-006) —————
+
+/**
+ * Katalog der wichtigsten technischen Anlagenarten (Auszug aus dem im
+ * Pflichtenheft geforderten Katalog technischer Gebäudeausrüstung). Bewusst
+ * als String statt geschlossenes Enum, damit weitere Anlagenarten ohne
+ * Codeänderung ergänzt werden können (Erweiterbarkeits-Kriterium).
+ */
+export type AnlagenTyp =
+  | "Brandmeldeanlage (BMA)"
+  | "Einbruchmeldeanlage (EMA)"
+  | "Gebäudeleittechnik (GLT)"
+  | "Raumlufttechnik (RLT)"
+  | "Aufzug"
+  | "Klimaanlage"
+  | "Heizungsanlage"
+  | "Trinkwasseranlage"
+  | "Blitzschutzanlage"
+  | "Rauch- und Wärmeabzugsanlage (RWA)"
+  | "Notstromaggregat"
+  | "Photovoltaikanlage"
+  | "Sprinkleranlage"
+  | "Torantrieb"
+  | "Beleuchtungsanlage"
+  | "Sonstige technische Anlage";
+
+export type AnlagenStatus = "In Betrieb" | "Wartung fällig" | "Außer Betrieb" | "Defekt";
+
+export interface Anlage {
+  id: string;
+  nummer?: string;
+  typ: AnlagenTyp;
+  bezeichnung: string;
+  liegenschaftId: string;
+  gebaeudeId?: string;
+  standortDetail?: string; // z.B. "Keller, Technikraum 0.12"
+  hersteller?: string;
+  modell?: string;
+  seriennummer?: string;
+  baujahr?: number;
+  wartungsfirma?: string;
+  // Prüf-/Wartungszyklus (WART-001/002) — direkt am Anlagen-Datensatz, weil
+  // jede Anlage typischerweise genau einen aktuell nächsten Termin hat;
+  // vollständige Wartungshistorie mit Protokollen folgt in AnlagenWartung.
+  naechstePruefung?: string;
+  pruefintervallMonate?: number;
+  status: AnlagenStatus;
+  notizen?: string;
+  anhaenge?: Anhang[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Historischer Wartungs-/Prüfeintrag zu einer Anlage (WART-003:
+ * durchgeführte Wartungen/Prüfungen nachvollziehbar dokumentieren).
+ */
+export interface AnlagenWartung {
+  id: string;
+  anlageId: string;
+  durchgefuehrtAm: string;
+  durchgefuehrtVon?: string; // Firma/Techniker
+  art: "Wartung" | "Prüfung" | "Reparatur" | "Sonstiges";
+  ergebnis?: "Ohne Mängel" | "Mängel behoben" | "Mängel offen";
+  beschreibung?: string;
+  naechsteFaelligkeit?: string; // aktualisiert i.d.R. Anlage.naechstePruefung
+  kosten?: number;
+  notizen?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface EigentuemerExtraktion {
   eigentuemerName?: string;
   anschrift?: string;
@@ -1686,7 +1758,7 @@ export interface AbgeleitetesKalenderEreignis {
   titel: string;
   datum: string;
   kategorie: KalenderKategorie;
-  quelle: "Mietvertrag" | "Routine" | "Pruefung" | "Buchung" | "Vertrag";
+  quelle: "Mietvertrag" | "Routine" | "Pruefung" | "Buchung" | "Vertrag" | "Anlage";
   link?: string;
 }
 
