@@ -545,6 +545,40 @@ export interface AnlagenWartung {
   updatedAt: string;
 }
 
+// ————— Zählermanagement (ZAE-001 bis ZAE-010) —————
+
+export type ZaehlerArt = "Strom" | "Gas" | "Wasser (kalt)" | "Wasser (warm)" | "Wärme" | "Sonstige";
+export type ZaehlerStatus = "Aktiv" | "Ausgebaut" | "Defekt";
+
+export interface Zaehler {
+  id: string;
+  zaehlernummer: string;
+  art: ZaehlerArt;
+  einheit: string; // z.B. "kWh", "m³"
+  // Zuordnungsebene: mindestens Liegenschaft erforderlich, Gebäude/Wohnung
+  // optional für Unterzähler einzelner Einheiten.
+  liegenschaftId: string;
+  gebaeudeId?: string;
+  wohnungId?: string;
+  standortDetail?: string;
+  einbauDatum?: string;
+  status: ZaehlerStatus;
+  notizen?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ZaehlerAblesung {
+  id: string;
+  zaehlerId: string;
+  ablesedatum: string;
+  stand: number;
+  ableser?: string;
+  notizen?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface EigentuemerExtraktion {
   eigentuemerName?: string;
   anschrift?: string;

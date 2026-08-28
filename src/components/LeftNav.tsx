@@ -39,6 +39,7 @@ import {
   Activity,
   Shield,
   MapPin,
+  Gauge,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -111,6 +112,7 @@ const GROUPS: NavGroup[] = [
       { href: "/auftraege", label: "Aufträge", icon: ClipboardList },
       { href: "/ticketsystem", label: "Ticketsystem", icon: Ticket },
       { href: "/anlagen", label: "Anlagenmanagement", icon: Wrench },
+      { href: "/zaehler", label: "Zählerwesen", icon: Gauge },
       { href: "/assetmanagement", label: "Assetmanagement", icon: PieChart },
       { href: "/budgetierung", label: "Budgetierung", icon: TrendingUp },
     ],

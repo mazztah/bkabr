@@ -33,6 +33,8 @@ import {
   Vertrag,
   Anlage,
   AnlagenWartung,
+  Zaehler,
+  ZaehlerAblesung,
   Gebaeude,
   Handwerker,
   Investor,
@@ -79,6 +81,8 @@ interface DbShape {
   vertraege: Vertrag[];
   anlagen: Anlage[];
   anlagenWartungen: AnlagenWartung[];
+  zaehler: Zaehler[];
+  zaehlerAblesungen: ZaehlerAblesung[];
   pmVertraege: PmVertrag[];
   schriftverkehr: SchriftverkehrDokument[];
   kontoauszuege: Kontoauszug[];
@@ -153,6 +157,8 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     vertraege: db.vertraege || [],
     anlagen: db.anlagen || [],
     anlagenWartungen: db.anlagenWartungen || [],
+    zaehler: db.zaehler || [],
+    zaehlerAblesungen: db.zaehlerAblesungen || [],
     pmVertraege: db.pmVertraege || [],
     schriftverkehr: db.schriftverkehr || [],
     kontoauszuege: db.kontoauszuege || [],
@@ -381,6 +387,8 @@ export const grundbuchDb = makeCrud<GrundbuchEintrag>("grundbuchEintraege", "GB"
 export const vertraegeDb = makeCrud<Vertrag>("vertraege", "VT");
 export const anlagenDb = makeCrud<Anlage>("anlagen", "AN");
 export const anlagenWartungenDb = makeCrud<AnlagenWartung>("anlagenWartungen", "AW");
+export const zaehlerDb = makeCrud<Zaehler>("zaehler", "ZA");
+export const zaehlerAblesungenDb = makeCrud<ZaehlerAblesung>("zaehlerAblesungen", "ZL");
 export const pmVertraegeDb = makeCrud<PmVertrag>("pmVertraege", "PM");
 export const schriftverkehrDb = makeCrud<SchriftverkehrDokument>("schriftverkehr", "SV");
 export const kontoauszuegeDb = makeCrud<Kontoauszug>("kontoauszuege", "KA");

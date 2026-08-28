@@ -1,64 +1,60 @@
-# Durchgang 22 – Phase 2: Anlagenmanagement (ANL-001 bis ANL-006)
+# Durchgang 23 – Phase 2: Zählerwesen (ZAE-001 bis ZAE-010)
 
-Erster Baustein von Phase 2.
-
-## ⚠️ Diesmal WICHTIG: LeftNav.tsx ist wieder dabei
-
-Wie im letzten Hotfix erwähnt — bitte sicherstellen, dass ihr wirklich
-DIESE Version von `LeftNav.tsx` einspielt (überschreibt den Hotfix von
-eben zusätzlich um den neuen „Anlagenmanagement"-Eintrag). Am sichersten:
-diese eine Datei ist der aktuell vollständige Stand, einfach direkt
-verwenden.
+Letzter Baustein von Phase 2 — damit ist Phase 2 komplett.
 
 ## Was ist neu
 
-- **Neuer Datentyp `Anlage`** (`src/lib/types.ts`): 16 Anlagentypen-Katalog
-  (BMA, EMA, GLT, RLT, Aufzug, Klimaanlage, Heizungsanlage, u.a.),
-  Standortzuordnung (Liegenschaft/Gebäude/Detail), Hersteller/Modell/
-  Baujahr, Wartungsfirma, Prüftermin + Intervall, Status.
-- **Neuer Datentyp `AnlagenWartung`**: Wartungshistorie je Anlage
-  (WART-003) — Datum, Art (Wartung/Prüfung/Reparatur), Ergebnis, Kosten.
-  Beim Anlegen eines Eintrags mit „nächste Fälligkeit" wird
-  `Anlage.naechstePruefung` automatisch fortgeschrieben.
-- **Kalender-Integration:** Fällige Prüftermine erscheinen automatisch als
-  Frist im Kalender (gleicher Mechanismus wie bei Vertragsenden aus
-  Durchgang 21).
-- **`anlagenDb`/`anlagenWartungenDb`** in `src/lib/db.ts` (JSON-Backend).
-- **API:**
-  - `GET/POST /api/anlagen` (Filter nach `liegenschaftId`/`gebaeudeId`)
-  - `GET/PATCH/DELETE /api/anlagen/[id]` (Löschen räumt auch die
-    Wartungshistorie mit auf)
-  - `GET/POST /api/anlagen/[id]/wartungen`
-  - Modul `anlagen` — war in der Rechtematrix bereits für Haustechnik/
-    Systemadministration vorgesehen, keine SQL-Änderung nötig.
-- **UI:** neue Seite `/anlagen` (Navigation: „Betrieb" → „Anlagenmanagement",
-  neben Ticketsystem) — Liste mit Liegenschafts-Filter, Anlegen/Bearbeiten,
-  Wartungshistorie-Modal mit eigenem Dokumentations-Formular.
+- **Neuer Datentyp `Zaehler`**: Zählernummer, Art (Strom/Gas/Wasser kalt/
+  Wasser warm/Wärme/Sonstige, mit automatischem Einheiten-Vorschlag kWh/m³),
+  Zuordnung auf Liegenschafts-/Gebäude-/Wohnungsebene (für Haupt- und
+  Unterzähler), Einbaudatum, Status.
+- **Neuer Datentyp `ZaehlerAblesung`**: Zählerstände-Historie mit Datum,
+  Stand, Ableser.
+- **Verbrauchsauswertung (ZAE-008):** wird aus den Rohständen berechnet
+  (Differenz + Zeitraum in Tagen zwischen aufeinanderfolgenden Ablesungen),
+  nicht separat gespeichert — kann so nie mit der Historie auseinanderlaufen.
+- **Plausibilitätsprüfung:** rückläufige Zählerstände werden nicht
+  blockiert (kann bei Zählertausch legitim sein), aber mit Hinweis im
+  Protokoll und in der UI markiert.
+- **`zaehlerDb`/`zaehlerAblesungenDb`** in `src/lib/db.ts` (JSON-Backend).
+- **API:** `GET/POST /api/zaehler`, `GET/PATCH/DELETE /api/zaehler/[id]`
+  (Löschen räumt Ablesungen mit auf), `GET/POST /api/zaehler/[id]/ablesungen`
+  — Modul `zaehler`, Rechte waren in der Matrix schon vorbereitet.
+- **UI:** neue Seite `/zaehler` (Navigation: „Betrieb" → „Zählerwesen",
+  neben Anlagenmanagement) — Liste mit Liegenschafts-Filter, Zählerstände-
+  Modal mit Verbrauchstabelle.
 
 ## Einspielen
 
 `types.ts` und `db.ts` sind vollständige Dateien — komplett überschreiben.
-Restliche Dateien 1:1 ersetzen, dann `npm run build`. Keine SQL-Migration
-nötig (JSON-Backend, Modul-Rechte waren schon vorbereitet).
+Restliche Dateien 1:1 ersetzen (`LeftNav.tsx` diesmal wieder mit dem neuen
+Zählerwesen-Eintrag), dann `npm run build`. Keine SQL-Migration nötig.
 
 ## Verifiziert vor Paketierung
 
 - `npx tsc --noEmit` — sauber
-- `npm run lint` — 2 Fehler in eigenem Code gefunden (any-Typen bei
-  Filter-Objekten) und behoben, danach sauber
+- `npm run lint` — keine Fehler
 - `npm run build` — vollständig erfolgreich, alle neuen Routen korrekt
   gebaut
 
 ## Anforderungsstatus
 
-ANL-001 bis ANL-006 (Anlage anlegen, Typenkatalog, Standortzuordnung,
-Wartungsfirma) sowie WART-001 (Prüftermine, jetzt auch im Kalender) und
-WART-003 (Wartungshistorie dokumentieren) jetzt erfüllt. ANL-Block von
-0 % auf ca. **70 %**, WART-Block von 0 % auf ca. **35 %** (WART-002:
-automatische Eskalation bei überfälliger Prüfung noch offen).
+ZAE-001 bis ZAE-010 (Zähler anlegen, Zuordnung, Ablesungen erfassen,
+Verbrauchsauswertung) jetzt erfüllt. ZAE-Block von 0 % auf ca. **75 %**
+(offen: automatisierter Import von Zählerständen aus Smart-Meter-
+Schnittstellen — bewusst außerhalb des Pflichtenheft-Kernumfangs).
 
-## Nächster Baustein in Phase 2
+## 🎉 Phase 2 abgeschlossen
 
-**Zählerwesen** (ZAE-001 bis ZAE-010) — Gas/Wasser/Strom-Zähler,
-Zählerstände-Historie, Verbrauchsauswertung. Danach ist Phase 2
-abgeschlossen.
+Anlagenmanagement (Durchgang 22) + Zählerwesen (dieser Durchgang) = Phase 2
+komplett.
+
+**Aktualisierte Gesamtübersicht folgt in der separaten Nachricht.**
+
+## Nächste Phase (Phase 3)
+
+Pacht-/Nutzungsflächen (Jagd, Fischerei, Kleingarten, Wiese — bisher 0 %,
+aber jetzt mit dem generischen Vertragsmodul aus Phase 1 als Basis leicht
+zu ergänzen), Kurzzeitvermietung/Veranstaltungsflächen mit
+Belegungs-Konfliktprüfung, sowie Kalender-Ausbau (Filterung, echte
+Konfliktanzeige statt nur Fristen-Ableitung).
