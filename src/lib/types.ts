@@ -579,6 +579,19 @@ export interface ZaehlerAblesung {
   updatedAt: string;
 }
 
+/**
+ * Ein per KI aus einer hochgeladenen Zählerliste erkannter Rohdatensatz —
+ * noch nicht mit dem System abgeglichen (das übernimmt die analyze-Route).
+ */
+export interface ZaehlerlisteEintrag {
+  zaehlernummer: string;
+  art?: string;
+  einheit?: string;
+  standortDetail?: string;
+  stand?: number;
+  ablesedatum?: string;
+}
+
 export interface EigentuemerExtraktion {
   eigentuemerName?: string;
   anschrift?: string;

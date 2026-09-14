@@ -14,6 +14,7 @@ import {
   Investor,
   InvestorKriteriumErgebnis,
   InvestorStrategiePunkt,
+  ZaehlerlisteEintrag,
 } from "./types";
 import { mietRueckstand } from "./mietkonto";
 import {
@@ -476,6 +477,54 @@ Antworte AUSSCHLIESSLICH mit einem JSON-Objekt in exakt diesem Format:
   "liegenschaftName": "Name/Bezeichnung der Liegenschaft, falls im Dokument genannt, sonst leerer String"
 }
 Erfinde keine Fakten, die nicht im Dokument stehen. Falls ein Wert nicht erkennbar ist: leerer String bzw. 0.`;
+
+const SYSTEM_ZAEHLERLISTE = `Du bist ein Experte für deutsche Hausverwaltungs-Unterlagen, speziell Zählerlisten/Zählerübersichten/Ablesebelege (Strom, Gas, Wasser, Wärme). Analysiere den übergebenen Text (kann eine Tabelle, ein Ableseprotokoll oder eine formlose Liste sein) und extrahiere ALLE erkennbaren Zähler mit ihren Daten.
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt in exakt diesem Format:
+{
+  "eintraege": [
+    {
+      "zaehlernummer": "Zählernummer/Zähler-ID, so wie im Dokument angegeben",
+      "art": "Strom" | "Gas" | "Wasser (kalt)" | "Wasser (warm)" | "Wärme" | "Sonstige",
+      "einheit": "z.B. kWh oder m³, sonst leerer String",
+      "standortDetail": "Standort/Zuordnung, z.B. 'Wohnung 2.OG rechts' oder 'Hausanschluss', sonst leerer String",
+      "stand": <aktueller/letzter genannter Zählerstand als Zahl, sonst null>,
+      "ablesedatum": "YYYY-MM-DD, falls im Dokument genannt, sonst leerer String"
+    }
+  ]
+}
+WICHTIG: Maximal 60 Einträge. Eine Zeile/ein Zähler pro Eintrag. Erfinde keine Zählernummern. Wenn ein Zählerstand nicht eindeutig einer Nummer zuzuordnen ist, den Eintrag trotzdem mit stand: null aufnehmen (Stammdaten sind auch ohne Stand wertvoll).`;
+
+export async function extractZaehlerliste(params: {
+  text: string;
+  fileName: string;
+}): Promise<ZaehlerlisteEintrag[]> {
+  const { text, fileName } = params;
+  const textSlice = text.slice(0, 7000);
+  return withJsonRetry(
+    async (strict) => {
+      const completion = await createChatCompletion({
+        max_completion_tokens: 3000,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_ZAEHLERLISTE },
+          {
+            role: "user",
+            content: strict
+              ? `Datei: ${fileName}.\n\nWICHTIG: NUR vollständiges gültiges JSON, max. 60 Einträge, kurze Texte.\n\nInhalt (Auszug):\n${textSlice}\n\nExtrahiere die JSON-Daten.`
+              : `Datei: ${fileName}.\n\nInhalt:\n${textSlice}\n\nExtrahiere die JSON-Daten (max. 60 Zähler).`,
+          },
+        ],
+      });
+      return completion.choices[0]?.message?.content || "";
+    },
+    (raw) => {
+      const parsed = extractJson(raw) as { eintraege?: ZaehlerlisteEintrag[] };
+      const list = Array.isArray(parsed.eintraege) ? parsed.eintraege : [];
+      return list.slice(0, 60);
+    }
+  );
+}
 
 export async function extractEigentuemerDokument(params: {
   text: string;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Gauge, Plus, Trash2, ListPlus } from "lucide-react";
+import { Gauge, Plus, Trash2, ListPlus, Sparkles } from "lucide-react";
 import Modal from "@/components/Modal";
 import { Liegenschaft, Zaehler, ZaehlerArt, ZaehlerStatus, ZaehlerAblesung } from "@/lib/types";
 
@@ -41,6 +41,7 @@ export default function ZaehlerPage() {
   const [error, setError] = useState<string | null>(null);
   const [formularOffen, setFormularOffen] = useState<Zaehler | null | "neu">(null);
   const [ablesungOffen, setAblesungOffen] = useState<Zaehler | null>(null);
+  const [uploadOffen, setUploadOffen] = useState(false);
 
   const refresh = () => {
     setLoading(true);
@@ -90,7 +91,7 @@ export default function ZaehlerPage() {
         </button>
       </div>
 
-      <div className="mb-4">
+      <div className="mb-4 flex items-center gap-3">
         <select
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
@@ -103,6 +104,15 @@ export default function ZaehlerPage() {
             </option>
           ))}
         </select>
+        <button
+          onClick={() => setUploadOffen(true)}
+          disabled={!filter}
+          title={filter ? undefined : "Bitte zuerst eine Liegenschaft auswählen"}
+          className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:border-primary hover:text-primary disabled:opacity-40"
+        >
+          <Sparkles size={15} />
+          Intelligenter Upload
+        </button>
       </div>
 
       {error && (
@@ -177,6 +187,17 @@ export default function ZaehlerPage() {
 
       {ablesungOffen && (
         <AblesungenModal zaehler={ablesungOffen} onClose={() => setAblesungOffen(null)} />
+      )}
+
+      {uploadOffen && filter && (
+        <IntelligenterUploadModal
+          liegenschaftId={filter}
+          onClose={() => setUploadOffen(false)}
+          onUebernommen={() => {
+            setUploadOffen(false);
+            refresh();
+          }}
+        />
       )}
 
       {formularOffen && (
@@ -567,6 +588,217 @@ function AblesungFormular({
           {busy ? "Speichere …" : "Erfassen"}
         </button>
       </form>
+    </Modal>
+  );
+}
+
+interface KlassifiziertEintrag {
+  typ: "neuer_zaehler" | "neue_ablesung" | "unveraendert";
+  zaehlernummer: string;
+  zaehlerId?: string;
+  art?: string;
+  einheit?: string;
+  standortDetail?: string;
+  stand?: number | null;
+  ablesedatum?: string;
+  letzterBekannterStand?: number | null;
+  hinweis: string;
+}
+
+function IntelligenterUploadModal({
+  liegenschaftId,
+  onClose,
+  onUebernommen,
+}: {
+  liegenschaftId: string;
+  onClose: () => void;
+  onUebernommen: () => void;
+}) {
+  const [datei, setDatei] = useState<File | null>(null);
+  const [analysiere, setAnalysiere] = useState(false);
+  const [ergebnis, setErgebnis] = useState<{
+    anzahlErkannt: number;
+    klassifikation: KlassifiziertEintrag[];
+    zusammenfassung: { neueZaehler: number; neueAblesungen: number; unveraendert: number };
+  } | null>(null);
+  const [ausgewaehlt, setAusgewaehlt] = useState<Set<number>>(new Set());
+  const [fehler, setFehler] = useState<string | null>(null);
+  const [uebernehme, setUebernehme] = useState(false);
+
+  async function analysieren() {
+    if (!datei) return;
+    setAnalysiere(true);
+    setFehler(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", datei);
+      formData.append("liegenschaftId", liegenschaftId);
+      const r = await fetch("/api/zaehler/analyze", { method: "POST", body: formData });
+      const json = await r.json();
+      if (!r.ok) throw new Error(json.error || "Analyse fehlgeschlagen.");
+      setErgebnis(json);
+      // Standardmäßig alle "neuer_zaehler" und "neue_ablesung"-Einträge
+      // vorauswählen — "unveraendert" bringt nichts zur Übernahme.
+      const relevante = (json.klassifikation as KlassifiziertEintrag[])
+        .map((k, i) => ({ k, i }))
+        .filter(({ k }) => k.typ !== "unveraendert")
+        .map(({ i }) => i);
+      setAusgewaehlt(new Set(relevante));
+    } catch (e) {
+      setFehler(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAnalysiere(false);
+    }
+  }
+
+  function toggle(i: number) {
+    setAusgewaehlt((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  }
+
+  async function uebernehmen() {
+    if (!ergebnis) return;
+    setUebernehme(true);
+    setFehler(null);
+    try {
+      const eintraege = ergebnis.klassifikation
+        .filter((_, i) => ausgewaehlt.has(i))
+        .map((k) =>
+          k.typ === "neuer_zaehler"
+            ? {
+                typ: "neuer_zaehler",
+                zaehlernummer: k.zaehlernummer,
+                art: k.art,
+                einheit: k.einheit,
+                standortDetail: k.standortDetail,
+                stand: k.stand,
+                ablesedatum: k.ablesedatum,
+              }
+            : { typ: "neue_ablesung", zaehlerId: k.zaehlerId, stand: k.stand, ablesedatum: k.ablesedatum }
+        );
+      const r = await fetch("/api/zaehler/uebernahme", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ liegenschaftId, eintraege }),
+      });
+      const json = await r.json();
+      if (!r.ok) throw new Error(json.error || "Übernahme fehlgeschlagen.");
+      onUebernommen();
+    } catch (e) {
+      setFehler(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUebernehme(false);
+    }
+  }
+
+  const TYP_LABEL: Record<KlassifiziertEintrag["typ"], string> = {
+    neuer_zaehler: "Neuer Zähler",
+    neue_ablesung: "Neuer Zählerstand",
+    unveraendert: "Bereits aktuell",
+  };
+  const TYP_FARBE: Record<KlassifiziertEintrag["typ"], string> = {
+    neuer_zaehler: "bg-[var(--success-bg)] text-[var(--success)]",
+    neue_ablesung: "bg-primary/10 text-primary",
+    unveraendert: "bg-muted text-muted-foreground",
+  };
+
+  return (
+    <Modal title="Intelligenter Upload — Zählerliste" onClose={onClose}>
+      <div className="max-h-[75vh] space-y-4 overflow-y-auto pr-1">
+        {!ergebnis ? (
+          <>
+            <p className="text-sm text-muted-foreground">
+              Lade eine Zählerliste (PDF, Foto, Text oder CSV) hoch. Die KI erkennt Zählernummern,
+              Art und Zählerstände und schlägt vor, was neu angelegt bzw. als neuer Stand übernommen
+              werden kann.
+            </p>
+            <input
+              type="file"
+              accept=".pdf,.png,.jpg,.jpeg,.txt,.md,.csv"
+              onChange={(e) => setDatei(e.target.files?.[0] || null)}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+            />
+            {fehler && (
+              <div className="rounded-md bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--destructive)]">
+                {fehler}
+              </div>
+            )}
+            <button
+              onClick={analysieren}
+              disabled={!datei || analysiere}
+              className="w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+            >
+              {analysiere ? "Analysiere …" : "Analysieren"}
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="rounded-md border border-border bg-card px-3 py-2 text-xs">
+              {ergebnis.anzahlErkannt} Zähler erkannt — {ergebnis.zusammenfassung.neueZaehler} neu,{" "}
+              {ergebnis.zusammenfassung.neueAblesungen} neue(r) Stand/Stände,{" "}
+              {ergebnis.zusammenfassung.unveraendert} bereits aktuell.
+            </div>
+
+            <div className="space-y-1.5">
+              {ergebnis.klassifikation.map((k, i) => (
+                <label
+                  key={i}
+                  className={`flex items-start gap-2 rounded-md border border-border px-3 py-2 text-xs ${
+                    k.typ === "unveraendert" ? "opacity-50" : ""
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={ausgewaehlt.has(i)}
+                    disabled={k.typ === "unveraendert"}
+                    onChange={() => toggle(i)}
+                    className="mt-0.5"
+                  />
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{k.zaehlernummer}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${TYP_FARBE[k.typ]}`}>
+                        {TYP_LABEL[k.typ]}
+                      </span>
+                    </div>
+                    <div className="text-muted-foreground">
+                      {k.art && `${k.art} · `}
+                      {typeof k.stand === "number" && `Stand: ${k.stand} ${k.einheit || ""} · `}
+                      {k.hinweis}
+                    </div>
+                  </div>
+                </label>
+              ))}
+            </div>
+
+            {fehler && (
+              <div className="rounded-md bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--destructive)]">
+                {fehler}
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setErgebnis(null)}
+                className="flex-1 rounded-md border border-border px-3 py-2 text-sm hover:bg-card"
+              >
+                Zurück
+              </button>
+              <button
+                onClick={uebernehmen}
+                disabled={ausgewaehlt.size === 0 || uebernehme}
+                className="flex-1 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+              >
+                {uebernehme ? "Übernehme …" : `${ausgewaehlt.size} Einträge übernehmen`}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </Modal>
   );
 }
