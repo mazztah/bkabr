@@ -438,6 +438,16 @@ export type VertragArt =
   | "Erbbaurecht"
   | "Sonstige";
 
+/** Nur relevant, wenn art === "Pacht" — deckt die im Pflichtenheft genannten
+ *  Pacht-/Nutzungsflächen-Formen ab. */
+export type PachtNutzungsart =
+  | "Jagd"
+  | "Fischerei"
+  | "Kleingarten"
+  | "Wiese"
+  | "Ackerland"
+  | "Sonstige Nutzung";
+
 export type VertragStatus = "Entwurf" | "Aktiv" | "Gekündigt" | "Beendet";
 
 export type Zahlungsintervall =
@@ -457,6 +467,8 @@ export interface Vertrag {
   // auf ein Flurstück, ein Dienstleistungsvertrag eher auf eine Liegenschaft.
   liegenschaftId?: string;
   flurstueckId?: string;
+  // Nur bei art === "Pacht" relevant/gesetzt.
+  nutzungsart?: PachtNutzungsart;
   beginn: string;
   ende?: string;
   unbefristet: boolean;
@@ -590,6 +602,43 @@ export interface ZaehlerlisteEintrag {
   standortDetail?: string;
   stand?: number;
   ablesedatum?: string;
+}
+
+// ————— Kurzzeitvermietung/Veranstaltungsflächen (VER-001 bis VER-006) —————
+
+export type VeranstaltungsflaecheStatus = "Verfügbar" | "Gesperrt";
+
+export interface Veranstaltungsflaeche {
+  id: string;
+  bezeichnung: string;
+  liegenschaftId: string;
+  flaecheQm?: number;
+  kapazitaet?: number; // max. Personen
+  ausstattung?: string; // Freitext, z.B. "Bestuhlung, Beamer, Küche"
+  preisProTag?: number;
+  status: VeranstaltungsflaecheStatus;
+  notizen?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ReservierungStatus = "Angefragt" | "Bestätigt" | "Storniert";
+
+export interface Reservierung {
+  id: string;
+  veranstaltungsflaecheId: string;
+  titel: string;
+  mieter: string; // Name des Buchenden/Veranstalters
+  kontakt?: string;
+  // ISO-Datetime (nicht nur Datum), da Belegungen tageweise ODER
+  // stundenweise sein können (z.B. Vormittags-/Abendveranstaltung).
+  beginn: string;
+  ende: string;
+  status: ReservierungStatus;
+  preis?: number;
+  notizen?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface EigentuemerExtraktion {
@@ -1805,7 +1854,7 @@ export interface AbgeleitetesKalenderEreignis {
   titel: string;
   datum: string;
   kategorie: KalenderKategorie;
-  quelle: "Mietvertrag" | "Routine" | "Pruefung" | "Buchung" | "Vertrag" | "Anlage";
+  quelle: "Mietvertrag" | "Routine" | "Pruefung" | "Buchung" | "Vertrag" | "Anlage" | "Reservierung";
   link?: string;
 }
 

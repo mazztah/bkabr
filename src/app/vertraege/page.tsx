@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 import { FileSignature, Plus, Trash2 } from "lucide-react";
 import Modal from "@/components/Modal";
-import { Liegenschaft, Vertrag, VertragArt, VertragStatus, Zahlungsintervall } from "@/lib/types";
+import { Liegenschaft, Vertrag, VertragArt, VertragStatus, Zahlungsintervall, PachtNutzungsart } from "@/lib/types";
 
 const ARTEN: VertragArt[] = ["Pacht", "Dienstleistung", "Wartung", "Versicherung", "Erbbaurecht", "Sonstige"];
+const NUTZUNGSARTEN: PachtNutzungsart[] = ["Jagd", "Fischerei", "Kleingarten", "Wiese", "Ackerland", "Sonstige Nutzung"];
 const STATUS: VertragStatus[] = ["Entwurf", "Aktiv", "Gekündigt", "Beendet"];
 const INTERVALLE: Zahlungsintervall[] = ["Einmalig", "Monatlich", "Quartalsweise", "Halbjährlich", "Jährlich"];
 
@@ -21,6 +22,7 @@ const LEER = {
   bezeichnung: "",
   vertragspartner: "",
   liegenschaftId: "",
+  nutzungsart: "Sonstige Nutzung" as PachtNutzungsart,
   beginn: new Date().toISOString().slice(0, 10),
   ende: "",
   unbefristet: false,
@@ -139,7 +141,10 @@ export default function VertraegePage() {
                     <div className="font-medium">{v.bezeichnung}</div>
                     <div className="text-xs text-muted-foreground">{liegenschaftName(v.liegenschaftId)}</div>
                   </td>
-                  <td className="px-4 py-3">{v.art}</td>
+                  <td className="px-4 py-3">
+                    {v.art}
+                    {v.nutzungsart && <span className="text-xs text-muted-foreground"> ({v.nutzungsart})</span>}
+                  </td>
                   <td className="px-4 py-3">{v.vertragspartner}</td>
                   <td className="px-4 py-3">
                     {new Date(v.beginn).toLocaleDateString("de-DE")} –{" "}
@@ -202,6 +207,7 @@ function VertragFormular({
           bezeichnung: vertrag.bezeichnung,
           vertragspartner: vertrag.vertragspartner,
           liegenschaftId: vertrag.liegenschaftId || "",
+          nutzungsart: vertrag.nutzungsart || "Sonstige Nutzung",
           beginn: vertrag.beginn.slice(0, 10),
           ende: vertrag.ende?.slice(0, 10) || "",
           unbefristet: vertrag.unbefristet,
@@ -309,6 +315,22 @@ function VertragFormular({
             ))}
           </select>
         </div>
+        {werte.art === "Pacht" && (
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Nutzungsart</label>
+            <select
+              value={werte.nutzungsart}
+              onChange={(e) => setWerte({ ...werte, nutzungsart: e.target.value as PachtNutzungsart })}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+            >
+              {NUTZUNGSARTEN.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="mb-1 block text-xs font-medium text-muted-foreground">Beginn</label>

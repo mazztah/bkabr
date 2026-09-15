@@ -39,6 +39,7 @@ export async function POST(req: NextRequest) {
     vertragspartner: body.vertragspartner,
     liegenschaftId: body.liegenschaftId || undefined,
     flurstueckId: body.flurstueckId || undefined,
+    nutzungsart: body.art === "Pacht" ? body.nutzungsart || undefined : undefined,
     beginn: body.beginn,
     ende: body.unbefristet ? undefined : body.ende || undefined,
     unbefristet: Boolean(body.unbefristet),

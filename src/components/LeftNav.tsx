@@ -40,6 +40,7 @@ import {
   Shield,
   MapPin,
   Gauge,
+  PartyPopper,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -101,6 +102,7 @@ const GROUPS: NavGroup[] = [
       { href: "/vorauszahlungen", label: "Vorauszahlungen", icon: Wallet },
       { href: "/mietvertraege", label: "Mietverträge", icon: FileSignature },
       { href: "/vertraege", label: "Verträge", icon: FileSignature },
+      { href: "/veranstaltungsflaechen", label: "Veranstaltungsflächen", icon: PartyPopper },
       { href: "/rechnungen", label: "Rechnungen", icon: FileInput },
       { href: "/dienstleistungsvertraege", label: "Dienstleistungsverträge", icon: Handshake },
     ],

@@ -35,6 +35,8 @@ import {
   AnlagenWartung,
   Zaehler,
   ZaehlerAblesung,
+  Veranstaltungsflaeche,
+  Reservierung,
   Gebaeude,
   Handwerker,
   Investor,
@@ -83,6 +85,8 @@ interface DbShape {
   anlagenWartungen: AnlagenWartung[];
   zaehler: Zaehler[];
   zaehlerAblesungen: ZaehlerAblesung[];
+  veranstaltungsflaechen: Veranstaltungsflaeche[];
+  reservierungen: Reservierung[];
   pmVertraege: PmVertrag[];
   schriftverkehr: SchriftverkehrDokument[];
   kontoauszuege: Kontoauszug[];
@@ -159,6 +163,8 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     anlagenWartungen: db.anlagenWartungen || [],
     zaehler: db.zaehler || [],
     zaehlerAblesungen: db.zaehlerAblesungen || [],
+    veranstaltungsflaechen: db.veranstaltungsflaechen || [],
+    reservierungen: db.reservierungen || [],
     pmVertraege: db.pmVertraege || [],
     schriftverkehr: db.schriftverkehr || [],
     kontoauszuege: db.kontoauszuege || [],
@@ -389,6 +395,8 @@ export const anlagenDb = makeCrud<Anlage>("anlagen", "AN");
 export const anlagenWartungenDb = makeCrud<AnlagenWartung>("anlagenWartungen", "AW");
 export const zaehlerDb = makeCrud<Zaehler>("zaehler", "ZA");
 export const zaehlerAblesungenDb = makeCrud<ZaehlerAblesung>("zaehlerAblesungen", "ZL");
+export const veranstaltungsflaechenDb = makeCrud<Veranstaltungsflaeche>("veranstaltungsflaechen", "VF");
+export const reservierungenDb = makeCrud<Reservierung>("reservierungen", "RS");
 export const pmVertraegeDb = makeCrud<PmVertrag>("pmVertraege", "PM");
 export const schriftverkehrDb = makeCrud<SchriftverkehrDokument>("schriftverkehr", "SV");
 export const kontoauszuegeDb = makeCrud<Kontoauszug>("kontoauszuege", "KA");
@@ -1388,6 +1396,23 @@ export async function getAbgeleiteteKalenderEreignisse(): Promise<AbgeleitetesKa
         link: "/anlagen",
       });
     }
+  }
+
+  // Veranstaltungsflächen: bestätigte Reservierungen als Kalender-Termin
+  // (KAL-002) — die eigentliche Überschneidungsprüfung passiert bereits
+  // beim Anlegen der Reservierung selbst (siehe
+  // /api/veranstaltungsflaechen/[id]/reservierungen).
+  for (const r of db.reservierungen) {
+    if (r.status === "Storniert") continue;
+    const flaeche = db.veranstaltungsflaechen.find((f) => f.id === r.veranstaltungsflaecheId);
+    ereignisse.push({
+      id: `reservierung-${r.id}`,
+      titel: `${flaeche ? flaeche.bezeichnung + ": " : ""}${r.titel}`,
+      datum: r.beginn,
+      kategorie: "Termin",
+      quelle: "Reservierung",
+      link: "/veranstaltungsflaechen",
+    });
   }
 
   for (const s of db.agentSchedules) {
