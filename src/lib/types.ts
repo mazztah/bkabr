@@ -1024,8 +1024,30 @@ export interface AblageDokument {
   konfidenz?: number;
   zugeordnetAn?: AblageZuordnung;
   extraktText?: string;
+  // ————— Ausbau DOK-001 bis DOK-006 —————
+  /** Aktuelle Versionsnummer, startet bei 1. */
+  version: number;
+  /** Vorherige Versionen (neueste zuerst) — die AKTUELLE Version steht in
+   *  den Feldern oben, nicht hier. */
+  historie?: AblageVersionEintrag[];
+  /** Frei konfigurierbare Zusatzfelder (Schlüssel/Wert), z.B. "Kategorie",
+   *  "Gültig bis", "Interner Referenzcode" — Struktur bewusst offen, damit
+   *  je Anwendungsfall unterschiedliche Metadaten möglich sind, ohne das
+   *  Schema jedes Mal zu ändern. */
+  metadaten?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AblageVersionEintrag {
+  version: number;
+  storedFileName: string;
+  dateiName: string;
+  mimeType: string;
+  groesse: number;
+  ersetztAm: string;
+  ersetztVon?: string;
+  kommentar?: string;
 }
 
 // -------- System-Log --------

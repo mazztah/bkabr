@@ -21,6 +21,18 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (body.dateiName !== undefined && String(body.dateiName).trim()) {
     patch.dateiName = String(body.dateiName).trim();
   }
+  // Metadaten werden zusammengeführt (nicht ersetzt) — ein Schlüssel mit
+  // Wert null entfernt das jeweilige Feld wieder, alle anderen Felder
+  // bleiben erhalten. So kann die UI ein einzelnes Metadatenfeld ändern,
+  // ohne alle anderen vorher erneut mitschicken zu müssen.
+  if (body.metadaten && typeof body.metadaten === "object") {
+    const zusammengefuehrt: Record<string, string> = { ...(bestehend.metadaten || {}) };
+    for (const [k, v] of Object.entries(body.metadaten as Record<string, unknown>)) {
+      if (v === null) delete zusammengefuehrt[k];
+      else zusammengefuehrt[k] = String(v);
+    }
+    patch.metadaten = zusammengefuehrt;
+  }
 
   const aktualisiert = await ablageDb.update(id, patch as any);
   await logAudit({ table: "ablage", recordId: id, aktion: "update", changedBy: auth.id, oldData: bestehend, newData: aktualisiert });
@@ -53,6 +65,9 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   if (!bestehend) return NextResponse.json({ error: "Nicht gefunden" }, { status: 404 });
 
   await deleteStoredFile(bestehend.storedFileName);
+  for (const v of bestehend.historie || []) {
+    await deleteStoredFile(v.storedFileName);
+  }
   await ablageDb.remove(id);
   await logEvent("loeschung", `„${bestehend.dateiName}" aus der Ablage gelöscht.`, { art: "Ablage", id });
   await logAudit({ table: "ablage", recordId: id, aktion: "delete", changedBy: auth.id, oldData: bestehend });

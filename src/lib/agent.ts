@@ -3716,6 +3716,7 @@ async function executeTool(
         hochgeladenAm: now,
         status: "neu",
         extraktText: inhalt,
+        version: 1,
         createdAt: now,
         updatedAt: now,
       });

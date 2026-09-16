@@ -166,7 +166,11 @@ export async function GET(req: NextRequest) {
   if (darf("dokumente")) {
     const ablage = await ablageDb.list();
     for (const d of ablage) {
-      if (enthaelt(d.dateiName, q)) {
+      // Volltextsuche (DOK-Ausbau): nicht nur der Dateiname, auch der
+      // extrahierte Textinhalt zählt als Treffer — genau das, was bisher
+      // fehlte, um z.B. eine "Investoren-Vorschlagsliste.md" über ihren
+      // Inhalt statt nur über den exakten Dateinamen zu finden.
+      if (enthaelt(d.dateiName, q) || enthaelt(d.extraktText, q)) {
         treffer.push({ typ: "Dokument", id: d.id, titel: d.dateiName, untertitel: d.erkannterTyp, link: `/ablage` });
       }
     }

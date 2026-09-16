@@ -20,6 +20,13 @@ export async function readStoredFile(storedFileName: string): Promise<Buffer> {
   return fs.readFile(path.join(UPLOADS_DIR, storedFileName));
 }
 
+/** Überschreibt eine bereits gespeicherte Datei mit neuem Inhalt (z.B. beim
+ *  Bearbeiten einer Text-/Markdown-Referenzdatei, siehe DOK-Ausbau). */
+export async function overwriteStoredFile(storedFileName: string, buffer: Buffer): Promise<void> {
+  await fs.mkdir(UPLOADS_DIR, { recursive: true });
+  await fs.writeFile(path.join(UPLOADS_DIR, storedFileName), buffer);
+}
+
 /** Löscht eine gespeicherte Datei. Ignoriert stillschweigend, falls sie nicht (mehr) existiert. */
 export async function deleteStoredFile(storedFileName: string): Promise<void> {
   try {

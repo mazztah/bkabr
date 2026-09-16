@@ -106,6 +106,7 @@ async function verarbeiteDatei(
     groesse: buffer.length,
     hochgeladenAm: new Date().toISOString(),
     status: "neu",
+    version: 1,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });

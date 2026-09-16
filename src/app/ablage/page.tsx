@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import LogPanel from "@/components/LogPanel";
+import Modal from "@/components/Modal";
 import { AblageDokument, AblageStatus, DOKUMENT_TYP_LABEL } from "@/lib/types";
 
 const STATUS_LABEL: Record<AblageStatus, string> = {
@@ -46,6 +47,7 @@ export default function AblagePage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bestaetigungOffen, setBestaetigungOffen] = useState(false);
+  const [detailsOffen, setDetailsOffen] = useState<AblageDokument | null>(null);
 
   const laden = async () => {
     setLoading(true);
@@ -168,7 +170,14 @@ export default function AblagePage() {
                 {STATUS_LABEL[d.status]}
               </span>
               <div className="min-w-[180px] flex-1">
-                <p className="truncate text-sm font-medium">{d.dateiName}</p>
+                <p className="truncate text-sm font-medium">
+                  {d.dateiName}
+                  {d.version > 1 && (
+                    <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                      v{d.version}
+                    </span>
+                  )}
+                </p>
                 <p className="text-xs text-muted-foreground">
                   {formatZeit(d.hochgeladenAm)} · {formatGroesse(d.groesse)}
                   {d.erkannterTyp && ` · erkannt als: ${DOKUMENT_TYP_LABEL[d.erkannterTyp]}`}
@@ -178,6 +187,12 @@ export default function AblagePage() {
                   <p className="text-xs text-green-700 dark:text-green-400">→ {d.zugeordnetAn.label}</p>
                 )}
               </div>
+              <button
+                onClick={() => setDetailsOffen(d)}
+                className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:border-primary hover:text-primary"
+              >
+                📄 Details
+              </button>
               <button
                 onClick={() => einzelnLoeschen(d.id)}
                 disabled={busyId === d.id}
@@ -190,7 +205,287 @@ export default function AblagePage() {
         )}
       </div>
 
+      {detailsOffen && (
+        <DokumentDetails
+          dokument={detailsOffen}
+          onClose={() => setDetailsOffen(null)}
+          onChanged={laden}
+        />
+      )}
+
       <LogPanel />
+    </div>
+  );
+}
+
+function istTextdatei(d: AblageDokument): boolean {
+  return d.mimeType.startsWith("text/") || /\.(md|markdown|txt|csv)$/i.test(d.dateiName);
+}
+
+function DokumentDetails({
+  dokument,
+  onClose,
+  onChanged,
+}: {
+  dokument: AblageDokument;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [tab, setTab] = useState<"metadaten" | "inhalt" | "version" | "historie">("metadaten");
+  const [metaKey, setMetaKey] = useState("");
+  const [metaValue, setMetaValue] = useState("");
+  const [metadaten, setMetadaten] = useState<Record<string, string>>(dokument.metadaten || {});
+  const [busy, setBusy] = useState(false);
+  const [fehler, setFehler] = useState<string | null>(null);
+
+  async function metaSpeichern(neu: Record<string, string | null>) {
+    setBusy(true);
+    setFehler(null);
+    try {
+      const r = await fetch(`/api/ablage/${dokument.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ metadaten: neu }),
+      });
+      const json = await r.json();
+      if (!r.ok) throw new Error(json.error || "Speichern fehlgeschlagen.");
+      setMetadaten(json.ablage.metadaten || {});
+      onChanged();
+    } catch (e) {
+      setFehler(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function metaHinzufuegen() {
+    if (!metaKey.trim()) return;
+    metaSpeichern({ [metaKey.trim()]: metaValue });
+    setMetaKey("");
+    setMetaValue("");
+  }
+
+  return (
+    <Modal title={dokument.dateiName} onClose={onClose}>
+      <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
+        <div className="flex gap-1 border-b border-border pb-2 text-xs">
+          {(["metadaten", "inhalt", "version", "historie"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`rounded-md px-2 py-1 ${tab === t ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted"}`}
+            >
+              {t === "metadaten" ? "Metadaten" : t === "inhalt" ? "Öffnen/Bearbeiten" : t === "version" ? "Neue Version" : "Historie"}
+            </button>
+          ))}
+        </div>
+
+        {fehler && (
+          <div className="rounded-md bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--destructive)]">{fehler}</div>
+        )}
+
+        {tab === "metadaten" && (
+          <div className="space-y-2">
+            {Object.keys(metadaten).length === 0 ? (
+              <p className="text-xs text-muted-foreground">Noch keine Metadaten hinterlegt.</p>
+            ) : (
+              Object.entries(metadaten).map(([k, v]) => (
+                <div key={k} className="flex items-center justify-between rounded-md border border-border px-2.5 py-1.5 text-xs">
+                  <span>
+                    <span className="font-medium">{k}:</span> {v}
+                  </span>
+                  <button
+                    onClick={() => metaSpeichern({ [k]: null })}
+                    disabled={busy}
+                    className="text-muted-foreground hover:text-[var(--destructive)]"
+                  >
+                    Entfernen
+                  </button>
+                </div>
+              ))
+            )}
+            <div className="flex gap-1.5 pt-1">
+              <input
+                value={metaKey}
+                onChange={(e) => setMetaKey(e.target.value)}
+                placeholder="Feldname"
+                className="w-1/3 rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+              />
+              <input
+                value={metaValue}
+                onChange={(e) => setMetaValue(e.target.value)}
+                placeholder="Wert"
+                className="flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+              />
+              <button
+                onClick={metaHinzufuegen}
+                disabled={busy || !metaKey.trim()}
+                className="rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+              >
+                + Hinzufügen
+              </button>
+            </div>
+          </div>
+        )}
+
+        {tab === "inhalt" && (
+          <div className="space-y-2">
+            <button
+              onClick={() =>
+                window.open(
+                  `/api/files/${dokument.storedFileName}?mime=${encodeURIComponent(dokument.mimeType)}&name=${encodeURIComponent(dokument.dateiName)}`,
+                  "_blank"
+                )
+              }
+              className="w-full rounded-md border border-border px-3 py-2 text-xs hover:border-primary hover:text-primary"
+            >
+              👁️ In neuem Tab öffnen
+            </button>
+            {istTextdatei(dokument) ? (
+              <TextInhaltEditor dokumentId={dokument.id} onGespeichert={onChanged} />
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Inline-Bearbeitung ist nur für Text-/Markdown-/CSV-Dateien möglich.
+              </p>
+            )}
+          </div>
+        )}
+
+        {tab === "version" && <NeueVersionFormular dokumentId={dokument.id} onGespeichert={onChanged} />}
+
+        {tab === "historie" && (
+          <div className="space-y-1.5">
+            <div className="rounded-md border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs">
+              <span className="font-medium">Aktuell: Version {dokument.version}</span> — {dokument.dateiName}
+            </div>
+            {(dokument.historie || []).length === 0 ? (
+              <p className="text-xs text-muted-foreground">Noch keine früheren Versionen.</p>
+            ) : (
+              (dokument.historie || []).map((h) => (
+                <div key={h.version} className="rounded-md border border-border px-2.5 py-1.5 text-xs">
+                  <div className="font-medium">Version {h.version} — {h.dateiName}</div>
+                  <div className="text-muted-foreground">
+                    ersetzt am {formatZeit(h.ersetztAm)}
+                    {h.kommentar && ` · ${h.kommentar}`}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function TextInhaltEditor({ dokumentId, onGespeichert }: { dokumentId: string; onGespeichert: () => void }) {
+  const [inhalt, setInhalt] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [fehler, setFehler] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`/api/ablage/${dokumentId}/inhalt`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.error) throw new Error(j.error);
+        setInhalt(j.inhalt || "");
+      })
+      .catch((e) => setFehler(e.message))
+      .finally(() => setLoading(false));
+  }, [dokumentId]);
+
+  async function speichern() {
+    setBusy(true);
+    setFehler(null);
+    try {
+      const r = await fetch(`/api/ablage/${dokumentId}/inhalt`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ inhalt }),
+      });
+      const json = await r.json();
+      if (!r.ok) throw new Error(json.error || "Speichern fehlgeschlagen.");
+      onGespeichert();
+    } catch (e) {
+      setFehler(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (loading) return <p className="text-xs text-muted-foreground">Lädt …</p>;
+
+  return (
+    <div className="space-y-2">
+      <textarea
+        value={inhalt}
+        onChange={(e) => setInhalt(e.target.value)}
+        rows={14}
+        className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs"
+      />
+      {fehler && <div className="rounded-md bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--destructive)]">{fehler}</div>}
+      <button
+        onClick={speichern}
+        disabled={busy}
+        className="w-full rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground disabled:opacity-50"
+      >
+        {busy ? "Speichere neue Version …" : "Als neue Version speichern"}
+      </button>
+    </div>
+  );
+}
+
+function NeueVersionFormular({ dokumentId, onGespeichert }: { dokumentId: string; onGespeichert: () => void }) {
+  const [datei, setDatei] = useState<File | null>(null);
+  const [kommentar, setKommentar] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [fehler, setFehler] = useState<string | null>(null);
+
+  async function hochladen() {
+    if (!datei) return;
+    setBusy(true);
+    setFehler(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", datei);
+      if (kommentar) formData.append("kommentar", kommentar);
+      const r = await fetch(`/api/ablage/${dokumentId}/version`, { method: "POST", body: formData });
+      const json = await r.json();
+      if (!r.ok) throw new Error(json.error || "Hochladen fehlgeschlagen.");
+      onGespeichert();
+    } catch (e) {
+      setFehler(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-muted-foreground">
+        Ersetzt die aktuelle Datei durch eine neue Version. Die bisherige Version bleibt in der
+        Historie erhalten.
+      </p>
+      <input
+        type="file"
+        onChange={(e) => setDatei(e.target.files?.[0] || null)}
+        className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs"
+      />
+      <input
+        value={kommentar}
+        onChange={(e) => setKommentar(e.target.value)}
+        placeholder="Kommentar zur Änderung (optional)"
+        className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs"
+      />
+      {fehler && <div className="rounded-md bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--destructive)]">{fehler}</div>}
+      <button
+        onClick={hochladen}
+        disabled={!datei || busy}
+        className="w-full rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground disabled:opacity-50"
+      >
+        {busy ? "Lade hoch …" : "Neue Version hochladen"}
+      </button>
     </div>
   );
 }
