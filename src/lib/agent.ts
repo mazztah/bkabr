@@ -19,6 +19,12 @@ import {
   PruefBefund,
   SchriftverkehrDokument,
   Wohnung,
+  GrundbuchEintrag,
+  Vertrag,
+  Anlage,
+  AnlagenWartung,
+  Zaehler,
+  ZaehlerAblesung,
 } from "./types";
 import {
   ablageDb,
@@ -45,6 +51,13 @@ import {
   updateAbrechnung,
   wohnungenDb,
   eigentuemerDb,
+  flurstueckeDb,
+  grundbuchDb,
+  vertraegeDb,
+  anlagenDb,
+  anlagenWartungenDb,
+  zaehlerDb,
+  zaehlerAblesungenDb,
 } from "./db";
 import { runPlausibilitaetspruefung, wendeBefundAn } from "./pruefung";
 import { mietRueckstand } from "./mietkonto";
@@ -56,7 +69,7 @@ import {
   renderBrief,
 } from "./schriftverkehr";
 import { createChatCompletion } from "./groq-client";
-import { deleteStoredFile, storeFile } from "./storage";
+import { deleteStoredFile, readStoredFile, storeFile } from "./storage";
 import { computeNextRun, validateRecurrence } from "./schedule";
 import { webSearch } from "./websearch";
 import {
@@ -625,6 +638,24 @@ const CORE_AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
           limit: { type: "number", description: "Max. Treffer (Standard 30)" },
         },
         required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_ablage_dokument_inhalt",
+      description:
+        "Liest den Textinhalt eines Ablage-Dokuments (z.B. hochgeladene Referenz-/Vorschlagslisten, Notizen, technische Datenblätter). Suche per Dateiname-Ausschnitt. Nutzen, wenn nach dem INHALT eines abgelegten Dokuments gefragt wird, nicht nur nach Metadaten.",
+      parameters: {
+        type: "object",
+        properties: {
+          dateiname_enthaelt: {
+            type: "string",
+            description: "Ausschnitt des Dateinamens, z.B. 'investoren' oder 'vorschlagsliste'",
+          },
+        },
+        required: ["dateiname_enthaelt"],
       },
     },
   },
@@ -1346,6 +1377,109 @@ const INVESTOR_AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
           },
         },
         required: ["schedules"],
+      },
+    },
+  },
+];
+
+// Eigenes Array, analog zu INVESTOR_AGENT_TOOLS: wird nur bei erkanntem
+// Bezug zu Flurstücken/Grundbuch/generischen Verträgen/Anlagenmanagement/
+// Zählerwesen an die Anfrage angehängt (siehe wantsBestandTools weiter
+// unten) statt dauerhaft alle CORE_AGENT_TOOLS zu vergrößern — aus
+// demselben Token-Budget-Grund wie bei den Investoren-Tools. Bewusst knapp
+// gehalten (kurze Beschreibungen, minimale Parameter).
+const BESTAND_AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "list_flurstuecke",
+      description: "Listet Flurstücke (Gemarkung, Flur, Nr., Wirtschaftsart, Fläche). Optional gefiltert nach Liegenschaft.",
+      parameters: {
+        type: "object",
+        properties: { liegenschaft_id: { type: "string" } },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_grundbuch_eintraege",
+      description: "Listet Grundbuch-Einträge (Abteilung I/II/III) eines Flurstücks, inkl. gerötete (historische) Einträge.",
+      parameters: {
+        type: "object",
+        properties: { flurstueck_id: { type: "string" } },
+        required: ["flurstueck_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_vertraege",
+      description:
+        "Listet Verträge aus dem generischen Vertragsmodul (Pacht, Dienstleistung, Wartung, Versicherung, Erbbaurecht, Sonstige) — NICHT Mietverträge (dafür list_mietvertraege nutzen).",
+      parameters: {
+        type: "object",
+        properties: {
+          art: { type: "string", description: "Optional: Pacht|Dienstleistung|Wartung|Versicherung|Erbbaurecht|Sonstige" },
+          liegenschaft_id: { type: "string" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_anlagen",
+      description: "Listet technische Anlagen (BMA, EMA, Aufzug, Heizung, ...) inkl. Status und nächstem Prüftermin.",
+      parameters: {
+        type: "object",
+        properties: {
+          liegenschaft_id: { type: "string" },
+          faellige_pruefung_bis: { type: "string", description: "Optional: nur Anlagen mit Prüftermin bis zu diesem Datum (YYYY-MM-DD)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_anlagen_wartungen",
+      description: "Listet die Wartungs-/Prüfhistorie einer einzelnen Anlage.",
+      parameters: {
+        type: "object",
+        properties: { anlage_id: { type: "string" } },
+        required: ["anlage_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_zaehler",
+      description: "Listet Zähler (Strom/Gas/Wasser/Wärme) mit Zählernummer, Einheit, Standort und Status. Für 'wie viele Zähler haben wir' nutzen.",
+      parameters: {
+        type: "object",
+        properties: {
+          liegenschaft_id: { type: "string" },
+          art: { type: "string", description: "Optional: Strom|Gas|Wasser (kalt)|Wasser (warm)|Wärme|Sonstige" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_zaehler_ablesungen",
+      description: "Listet die Zählerstände-Historie eines einzelnen Zählers inkl. berechnetem Verbrauch zwischen Ablesungen.",
+      parameters: {
+        type: "object",
+        properties: { zaehler_id: { type: "string" } },
+        required: ["zaehler_id"],
       },
     },
   },
@@ -2789,6 +2923,171 @@ async function executeTool(
       };
     }
 
+    case "get_ablage_dokument_inhalt": {
+      const q = String(args.dateiname_enthaelt || "").toLowerCase();
+      if (!q) return { error: "dateiname_enthaelt ist erforderlich." };
+      const docs = await ablageDb.list();
+      const treffer = docs.filter((d) => d.dateiName.toLowerCase().includes(q));
+      if (treffer.length === 0) {
+        return { gefunden: false, hinweis: `Kein Ablage-Dokument mit '${q}' im Dateinamen gefunden.` };
+      }
+      const sortiert = [...treffer].sort(
+        (a, b) => new Date(b.hochgeladenAm).getTime() - new Date(a.hochgeladenAm).getTime()
+      );
+      const d = sortiert[0];
+      let inhalt = d.extraktText || "";
+      if (!inhalt) {
+        try {
+          const buffer = await readStoredFile(d.storedFileName);
+          inhalt = buffer.toString("utf-8");
+        } catch {
+          inhalt = "";
+        }
+      }
+      return {
+        gefunden: true,
+        dateiName: d.dateiName,
+        id: d.id,
+        weitereTreffer: sortiert.slice(1, 5).map((t) => t.dateiName),
+        inhalt: inhalt.slice(0, 6000),
+        gekuerzt: inhalt.length > 6000,
+      };
+    }
+
+    case "list_flurstuecke": {
+      const liegenschaftId = args.liegenschaft_id ? String(args.liegenschaft_id) : undefined;
+      const list = await flurstueckeDb.list(liegenschaftId ? { liegenschaftId } : undefined);
+      return {
+        anzahl: list.length,
+        link: "/flurstuecke",
+        flurstuecke: list.map((f) => ({
+          id: f.id,
+          gemarkung: f.gemarkung,
+          flur: f.flur,
+          flurstueckNummer: f.flurstueckNummer,
+          wirtschaftsart: f.wirtschaftsart,
+          flaecheQm: f.flaecheQm,
+          liegenschaftId: f.liegenschaftId,
+        })),
+      };
+    }
+
+    case "list_grundbuch_eintraege": {
+      const flurstueckId = String(args.flurstueck_id || "");
+      if (!flurstueckId) return { error: "flurstueck_id ist erforderlich." };
+      const list = await grundbuchDb.list({ flurstueckId } as Partial<GrundbuchEintrag>);
+      return {
+        anzahl: list.length,
+        link: "/flurstuecke",
+        eintraege: list.map((e) => ({
+          abteilung: e.abteilung,
+          art: e.art,
+          berechtigter: e.berechtigter,
+          betrag: e.betrag,
+          eingetragenAm: e.eingetragenAm,
+          geloescht: Boolean(e.geloeschtAm),
+          geloeschtAm: e.geloeschtAm,
+        })),
+      };
+    }
+
+    case "list_vertraege": {
+      const filter: Partial<Vertrag> = {};
+      if (args.art) filter.art = String(args.art) as Vertrag["art"];
+      if (args.liegenschaft_id) filter.liegenschaftId = String(args.liegenschaft_id);
+      const list = await vertraegeDb.list(Object.keys(filter).length ? filter : undefined);
+      return {
+        anzahl: list.length,
+        link: "/vertraege",
+        vertraege: list.map((v) => ({
+          id: v.id,
+          art: v.art,
+          bezeichnung: v.bezeichnung,
+          vertragspartner: v.vertragspartner,
+          beginn: v.beginn,
+          ende: v.ende,
+          unbefristet: v.unbefristet,
+          status: v.status,
+          betrag: v.betrag,
+        })),
+      };
+    }
+
+    case "list_anlagen": {
+      const filter: Partial<Anlage> = {};
+      if (args.liegenschaft_id) filter.liegenschaftId = String(args.liegenschaft_id);
+      let list = await anlagenDb.list(Object.keys(filter).length ? filter : undefined);
+      if (args.faellige_pruefung_bis) {
+        const grenze = new Date(String(args.faellige_pruefung_bis)).getTime();
+        list = list.filter((a) => a.naechstePruefung && new Date(a.naechstePruefung).getTime() <= grenze);
+      }
+      return {
+        anzahl: list.length,
+        link: "/anlagen",
+        anlagen: list.map((a) => ({
+          id: a.id,
+          typ: a.typ,
+          bezeichnung: a.bezeichnung,
+          liegenschaftId: a.liegenschaftId,
+          status: a.status,
+          naechstePruefung: a.naechstePruefung,
+          wartungsfirma: a.wartungsfirma,
+        })),
+      };
+    }
+
+    case "list_anlagen_wartungen": {
+      const anlageId = String(args.anlage_id || "");
+      if (!anlageId) return { error: "anlage_id ist erforderlich." };
+      const list = (await anlagenWartungenDb.list({ anlageId } as Partial<AnlagenWartung>)).sort(
+        (a, b) => new Date(b.durchgefuehrtAm).getTime() - new Date(a.durchgefuehrtAm).getTime()
+      );
+      return {
+        anzahl: list.length,
+        historie: list.map((h) => ({
+          durchgefuehrtAm: h.durchgefuehrtAm,
+          art: h.art,
+          ergebnis: h.ergebnis,
+          durchgefuehrtVon: h.durchgefuehrtVon,
+          kosten: h.kosten,
+        })),
+      };
+    }
+
+    case "list_zaehler": {
+      const filter: Partial<Zaehler> = {};
+      if (args.liegenschaft_id) filter.liegenschaftId = String(args.liegenschaft_id);
+      if (args.art) filter.art = String(args.art) as Zaehler["art"];
+      const list = await zaehlerDb.list(Object.keys(filter).length ? filter : undefined);
+      return {
+        anzahl: list.length,
+        link: "/zaehler",
+        zaehler: list.map((z) => ({
+          id: z.id,
+          zaehlernummer: z.zaehlernummer,
+          art: z.art,
+          einheit: z.einheit,
+          liegenschaftId: z.liegenschaftId,
+          standortDetail: z.standortDetail,
+          status: z.status,
+        })),
+      };
+    }
+
+    case "list_zaehler_ablesungen": {
+      const zaehlerId = String(args.zaehler_id || "");
+      if (!zaehlerId) return { error: "zaehler_id ist erforderlich." };
+      const list = (await zaehlerAblesungenDb.list({ zaehlerId } as Partial<ZaehlerAblesung>)).sort(
+        (a, b) => new Date(a.ablesedatum).getTime() - new Date(b.ablesedatum).getTime()
+      );
+      const mitVerbrauch = list.map((a, i) => ({
+        ablesedatum: a.ablesedatum,
+        stand: a.stand,
+        differenzZuVorher: i === 0 ? null : Math.round((a.stand - list[i - 1].stand) * 100) / 100,
+      }));
+      return { anzahl: list.length, ablesungen: mitVerbrauch };
+    }
+
     case "list_mietvertraege": {
       const [vertraege, mieterAll, wohnungenAll] = await Promise.all([
         mietvertraegeDb.list(),
@@ -4098,8 +4397,21 @@ export async function runAgent(params: {
     Boolean(params.path && params.path.startsWith("/investoren")) ||
     (params.history || []).slice(-4).some((h) => mentionsInvestor(h.content));
 
+  // Analog zu wantsInvestorTools (siehe Kommentar dort): eigenes, kompaktes
+  // Tool-Set für Flurstücke/Grundbuch/generische Verträge/Anlagenmanagement/
+  // Zählerwesen, statt diese dauerhaft in CORE_AGENT_TOOLS mitzuführen.
+  // Nur relevant, wenn nicht ohnehin schon Investoren-Kontext erkannt wurde.
+  const wantsBestandTools =
+    !wantsInvestorTools &&
+    (mentionsBestand(params.message) ||
+      Boolean(
+        params.path &&
+          ["/flurstuecke", "/vertraege", "/anlagen", "/zaehler"].some((p) => params.path!.startsWith(p))
+      ) ||
+      (params.history || []).slice(-4).some((h) => mentionsBestand(h.content)));
+
   // Bei klarem Bereinigungsauftrag: deterministisch ausführen (zuverlässig, kein Timeout)
-  const det = wantsInvestorTools ? null : await tryDeterministicCleanup(params.message);
+  const det = wantsInvestorTools || wantsBestandTools ? null : await tryDeterministicCleanup(params.message);
   if (det) return det;
 
   // Agent-Gedächtnis (Durchgang 9): 1 von max. 2 Supabase-Writes für diesen Lauf.
@@ -4136,7 +4448,7 @@ export async function runAgent(params: {
   // Mission-Control-Logs), der praktisch jede Investoren-Anfrage über Groqs
   // reales 8000-TPM-Limit UND das eigene Sicherheitsbudget getrieben und so
   // regelmäßig bis zum unzuverlässigsten Fallback-Modell durchgereicht hat.
-  const tools = wantsInvestorTools ? INVESTOR_AGENT_TOOLS : CORE_AGENT_TOOLS;
+  const tools = wantsInvestorTools ? INVESTOR_AGENT_TOOLS : wantsBestandTools ? BESTAND_AGENT_TOOLS : CORE_AGENT_TOOLS;
 
   try {
     // Tools, nach denen typischerweise noch Schreib-Aufrufe folgen MÜSSEN
@@ -4389,7 +4701,7 @@ export async function runAgent(params: {
       reply: e?.message,
     });
 
-    const cleanupFallback = wantsInvestorTools ? null : await tryDeterministicCleanup(params.message);
+    const cleanupFallback = wantsInvestorTools || wantsBestandTools ? null : await tryDeterministicCleanup(params.message);
     if (cleanupFallback) {
       return {
         reply:
@@ -4993,6 +5305,18 @@ async function tryDeterministicCleanup(message: string): Promise<AgentResult | n
 function mentionsInvestor(text: string): boolean {
   return /\b(investor|investoren)\b/.test(
     text.toLowerCase().replace(/ß/g, "ss").replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue")
+  );
+}
+
+// Bewusst spezifische, kollisionsarme Begriffe statt bloß "vertrag"/"anlage"/
+// "pruefung" (die bereits anderweitig in CORE_AGENT_TOOLS besetzt sind, z.B.
+// Mietvertrag bzw. Plausibilitätsprüfung von Abrechnungen) — sonst würde eine
+// normale Mietvertrags- oder Abrechnungsprüfungs-Anfrage versehentlich die
+// falschen (Bestands-)Tools bekommen und die eigentlich passenden verlieren.
+function mentionsBestand(text: string): boolean {
+  const t = text.toLowerCase().replace(/ß/g, "ss").replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue");
+  return /\b(flurstueck|flurstuecke|grundbuch|zaehler|zaehlerstand|zaehlerablesung|zaehlerstaende|anlagenmanagement|technische anlage|technischen anlage|wartungshistorie|pachtvertrag|dienstleistungsvertrag|wartungsvertrag|erbbaurecht|versicherungsvertrag)\b/.test(
+    t
   );
 }
 

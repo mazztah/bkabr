@@ -24,13 +24,22 @@ export async function GET() {
   const sb = getSupabaseClient();
   if (!sb) return NextResponse.json({ error: "Supabase nicht konfiguriert." }, { status: 503 });
 
-  const [{ data: profile, error: profileErr }, { data: rollenRows, error: rollenErr }] = await Promise.all([
-    sb.from("profiles").select("id, email, display_name, aktiv, created_at").order("created_at", { ascending: false }),
-    sb.from("user_roles").select("user_id, role_id"),
-  ]);
+  // Quelle der Wahrheit ist auth.users (über die Admin-API), NICHT allein
+  // die profiles-Tabelle: Nutzer, die direkt im Supabase-Dashboard angelegt
+  // wurden oder deren profiles-Zeile aus anderen Gründen fehlt, sollen
+  // trotzdem in der Liste (und damit in jedem Rollen-Dropdown) erscheinen,
+  // statt spurlos zu verschwinden.
+  const [{ data: authList, error: authErr }, { data: profileRows, error: profileErr }, { data: rollenRows, error: rollenErr }] =
+    await Promise.all([
+      sb.auth.admin.listUsers({ perPage: 1000 }),
+      sb.from("profiles").select("id, email, display_name, aktiv, created_at"),
+      sb.from("user_roles").select("user_id, role_id"),
+    ]);
+  if (authErr) return NextResponse.json({ error: authErr.message }, { status: 500 });
   if (profileErr) return NextResponse.json({ error: profileErr.message }, { status: 500 });
   if (rollenErr) return NextResponse.json({ error: rollenErr.message }, { status: 500 });
 
+  const profileById = new Map((profileRows || []).map((p) => [p.id, p]));
   const rollenByUser = new Map<string, string[]>();
   for (const r of rollenRows || []) {
     const list = rollenByUser.get(r.user_id) || [];
@@ -38,14 +47,35 @@ export async function GET() {
     rollenByUser.set(r.user_id, list);
   }
 
-  const nutzer: NutzerListe[] = (profile || []).map((p) => ({
-    id: p.id,
-    email: p.email,
-    displayName: p.display_name,
-    aktiv: p.aktiv,
-    createdAt: p.created_at,
-    rollen: rollenByUser.get(p.id) || [],
-  }));
+  // Fehlende profiles-Zeilen (Nutzer existiert in auth.users, aber der
+  // handle_new_auth_user()-Trigger ist ihm nie begegnet) im Hintergrund
+  // nachziehen, damit sich das System selbst heilt statt dauerhaft
+  // inkonsistent zu bleiben.
+  const fehlendeProfile = (authList?.users || []).filter((u) => !profileById.has(u.id));
+  if (fehlendeProfile.length > 0) {
+    await sb.from("profiles").upsert(
+      fehlendeProfile.map((u) => ({
+        id: u.id,
+        email: u.email || "",
+        display_name: (u.user_metadata?.display_name as string | undefined) || u.email || "",
+      })),
+      { onConflict: "id", ignoreDuplicates: true }
+    );
+  }
+
+  const nutzer: NutzerListe[] = (authList?.users || [])
+    .map((u) => {
+      const p = profileById.get(u.id);
+      return {
+        id: u.id,
+        email: u.email || p?.email || "",
+        displayName: p?.display_name ?? (u.user_metadata?.display_name as string | undefined) ?? null,
+        aktiv: p?.aktiv ?? true,
+        createdAt: p?.created_at || u.created_at,
+        rollen: rollenByUser.get(u.id) || [],
+      };
+    })
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
   return NextResponse.json({ nutzer });
 }
