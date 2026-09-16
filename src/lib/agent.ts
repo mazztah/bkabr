@@ -1208,6 +1208,72 @@ const INVESTOR_AGENT_TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "list_ablage",
+      description:
+        "Listet Dokumente in der Ablage. Nutzen, um hinterlegte Investoren-Vorschlagslisten/Rechercheergebnisse zu finden, bevor deren Inhalt gelesen wird.",
+      parameters: {
+        type: "object",
+        properties: {
+          status: { type: "string", description: "neu | in_pruefung | zugeordnet | verworfen | offen" },
+          limit: { type: "number" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_ablage_dokument_inhalt",
+      description:
+        "Liest den Textinhalt eines Ablage-Dokuments per Dateiname-Ausschnitt (z.B. 'investoren' oder 'vorschlaege'). ZWINGEND nutzen, bevor Investoren aus einer hinterlegten Liste übernommen werden — niemals Inhalte aus dem Gedächtnis erfinden.",
+      parameters: {
+        type: "object",
+        properties: {
+          dateiname_enthaelt: { type: "string" },
+        },
+        required: ["dateiname_enthaelt"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "save_investoren_batch",
+      description:
+        "Legt MEHRERE Investoren auf einmal an (Duplikate werden automatisch übersprungen). Nutzen, wenn Investoren aus einer Vorschlagsliste/Recherche übernommen werden — deutlich effizienter als save_investor einzeln aufzurufen. Pflicht je Eintrag: firma + land.",
+      parameters: {
+        type: "object",
+        properties: {
+          investoren: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                firma: { type: "string" },
+                land: { type: "string" },
+                webseite: { type: "string" },
+                kurzprofil: { type: "string" },
+                hub: { type: "string" },
+                sektoren: { type: "array", items: { type: "string" } },
+                quelle: { type: "string" },
+              },
+              required: ["firma", "land"],
+            },
+          },
+          status: {
+            type: "string",
+            enum: ["vorschlag", "freigegeben"],
+            description: "Status für alle Einträge, Standard 'vorschlag'",
+          },
+        },
+        required: ["investoren"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "approve_investoren",
       description: "Gibt einen/mehrere Investoren frei (Status → freigegeben). investor_ids ODER alle_vorschlaege.",
       parameters: {
@@ -3868,11 +3934,79 @@ async function executeTool(
       return { ok: true, investor: { id: saved.id, firma: saved.firma, status: saved.status, score: saved.score } };
     }
 
+    case "save_investoren_batch": {
+      const roh = Array.isArray(args.investoren) ? (args.investoren as Record<string, unknown>[]) : [];
+      if (roh.length === 0) return { error: "investoren (Array) erforderlich" };
+      const zielStatus = (args.status as InvestorStatus) || "vorschlag";
+
+      // Normalisierung wie im Einzel-Anlegen-Zweig von save_investor, damit
+      // Duplikate auch bei abweichenden Schreibweisen erkannt werden.
+      const norm = (s: string) =>
+        s
+          .toLowerCase()
+          .replace(/\b(gmbh|ag|inc|llc|ltd|sgr|s\.p\.a\.|se|kg|bv|nv|plc|co)\b/g, "")
+          .replace(/[^a-z0-9]/g, "");
+
+      const bestehende = await investorenDb.list();
+      const bekannt = new Set(bestehende.map((i) => norm(i.firma)));
+
+      const angelegt: { id: string; firma: string }[] = [];
+      const uebersprungen: string[] = [];
+
+      for (const eintrag of roh) {
+        const firma = String(eintrag.firma || "").trim();
+        const land = String(eintrag.land || "").trim();
+        if (!firma || !land) {
+          uebersprungen.push(`${firma || "(ohne Namen)"} — firma und land sind Pflicht`);
+          continue;
+        }
+        if (bekannt.has(norm(firma))) {
+          uebersprungen.push(`${firma} — existiert bereits`);
+          continue;
+        }
+        const now = new Date().toISOString();
+        const investor: Investor = {
+          id: uuidv4(),
+          firma,
+          land,
+          webseite: eintrag.webseite ? String(eintrag.webseite) : undefined,
+          kurzprofil: eintrag.kurzprofil ? String(eintrag.kurzprofil) : undefined,
+          hub: eintrag.hub ? String(eintrag.hub) : undefined,
+          sektoren: Array.isArray(eintrag.sektoren) ? (eintrag.sektoren as string[]) : [],
+          quelle: eintrag.quelle ? String(eintrag.quelle) : undefined,
+          status: zielStatus,
+          createdAt: now,
+          updatedAt: now,
+        };
+        const saved = await investorenDb.create(investor);
+        bekannt.add(norm(firma));
+        angelegt.push({ id: saved.id, firma: saved.firma });
+      }
+
+      await logEvent(
+        "anlage",
+        `${angelegt.length} Investor(en) aus Liste übernommen (Status: ${zielStatus}), ${uebersprungen.length} übersprungen.`,
+        { art: "Investor" }
+      );
+      return { ok: true, angelegt: angelegt.length, uebersprungen, investoren: angelegt };
+    }
+
     case "approve_investoren": {
       let targets: string[] = Array.isArray(args.investor_ids) ? (args.investor_ids as string[]) : [];
       if (args.alle_vorschlaege) {
         const alle = await investorenDb.list();
         targets = alle.filter((i) => i.status === "vorschlag").map((i) => i.id);
+        // Aussagekräftige Rückmeldung statt stillschweigend "0 freigegeben":
+        // sonst meldet der Agent fälschlich Erfolg, obwohl gar nichts
+        // freizugeben war (z.B. weil die Kandidaten nie angelegt wurden).
+        if (targets.length === 0) {
+          return {
+            ok: true,
+            freigegeben: 0,
+            hinweis:
+              "Es gibt aktuell keine Investoren mit Status 'vorschlag'. Falls Kandidaten aus einer Liste in der Ablage übernommen werden sollen: zuerst get_ablage_dokument_inhalt lesen und dann save_investoren_batch aufrufen.",
+          };
+        }
       }
       if (targets.length === 0) return { error: "Keine investor_ids übergeben und alle_vorschlaege nicht gesetzt" };
       let anzahl = 0;
@@ -4255,6 +4389,7 @@ find_mieter / get_mietrueckstaende / create_brief – Mahnungen nur bei positive
 - Recherche/Suche: mehrere gezielte search_investoren_web-Aufrufe (pro Sektor/Region, mind. 3-4 unterschiedliche Suchen für "10 Investoren" statt nur einer einzigen breiten Anfrage – eine einzelne Suche liefert erfahrungsgemäß zu wenige verwertbare Treffer) → für JEDEN gefundenen Kandidaten SOFORT einzeln save_investor (ohne investor_id) mit status="vorschlag" + quelle=URL (nie ungeprüft "freigegeben"). WICHTIG: hier bewusst KEIN evaluate_investor_kriterien und KEINE Passungs-Bewertung – die Kandidaten sollen roh und zügig in der Investoren-Liste erscheinen, damit der Nutzer sie dort nach und nach durchgehen und einzeln freigeben kann. Die Bewertung/Vertiefung passiert erst später, siehe „Stammdaten updaten“ unten. Liefert die Recherche weniger Kandidaten als gewünscht, das offen sagen (nicht so tun, als sei die Zielzahl erreicht) und ggf. weitere Suchen anbieten.
 - Nach der Suche NICHT nachfragen, was mit den Kandidaten passieren soll – sie sind bereits als Vorschlag gespeichert und sofort in der Investoren-Liste sichtbar. Kurz bestätigen wie viele gefunden/gespeichert wurden, fertig.
 - Stammdaten updaten (Vertiefung nach Freigabe): Wenn der Nutzer im Chat sinngemäß bittet, für freigegebene/bereits recherchierte Investoren die (vollständigen) Stammdaten anzulegen/zu vervollständigen/zu aktualisieren (z.B. „lege die Stammdaten der freigegebenen Investoren an“, „Stammdaten updaten“ im Investoren-Kontext – NICHT zu verwechseln mit dem Mieter-Fall oben) → update_investoren_stammdaten aufrufen. Ohne investor_ids werden automatisch alle freigegebenen Investoren ohne bisheriges Update verarbeitet; mit investor_ids gezielt einzelne. Das Tool sucht pro Investor selbstständig nach und ergänzt Kontakt/Ansprechpartner/Score – NICHT versuchen, das stattdessen manuell über mehrere search_investoren_web + save_investor-Aufrufe nachzubauen.
+- AUS ABLAGE ÜBERNEHMEN: Wenn der Nutzer Investoren aus einer hinterlegten Liste/Datei übernehmen will: 1) list_ablage, 2) get_ablage_dokument_inhalt (Dateiname-Ausschnitt), 3) save_investoren_batch mit ALLEN dort genannten Firmen. NIE Firmen aus dem Gedächtnis erfinden — immer erst den Dateiinhalt lesen.
 - Freigabe: approve_investoren/reject_investor. Anschreiben: generate_investor_anschreiben (Vorstellung/Philosophie/App, offen für Zusammenarbeit/Kauf/Job). Strategie: generate_investor_strategie_bericht (≥20 Punkte, wirtschaftliche_ziele nutzen falls genannt).
 - Cronjobs: create_agent_schedule (einzeln) / create_agent_schedules_batch (bis 10), z.B. "alle 2 Tage" = intervall_minuten=2880.
 - delete_investor: erst ohne user_confirmed fragen, dann bestätigt ausführen.
@@ -4292,6 +4427,7 @@ Du hast Schreibrechte über Tools (Datenbank-Updates). Behaupte NIEMALS, du kön
 - Recherche/Suche: mehrere gezielte search_investoren_web-Aufrufe (pro Sektor/Region, mind. 3-4 unterschiedliche Suchen für "10 Investoren" statt nur einer einzigen breiten Anfrage – eine einzelne Suche liefert erfahrungsgemäß zu wenige verwertbare Treffer) → für JEDEN gefundenen Kandidaten SOFORT einzeln save_investor (ohne investor_id) mit status="vorschlag" + quelle=URL (nie ungeprüft "freigegeben"). WICHTIG: hier bewusst KEIN evaluate_investor_kriterien und KEINE Passungs-Bewertung – die Kandidaten sollen roh und zügig in der Investoren-Liste erscheinen, damit der Nutzer sie dort nach und nach durchgehen und einzeln freigeben kann. Die Bewertung/Vertiefung passiert erst später, siehe „Stammdaten updaten" unten. Liefert die Recherche weniger Kandidaten als gewünscht, das offen sagen (nicht so tun, als sei die Zielzahl erreicht) und ggf. weitere Suchen anbieten.
 - Nach der Suche NICHT nachfragen, was mit den Kandidaten passieren soll – sie sind bereits als Vorschlag gespeichert und sofort in der Investoren-Liste sichtbar. Kurz bestätigen wie viele gefunden/gespeichert wurden, fertig.
 - Stammdaten updaten (Vertiefung nach Freigabe): Wenn der Nutzer im Chat sinngemäß bittet, für freigegebene/bereits recherchierte Investoren die (vollständigen) Stammdaten anzulegen/zu vervollständigen/zu aktualisieren (z.B. „lege die Stammdaten der freigegebenen Investoren an", „Stammdaten updaten") → update_investoren_stammdaten aufrufen. Ohne investor_ids werden automatisch alle freigegebenen Investoren ohne bisheriges Update verarbeitet; mit investor_ids gezielt einzelne. Das Tool sucht pro Investor selbstständig nach und ergänzt Kontakt/Ansprechpartner/Score – NICHT versuchen, das stattdessen manuell über mehrere search_investoren_web + save_investor-Aufrufe nachzubauen.
+- AUS ABLAGE ÜBERNEHMEN: Wenn der Nutzer Investoren aus einer hinterlegten Liste/Datei übernehmen will: 1) list_ablage, 2) get_ablage_dokument_inhalt (Dateiname-Ausschnitt), 3) save_investoren_batch mit ALLEN dort genannten Firmen. NIE Firmen aus dem Gedächtnis erfinden — immer erst den Dateiinhalt lesen.
 - Freigabe: approve_investoren/reject_investor. Anschreiben: generate_investor_anschreiben (Vorstellung/Philosophie/App, offen für Zusammenarbeit/Kauf/Job). Strategie: generate_investor_strategie_bericht (≥20 Punkte, wirtschaftliche_ziele nutzen falls genannt).
 - Cronjobs: create_agent_schedule (einzeln) / create_agent_schedules_batch (bis 10), z.B. "alle 2 Tage" = intervall_minuten=2880.
 - delete_investor: erst ohne user_confirmed fragen, dann bestätigt ausführen.
