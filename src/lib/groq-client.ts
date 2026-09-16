@@ -1153,8 +1153,22 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
     // angehängt wurden – die frisch angehängten Modelle waren dadurch
     // ungefiltert nutzbar, obwohl STRUCTURED_OUTPUT_UNSAFE_MODELS auch
     // Cerebras-/Cloudflare-Modell-IDs enthält).
+    //
+    // ECHTER BUG, HIER BEHOBEN (Live-Logs 2026-09-16 zeigten @cf/zai-org/
+    // glm-4.7-flash und @cf/google/gemma-4-26b-a4b-it weiterhin als
+    // Fallback-Stufen bei Tool-Aufrufen, u.a. mit dem exakten "<tool_call>…
+    // arg_value</tool_call>"-Symptom, das STRUCTURED_OUTPUT_UNSAFE_MODELS
+    // eigentlich verhindern soll): getCerebrasTextModels()/
+    // getCloudflareTextModels()/getNvidiaTextModels() liefern IDs MIT
+    // Provider-Präfix (z.B. "cloudflare:@cf/zai-org/glm-4.7-flash"), aber
+    // STRUCTURED_OUTPUT_UNSAFE_MODELS enthält die IDs OHNE Präfix (z.B. nur
+    // "@cf/zai-org/glm-4.7-flash"). Set.has() vergleicht exakt — der Filter
+    // griff für Cerebras/Cloudflare/NVIDIA-Modelle dadurch NIE, obwohl genau
+    // das der Zweck dieses zweiten Filterdurchlaufs ist (siehe Kommentar
+    // oben). Fix: Präfix vor dem Vergleich abstreifen (stripProviderPrefix
+    // existiert bereits weiter oben in dieser Datei für denselben Zweck).
     if (needsStructuredOutput) {
-      const filtered = models.filter((m) => !STRUCTURED_OUTPUT_UNSAFE_MODELS.has(m));
+      const filtered = models.filter((m) => !STRUCTURED_OUTPUT_UNSAFE_MODELS.has(stripProviderPrefix(m)));
       if (filtered.length > 0) models = filtered;
     }
   }
