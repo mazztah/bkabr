@@ -119,11 +119,22 @@ const DEFAULT_CEREBRAS_TEXT_MODELS: string[] = [];
  *   - glm-4.7-flash: günstig/schnell, multi-turn tools, multilingual
  *   - gemma-4-26b: tools + vision + structured
  *   - kimi-k2.6: frontier agentic, tools + vision + structured, großer Kontext
+ *     (ENTFERNT aus den Defaults, siehe unten)
+ *
+ * kimi-k2.6 bewusst NICHT mehr in den Defaults (Stand 2026-09-16): Live-Logs
+ * zeigten reproduzierbar 403 "Model @cf/moonshotai/kimi-k2.6 is not available
+ * on the Workers Free plan" — auf dem Workers-Free-Tier garantiert nutzlos
+ * UND (da glm-4.7-flash/gemma-4-26b-a4b-it für Tool-Aufrufe ohnehin über
+ * STRUCTURED_OUTPUT_UNSAFE_MODELS gesperrt sind) faktisch die EINZIGE
+ * verbleibende Cloudflare-Stufe für Tool-Aufrufe — ein Fallback-Slot, der
+ * bei jedem einzelnen Versuch garantiert scheitert, kostet nur Zeit, ohne je
+ * zu helfen. Nach einem Upgrade auf den Workers Paid Plan per
+ * CLOUDFLARE_TEXT_MODELS=@cf/moonshotai/kimi-k2.6 (ggf. zusätzlich zu den
+ * anderen beiden) wieder aktivierbar, ganz ohne Code-Änderung.
  */
 const DEFAULT_CLOUDFLARE_TEXT_MODELS = [
   "@cf/zai-org/glm-4.7-flash",
   "@cf/google/gemma-4-26b-a4b-it",
-  "@cf/moonshotai/kimi-k2.6",
 ];
 
 /**
@@ -1188,10 +1199,31 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
 
   let lastError: any;
   const groq = process.env.GROQ_API_KEY ? getGroqClient() : null;
+  // Zählt Fehlversuche der Art "Tool choice is required, but model did not
+  // call a tool" über die gesamte Fallback-Kette hinweg (siehe Live-Logs
+  // 2026-09-16: gpt-oss-120b UND gpt-oss-20b lehnten wiederholt jeden
+  // Tool-Aufruf ab und antworteten stattdessen mit Begrüßungs-/Rückfrage-Text
+  // – bei einer inzwischen kurzen Fallback-Kette (tote Modelle entfernt)
+  // blieb dann nichts mehr übrig und der ganze Auftrag schlug fehl). Sobald
+  // das einmal passiert ist, bekommt jeder weitere Versuch in dieser Kette
+  // eine verstärkende Erinnerung direkt vor dem eigentlichen Call — deutlich
+  // wirksamer als blind noch ein weiteres, ebenso unbelehrtes Modell zu
+  // versuchen.
+  let toolChoiceRefusals = 0;
 
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
     const budgeted = applyTokenBudget(model, params);
+    if (toolChoiceRefusals > 0 && budgeted.tool_choice === "required") {
+      budgeted.messages = [
+        ...budgeted.messages,
+        {
+          role: "system",
+          content:
+            "WICHTIG: Eine vorherige Antwort in diesem Aufruf bestand nur aus Fließtext ohne Funktionsaufruf – das ist nicht erlaubt. Antworte JETZT ausschließlich mit einem Funktionsaufruf (tool_calls). Keine Rückfrage, keine Begrüßung, kein erklärender Text. Wähle das am besten passende verfügbare Tool und rufe es mit sinnvollen, aus der bisherigen Nachricht abgeleiteten Parametern auf.",
+        },
+      ];
+    }
 
     // Letztes Sicherheitsnetz VOR dem eigentlichen API-Call: greift zusätzlich
     // zur Vorab-Skip-Prüfung weiter oben (die nur System+Tools ohne Verlauf
@@ -1342,6 +1374,9 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
       // garantiert erfolglos probiert werden.
       const structurallyUnsupported =
         status === 400 && /not supported|nicht unterstützt/i.test(errMsg);
+
+      const toolChoiceRefused = /tool_use_failed|Tool choice is required/i.test(errMsg);
+      if (toolChoiceRefused) toolChoiceRefusals++;
 
       // Cooldown setzen, damit nachfolgende Nachrichten dieses Modell nicht
       // sofort wieder anfragen und erneut abgelehnt bekommen (siehe
