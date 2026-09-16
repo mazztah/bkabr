@@ -91,6 +91,7 @@ const GROUPS: NavGroup[] = [
       { href: "/mieter", label: "Mieter", icon: Users },
       { href: "/schriftverkehr", label: "Schriftverkehr", icon: Mail },
       { href: "/auswertung", label: "Auswertung", icon: BarChart3 },
+      { href: "/portfolio", label: "Portfolio-Übersicht", icon: PieChart },
     ],
   },
   {
