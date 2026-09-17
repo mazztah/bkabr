@@ -105,13 +105,7 @@ const DEFAULT_TEXT_MODELS = [
  * CEREBRAS_TEXT_MODELS eintragen (z.B. "gemma-4-31b,neues-modell") — dort
  * lässt sich das ohne Code-Änderung jederzeit aktualisieren.
  */
-// LEER seit 2026-08: "gemma-4-31b" wurde bei Cerebras archiviert (Live-Logs:
-// "404 Model gemma-4-31b is archived and unavailable for the organization."
-// bei jedem einzelnen Aufruf) — eine Fallback-Stufe, die garantiert scheitert,
-// kostet nur Zeit und einen Cooldown-Eintrag. Sobald Cerebras ein
-// Nachfolgemodell anbietet, per CEREBRAS_TEXT_MODELS eintragen (ohne
-// Code-Änderung möglich).
-const DEFAULT_CEREBRAS_TEXT_MODELS: string[] = [];
+const DEFAULT_CEREBRAS_TEXT_MODELS = ["gemma-4-31b"];
 
 /**
  * Default-Cloudflare-Workers-AI-Fallbacks (nur aktiv, wenn Account-ID + Token gesetzt).
@@ -131,12 +125,11 @@ const DEFAULT_CLOUDFLARE_TEXT_MODELS = [
  * Absteigend nach Größe/Qualität, damit jede Stufe ein eigenes (kleineres,
  * schnelleres) Kontingent als letzte Reserve hat, bevor der Request ganz fehlschlägt.
  */
-// LEER seit 2026-08: alle drei bisherigen Llama-Modelle sind am 2026-08-26
-// bei NVIDIA end-of-life gegangen (Live-Logs: "410 Gone ... has reached its
-// end of life"). Damit war die komplette NVIDIA-Stufe wertlos und hat bei
-// jedem Fallback-Durchlauf drei sinnlose Requests erzeugt. Nachfolgemodelle
-// per NVIDIA_TEXT_MODELS eintragen.
-const DEFAULT_NVIDIA_TEXT_MODELS: string[] = [];
+const DEFAULT_NVIDIA_TEXT_MODELS = [
+  "meta/llama-3.3-70b-instruct",
+  "meta/llama-3.1-8b-instruct",
+  "meta/llama-3.2-3b-instruct",
+];
 
 const BLOCKED_TEXT_MODELS = new Set([
   "llama-3.3-70b-versatile",
@@ -144,16 +137,6 @@ const BLOCKED_TEXT_MODELS = new Set([
   "llama-3.1-70b-versatile",
   "llama-3.1-8b-instant", // von Groq zugunsten gpt-oss-20b abgekündigt
   "qwen/qwen3-32b", // von Groq zugunsten gpt-oss-120b / qwen3.6-27b abgekündigt
-  // Am 2026-08-26 bei NVIDIA end-of-life gegangen — Live-Logs zeigten
-  // reproduzierbar "410 Gone ... has reached its end of life" bei JEDEM
-  // Aufruf. Blockiert, damit sie auch dann nicht probiert werden, wenn sie
-  // noch in einer alten NVIDIA_TEXT_MODELS-Env-Variable stehen.
-  "meta/llama-3.3-70b-instruct",
-  "meta/llama-3.1-8b-instruct",
-  "meta/llama-3.2-3b-instruct",
-  // Bei Cerebras archiviert — Live-Logs: "404 Model gemma-4-31b is archived
-  // and unavailable for the organization." bei jedem Aufruf.
-  "gemma-4-31b",
 ]);
 
 // Modelle, die bei Funktionsaufrufen (`tools`) oder striktem JSON-Mode
