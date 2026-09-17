@@ -119,22 +119,11 @@ const DEFAULT_CEREBRAS_TEXT_MODELS: string[] = [];
  *   - glm-4.7-flash: günstig/schnell, multi-turn tools, multilingual
  *   - gemma-4-26b: tools + vision + structured
  *   - kimi-k2.6: frontier agentic, tools + vision + structured, großer Kontext
- *     (ENTFERNT aus den Defaults, siehe unten)
- *
- * kimi-k2.6 bewusst NICHT mehr in den Defaults (Stand 2026-09-16): Live-Logs
- * zeigten reproduzierbar 403 "Model @cf/moonshotai/kimi-k2.6 is not available
- * on the Workers Free plan" — auf dem Workers-Free-Tier garantiert nutzlos
- * UND (da glm-4.7-flash/gemma-4-26b-a4b-it für Tool-Aufrufe ohnehin über
- * STRUCTURED_OUTPUT_UNSAFE_MODELS gesperrt sind) faktisch die EINZIGE
- * verbleibende Cloudflare-Stufe für Tool-Aufrufe — ein Fallback-Slot, der
- * bei jedem einzelnen Versuch garantiert scheitert, kostet nur Zeit, ohne je
- * zu helfen. Nach einem Upgrade auf den Workers Paid Plan per
- * CLOUDFLARE_TEXT_MODELS=@cf/moonshotai/kimi-k2.6 (ggf. zusätzlich zu den
- * anderen beiden) wieder aktivierbar, ganz ohne Code-Änderung.
  */
 const DEFAULT_CLOUDFLARE_TEXT_MODELS = [
   "@cf/zai-org/glm-4.7-flash",
   "@cf/google/gemma-4-26b-a4b-it",
+  "@cf/moonshotai/kimi-k2.6",
 ];
 
 /**
@@ -502,6 +491,55 @@ function isRetryableModelError(err: any): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Groq lehnt manche Antworten bei `tool_choice: "required"` mit HTTP 400 ab,
+ * obwohl das Modell inhaltlich eine Textantwort erzeugt hat. Das ist kein
+ * dauerhafter API-/Konfigurationsfehler, sondern ein Modellverhalten, das bei
+ * einem klareren zweiten Versuch häufig verschwindet.
+ */
+function isRequiredToolCallRejection(err: any): boolean {
+  const status = Number(err?.status ?? err?.statusCode ?? err?.response?.status);
+  const msg = String(err?.message || err || "");
+  return (
+    status === 400 &&
+    /tool choice is required.*did not call a tool|did not call a tool.*tool choice is required/i.test(msg)
+  );
+}
+
+function requiresToolCall(params: ChatParams): boolean {
+  return params.tool_choice === "required" && Boolean(params.tools?.length);
+}
+
+function hasStructuredToolCall(completion: ChatCompletion): boolean {
+  const message = completion.choices?.[0]?.message as { tool_calls?: unknown[] } | undefined;
+  return Boolean(message?.tool_calls?.length);
+}
+
+/**
+ * Ergänzt nur für den Wiederholungsversuch eine letzte, unmissverständliche
+ * System-Anweisung. Der Agent behält weiterhin die Hoheit darüber, WELCHES
+ * Tool fachlich passt; der Client erzwingt lediglich das Protokoll.
+ */
+function withRequiredToolCallReminder(params: ChatParams): ChatParams {
+  const existingMessages = [...(params.messages || [])];
+  const systemMessages = existingMessages.filter((message) => message.role === "system");
+  const conversationMessages = existingMessages.filter((message) => message.role !== "system");
+  return {
+    ...params,
+    messages: [
+      ...systemMessages,
+      {
+        role: "system",
+        content:
+          "VERBINDLICHE PROTOKOLLREGEL: Antworte in dieser Runde nicht mit normalem Text. " +
+          "Führe stattdessen genau einen passenden strukturierten Tool-Aufruf aus. " +
+          "Ein Tool-Aufruf ist für diese Runde zwingend erforderlich.",
+      },
+      ...conversationMessages,
+    ],
+  } as ChatParams;
 }
 
 type ChatParams = Omit<ChatCompletionCreateParamsNonStreaming, "model"> & { model?: string };
@@ -1199,31 +1237,10 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
 
   let lastError: any;
   const groq = process.env.GROQ_API_KEY ? getGroqClient() : null;
-  // Zählt Fehlversuche der Art "Tool choice is required, but model did not
-  // call a tool" über die gesamte Fallback-Kette hinweg (siehe Live-Logs
-  // 2026-09-16: gpt-oss-120b UND gpt-oss-20b lehnten wiederholt jeden
-  // Tool-Aufruf ab und antworteten stattdessen mit Begrüßungs-/Rückfrage-Text
-  // – bei einer inzwischen kurzen Fallback-Kette (tote Modelle entfernt)
-  // blieb dann nichts mehr übrig und der ganze Auftrag schlug fehl). Sobald
-  // das einmal passiert ist, bekommt jeder weitere Versuch in dieser Kette
-  // eine verstärkende Erinnerung direkt vor dem eigentlichen Call — deutlich
-  // wirksamer als blind noch ein weiteres, ebenso unbelehrtes Modell zu
-  // versuchen.
-  let toolChoiceRefusals = 0;
 
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
     const budgeted = applyTokenBudget(model, params);
-    if (toolChoiceRefusals > 0 && budgeted.tool_choice === "required") {
-      budgeted.messages = [
-        ...budgeted.messages,
-        {
-          role: "system",
-          content:
-            "WICHTIG: Eine vorherige Antwort in diesem Aufruf bestand nur aus Fließtext ohne Funktionsaufruf – das ist nicht erlaubt. Antworte JETZT ausschließlich mit einem Funktionsaufruf (tool_calls). Keine Rückfrage, keine Begrüßung, kein erklärender Text. Wähle das am besten passende verfügbare Tool und rufe es mit sinnvollen, aus der bisherigen Nachricht abgeleiteten Parametern auf.",
-        },
-      ];
-    }
 
     // Letztes Sicherheitsnetz VOR dem eigentlichen API-Call: greift zusätzlich
     // zur Vorab-Skip-Prüfung weiter oben (die nur System+Tools ohne Verlauf
@@ -1295,7 +1312,22 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
       // doch noch ein kooperierendes Modell zu erreichen. Dieser Fehler wird
       // daher jetzt wieder wie jeder andere Modellfehler behandelt (siehe
       // äußeren catch-Block unten) und führt zum nächsten Fallback-Modell.
-      const completion = await attempt(budgeted);
+      const mandatoryToolCall = requiresToolCall(budgeted);
+      let completion: ChatCompletion;
+      let retriedRequiredToolCall = false;
+      try {
+        completion = await attempt(budgeted);
+      } catch (err: any) {
+        if (isGroqOnDemand && mandatoryToolCall && isRequiredToolCallRejection(err)) {
+          console.warn(
+            `[groq] ${stripProviderPrefix(model)} ignorierte tool_choice="required" (HTTP 400). Wiederhole einmal mit expliziter Tool-Protokollregel.`
+          );
+          retriedRequiredToolCall = true;
+          completion = await attempt(withRequiredToolCallReminder(budgeted));
+        } else {
+          throw err;
+        }
+      }
       // "Erfolgreich, aber leer" ist KEIN echter Erfolg: manche Modelle
       // (v.a. die schwächeren Fallback-Stufen wie glm-4.7-flash) liefern
       // gelegentlich HTTP 200 mit leerem content zurück, ohne dass ein Fehler
@@ -1307,7 +1339,35 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
       const replyMsg = completion.choices?.[0]?.message as
         | { content?: string | null; tool_calls?: unknown[] }
         | undefined;
-      const hasToolCalls = Boolean(replyMsg?.tool_calls?.length);
+      let hasToolCalls = Boolean(replyMsg?.tool_calls?.length);
+      if (mandatoryToolCall && !hasToolCalls && isGroqOnDemand && !retriedRequiredToolCall) {
+        console.warn(
+          `[groq] ${stripProviderPrefix(model)} lieferte trotz tool_choice="required" keinen strukturierten Tool-Aufruf. Wiederhole einmal mit expliziter Tool-Protokollregel.`
+        );
+        retriedRequiredToolCall = true;
+        completion = await attempt(withRequiredToolCallReminder(budgeted));
+        hasToolCalls = hasStructuredToolCall(completion);
+      }
+
+      // Erst ein tatsächlicher strukturierter Call erfüllt `required`. Ein
+      // HTTP-200-Text wird daher nicht an den Agenten als Erfolg weitergereicht,
+      // sondern innerhalb der noch verfügbaren Modellkette behandelt.
+      if (mandatoryToolCall && !hasToolCalls) {
+        const next = models[i + 1];
+        const errMsg = `Modell lieferte trotz tool_choice="required" keinen strukturierten Tool-Aufruf.`;
+        lastError = new Error(`${stripProviderPrefix(model)}: ${errMsg}`);
+        console.warn(
+          `[${providerNameOf(model)}] ${stripProviderPrefix(model)} ${errMsg}` +
+            (next ? ` Fallback → ${stripProviderPrefix(next)}.` : " Keine weitere Modellstufe verfügbar.")
+        );
+        trackModelCall(
+          model,
+          { success: false },
+          errMsg,
+          next ? { fallbackTo: next, fallbackStufe: i + 1, gesamteKette: models.length } : undefined
+        );
+        continue;
+      }
       const isBlankReply = !hasToolCalls && !String(replyMsg?.content ?? "").trim();
       const hasMoreForBlank = i < models.length - 1;
       if (isBlankReply && hasMoreForBlank) {
@@ -1374,9 +1434,6 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
       // garantiert erfolglos probiert werden.
       const structurallyUnsupported =
         status === 400 && /not supported|nicht unterstützt/i.test(errMsg);
-
-      const toolChoiceRefused = /tool_use_failed|Tool choice is required/i.test(errMsg);
-      if (toolChoiceRefused) toolChoiceRefusals++;
 
       // Cooldown setzen, damit nachfolgende Nachrichten dieses Modell nicht
       // sofort wieder anfragen und erneut abgelehnt bekommen (siehe
