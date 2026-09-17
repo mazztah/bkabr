@@ -4502,6 +4502,21 @@ export async function runAgent(params: {
         // oben), dann bleibt es ebenfalls "required".
         tool_choice: step === 0 || mustContinueWithTool ? "required" : "auto",
         messages,
+      }, {
+        // Wenn ein Tool-Aufruf fachlich zwingend ist (Schritt 0 bzw.
+        // erzwungener Folgeschritt), zaehlt eine reine Textantwort
+        // ("Ich recherchiere jetzt…") NICHT als Erfolg: die Fallback-Kette
+        // laeuft dann automatisch zur naechsten Stufe weiter, statt den
+        // ganzen Lauf mit 0 Schritten abzubrechen. Das war der Kern der
+        // "sucht nur noch 2 statt 15 Investoren"-Regression – schwache
+        // Modelle kuendigten den Aufruf nur an, und niemand probierte ein
+        // anderes Modell. Zusaetzlich greift jetzt die Rueckuebersetzung
+        // von Pseudo-Tool-Aufrufen in lib/llm-capabilities.ts, sodass auch
+        // GLM/Gemma-Antworten als echter Tool-Aufruf ankommen.
+        expect:
+          step === 0 || mustContinueWithTool
+            ? { toolCall: true }
+            : undefined,
       });
 
       const choice = completion.choices[0];

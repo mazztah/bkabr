@@ -1583,6 +1583,9 @@ export async function generateInvestorAnschreiben(
         )}`,
       },
     ],
+  }, {
+    // Ein Anschreiben ohne Brieftext ist wertlos – Kette weiterlaufen lassen.
+    expect: { json: true, requiredKeys: ["betreff", "body"] },
   });
   const parsed = extractJson(completion.choices[0]?.message?.content || "") as {
     betreff?: string;
@@ -1638,6 +1641,16 @@ export async function generateInvestorStrategieBericht(
         }`,
       },
     ],
+  }, {
+    // Teilergebnis-Kaskade: eine Antwort ohne Zusammenfassung oder mit leerem
+    // punkte-Array zaehlt NICHT als Erfolg – die Kette laeuft dann zur naechsten
+    // Stufe weiter. Genau dieser Fall war in den Server-Logs der Dauerbrenner
+    // ("Expected ',' or ']' after array element"): ein schwaches Fallback-Modell
+    // brach mitten im Array ab, der Fehler schlug direkt beim Nutzer auf, und
+    // es wurde NIE ein anderes Modell probiert. Reicht am Ende keine Stufe ein
+    // vollstaendiges Ergebnis, kommt das beste Teilergebnis zurueck statt einer
+    // Exception – lieber 12 Strategiepunkte als eine Fehlermeldung.
+    expect: { json: true, requiredKeys: ["zusammenfassung"], nonEmptyArrays: ["punkte"] },
   });
   const parsed = extractJson(completion.choices[0]?.message?.content || "") as {
     zusammenfassung?: string;

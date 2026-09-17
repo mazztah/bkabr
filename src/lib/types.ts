@@ -1773,7 +1773,7 @@ export interface DashboardVerlauf {
 // eine Schätzung zurück und markiert den Eintrag entsprechend – nie stille
 // Fantasiewerte.
 
-export type AiProvider = "groq" | "cerebras" | "cloudflare" | "nvidia";
+export type AiProvider = "groq" | "cerebras" | "cloudflare" | "nvidia" | "mistral" | "openrouter";
 
 export interface AiCallLogEintrag {
   id: string;

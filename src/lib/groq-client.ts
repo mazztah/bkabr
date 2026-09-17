@@ -7,6 +7,16 @@ import { recordAiUsage, recordModelCallStats, recordRateLimitEvent } from "./db"
 import type { RateLimitEvent, RateLimitKategorie } from "./types";
 import { uid } from "./utils";
 import type { AiProvider } from "./types";
+import {
+  adaptParamsForModel,
+  bewerteErgebnis,
+  getModelProfile,
+  normalizeCompletion,
+  type Bewertung,
+  type ResultExpectation,
+} from "./llm-capabilities";
+
+export type { ResultExpectation } from "./llm-capabilities";
 
 /**
  * Primärmodell + Fallbacks. Rate-Limits (TPD) sind modellbezogen –
@@ -84,11 +94,24 @@ import type { AiProvider } from "./types";
 const CEREBRAS_PREFIX = "cerebras:";
 const CLOUDFLARE_PREFIX = "cloudflare:";
 const NVIDIA_PREFIX = "nvidia:";
+const MISTRAL_PREFIX = "mistral:";
+const OPENROUTER_PREFIX = "openrouter:";
 
+/**
+ * Groq-Kette. qwen/qwen3.8-27b NEU ergänzt (Stand 17.09.2026): steht im
+ * Groq-Katalog inzwischen als Preview-Modell neben qwen3.6-27b, mit
+ * Tool-Use, JSON-Mode, 131K Kontext und zusätzlich einstellbarem
+ * Reasoning-Effort. Bewusst NACH qwen3.6 einsortiert (eigenes Kontingent,
+ * aber Preview-Status = kann kurzfristig verschwinden), und bewusst wird
+ * qwen3.6 NICHT entfernt: beide sind laut Groq-Vision-Doku weiterhin
+ * ansprechbar, und jede zusätzliche Stufe mit eigenem Kontingent ist in
+ * dieser Kette bares Geld wert.
+ */
 const DEFAULT_TEXT_MODELS = [
   process.env.GROQ_TEXT_MODEL || "openai/gpt-oss-120b",
   "openai/gpt-oss-20b",
   "qwen/qwen3.6-27b",
+  "qwen/qwen3.8-27b",
   "groq/compound-mini",
   "groq/compound",
 ];
@@ -126,9 +149,66 @@ const DEFAULT_CLOUDFLARE_TEXT_MODELS = [
  * schnelleres) Kontingent als letzte Reserve hat, bevor der Request ganz fehlschlägt.
  */
 const DEFAULT_NVIDIA_TEXT_MODELS = [
+  // NEU an die Spitze gesetzt: beide sind laut NVIDIA-Modellkarte explizit
+  // für Function Calling / agentische Workflows gebaut und lösen damit genau
+  // das Problem, an dem die kleinen Llama-Stufen unten scheitern (sie kündigen
+  // Tool-Aufrufe nur als Text an). Die bisherigen drei Stufen bleiben
+  // unverändert erhalten, nur nachgelagert.
+  "nvidia/llama-3.3-nemotron-super-49b-v1",
+  "mistralai/mistral-nemotron",
   "meta/llama-3.3-70b-instruct",
   "meta/llama-3.1-8b-instruct",
   "meta/llama-3.2-3b-instruct",
+];
+
+/**
+ * KETTE 14-17: Mistral La Plateforme (nur aktiv, wenn MISTRAL_API_KEY gesetzt).
+ *
+ * Warum Mistral als erste der beiden neuen Ketten:
+ *   - Eigener, von Groq/Cloudflare/NVIDIA völlig unabhängiger Free-Tier
+ *     ("Experiment"-Tier, rate-limitiert, ohne Kreditkarte), damit ein
+ *     erschöpftes Tageskontingent bei den bisherigen Anbietern die Kette nicht
+ *     mehr komplett lahmlegt.
+ *   - EU-Anbieter (Frankreich). Für eine Hausverwaltungs-App, die Mieter- und
+ *     Vertragsdaten verarbeitet, ist eine DSGVO-seitig unkomplizierte Stufe in
+ *     der Kette ein echter Vorteil gegenüber rein US-amerikanischen Anbietern.
+ *   - Durchgehend natives Tool-Calling und JSON-Mode über alle vier Modelle —
+ *     also auch für Smart-Upload/Agent nutzbar, nicht nur für Freitext.
+ *
+ * Reihenfolge absteigend nach Stärke, damit jede Stufe ein eigenes, kleineres
+ * Kontingent als Reserve hat: Medium (Flagship) → Small → Magistral (Reasoning)
+ * → Nemo (kleinstes, schnellstes).
+ */
+const DEFAULT_MISTRAL_TEXT_MODELS = [
+  "mistral-medium-latest",
+  "mistral-small-latest",
+  "magistral-small-latest",
+  "open-mistral-nemo",
+];
+
+/**
+ * KETTE 18-21: OpenRouter (nur aktiv, wenn OPENROUTER_API_KEY gesetzt).
+ *
+ * Bewusst als LETZTE Kette: OpenRouter ist kein eigener Inferenz-Anbieter,
+ * sondern ein Aggregator — die eigentliche Reserve, wenn alle
+ * Erstanbieter-Kontingente leer sind.
+ *
+ * Erste Stufe ist "openrouter/free": OpenRouters eigener Free-Models-Router.
+ * Der wählt zur Laufzeit ein kostenloses Modell aus und filtert dabei SELBST
+ * nach den Fähigkeiten, die der Request braucht (Tool-Calling, Structured
+ * Output, Bildverstehen). Genau deshalb steht er hier vorn: die ":free"-Slugs
+ * bei OpenRouter rotieren notorisch schnell (Modelle verlieren ihr
+ * :free-Tag oder verschwinden), eine fest verdrahtete Liste veraltet also
+ * garantiert — der Router überlebt diese Rotation ohne Code-Änderung.
+ * Die konkreten Slugs dahinter sind nur noch Absicherung, falls der Router
+ * selbst einmal ausfällt; sie lassen sich jederzeit über
+ * OPENROUTER_TEXT_MODELS aktualisieren, ohne den Code anzufassen.
+ */
+const DEFAULT_OPENROUTER_TEXT_MODELS = [
+  "openrouter/free",
+  "openai/gpt-oss-120b:free",
+  "nvidia/nemotron-3-nano-30b-a3b:free",
+  "google/gemma-4-27b-it:free",
 ];
 
 const BLOCKED_TEXT_MODELS = new Set([
@@ -142,7 +222,21 @@ const BLOCKED_TEXT_MODELS = new Set([
 // Modelle, die bei Funktionsaufrufen (`tools`) oder striktem JSON-Mode
 // (`response_format: json_object`) nicht zuverlässig genug sind, um für
 // Smart-Upload, Klassifikation/Extraktion oder den Agenten verwendet zu
-// werden. Nur für reine Text-Antworten als Fallback nutzen.
+// werden.
+//
+// GEÄNDERTE SEMANTIK (bisher: harte Sperre, jetzt: Nachrang):
+// Diese Modelle werden bei strukturierten Aufrufen nicht mehr aus der Kette
+// ENTFERNT, sondern ans ENDE sortiert. Grund: lib/llm-capabilities.ts
+// übersetzt für genau diese Modelle jetzt beides —
+//   (a) response_format:json_object  → Prompt-Anweisung "nur gültiges JSON"
+//   (b) tools                        → Text-Protokoll, und die Antwort wird
+//       per parseToolCallsFromText() wieder zu einem echten tool_calls-Array
+//       (inkl. der Pseudo-XML-Form "<tool_call>name<arg_key>…", die GLM/Gemma
+//       hier real produziert haben und die der Agent-Loop bisher schlicht
+//       nicht als Tool-Aufruf erkannt hat).
+// Die starken, nativ fähigen Modelle laufen also weiterhin zuerst — exakt wie
+// bisher — aber die schwächeren Stufen sind im Rate-Limit-Notfall jetzt
+// nutzbar statt ungenutzt. Verhalten bei vollen Kontingenten: unverändert.
 const STRUCTURED_OUTPUT_UNSAFE_MODELS = new Set([
   "groq/compound",
   "groq/compound-mini", // unterstützt keine eigenen Tools
@@ -285,8 +379,68 @@ export function getNvidiaTextModels(): string[] {
   return models.map((m) => (m.startsWith(NVIDIA_PREFIX) ? m : `${NVIDIA_PREFIX}${m}`));
 }
 
-export const VISION_MODEL =
-  process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
+/**
+ * Mistral La Plateforme als zusätzliche Fallback-Kette. Aktiv nur wenn
+ * MISTRAL_API_KEY gesetzt ist – ein einzelner Key genügt (kein Account-Präfix
+ * wie bei Cloudflare).
+ */
+export function getMistralTextModels(): string[] {
+  const apiKey = process.env.MISTRAL_API_KEY?.trim();
+  if (!apiKey) return [];
+
+  let models: string[];
+  if (process.env.MISTRAL_TEXT_MODELS) {
+    models = process.env.MISTRAL_TEXT_MODELS.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  } else {
+    models = [...DEFAULT_MISTRAL_TEXT_MODELS];
+  }
+  return models.map((m) => (m.startsWith(MISTRAL_PREFIX) ? m : `${MISTRAL_PREFIX}${m}`));
+}
+
+/**
+ * OpenRouter als letzte Fallback-Kette. Aktiv nur wenn OPENROUTER_API_KEY
+ * gesetzt ist. Kostenlose Routen sind an ":free" bzw. am Router
+ * "openrouter/free" erkennbar und laufen ohne Guthaben.
+ */
+export function getOpenRouterTextModels(): string[] {
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (!apiKey) return [];
+
+  let models: string[];
+  if (process.env.OPENROUTER_TEXT_MODELS) {
+    models = process.env.OPENROUTER_TEXT_MODELS.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  } else {
+    models = [...DEFAULT_OPENROUTER_TEXT_MODELS];
+  }
+  return models.map((m) => (m.startsWith(OPENROUTER_PREFIX) ? m : `${OPENROUTER_PREFIX}${m}`));
+}
+
+/**
+ * ACHTUNG (Stand 17.09.2026): meta-llama/llama-4-scout-17b-16e-instruct wurde
+ * von Groq am 17.06.2026 abgekündigt und steht im Groq-Modellkatalog NICHT
+ * mehr (weder unter Production noch unter Preview). Groq nennt als aktuelle
+ * multimodale Modelle nur noch qwen/qwen3.6-27b und qwen/qwen3.8-27b — beide
+ * mit Vision, Tool-Use und JSON-Mode, max. 5 bzw. 3 Bilder pro Request,
+ * je Bild 2048 Input-Tokens.
+ *
+ * Der Default zeigt daher jetzt auf qwen/qwen3.6-27b. Wer den alten Wert
+ * zurück will (z.B. weil ein Enterprise-Vertrag ihn noch abdeckt), setzt
+ * GROQ_VISION_MODEL. Ohne diese Korrektur wäre der KOMPLETTE Vision-Pfad
+ * (Smart-Upload, Dokumenten-OCR, Zählerablesung) auf ein 404-Modell gelaufen.
+ */
+export const VISION_MODEL = process.env.GROQ_VISION_MODEL || "qwen/qwen3.6-27b";
+
+/** Zweites Groq-Vision-Modell als direkter Nachbar-Fallback (eigenes Kontingent). */
+export const GROQ_VISION_FALLBACK_MODEL =
+  process.env.GROQ_VISION_FALLBACK_MODEL || "qwen/qwen3.8-27b";
+
+/** Optionales Mistral-Vision-Fallback (Medium/Small sind multimodal). */
+export const MISTRAL_VISION_MODEL =
+  process.env.MISTRAL_VISION_MODEL || "mistral-medium-latest";
 
 /** Optionales Cerebras-Vision-Fallback (gemma-4-31b unterstützt bis 10 Bilder/Request). */
 export const CEREBRAS_VISION_MODEL =
@@ -490,6 +644,25 @@ function isNvidiaModel(model: string): boolean {
   return model.startsWith(NVIDIA_PREFIX);
 }
 
+function isMistralModel(model: string): boolean {
+  return model.startsWith(MISTRAL_PREFIX);
+}
+
+function isOpenRouterModel(model: string): boolean {
+  return model.startsWith(OPENROUTER_PREFIX);
+}
+
+/** true für alle Nicht-Groq-Ketten (sprich: alles, was per fetch statt SDK läuft). */
+function isExternalProviderModel(model: string): boolean {
+  return (
+    isCerebrasModel(model) ||
+    isCloudflareModel(model) ||
+    isNvidiaModel(model) ||
+    isMistralModel(model) ||
+    isOpenRouterModel(model)
+  );
+}
+
 /**
  * Zuvor eine lokale Funktion innerhalb von createChatCompletion – dadurch
  * für andere Top-Level-Funktionen (z.B. trackModelCall) nicht erreichbar.
@@ -499,6 +672,8 @@ function providerNameOf(model: string): string {
   if (isCerebrasModel(model)) return "cerebras";
   if (isCloudflareModel(model)) return "cloudflare";
   if (isNvidiaModel(model)) return "nvidia";
+  if (isMistralModel(model)) return "mistral";
+  if (isOpenRouterModel(model)) return "openrouter";
   return "groq";
 }
 
@@ -514,10 +689,20 @@ function stripNvidiaPrefix(model: string): string {
   return model.startsWith(NVIDIA_PREFIX) ? model.slice(NVIDIA_PREFIX.length) : model;
 }
 
+function stripMistralPrefix(model: string): string {
+  return model.startsWith(MISTRAL_PREFIX) ? model.slice(MISTRAL_PREFIX.length) : model;
+}
+
+function stripOpenRouterPrefix(model: string): string {
+  return model.startsWith(OPENROUTER_PREFIX) ? model.slice(OPENROUTER_PREFIX.length) : model;
+}
+
 function stripProviderPrefix(model: string): string {
   if (isCerebrasModel(model)) return stripCerebrasPrefix(model);
   if (isCloudflareModel(model)) return stripCloudflarePrefix(model);
   if (isNvidiaModel(model)) return stripNvidiaPrefix(model);
+  if (isMistralModel(model)) return stripMistralPrefix(model);
+  if (isOpenRouterModel(model)) return stripOpenRouterPrefix(model);
   return model;
 }
 
@@ -768,6 +953,165 @@ async function createNvidiaChatCompletion(
   return data as ChatCompletion;
 }
 
+/**
+ * Gemeinsamer Body-Aufbau für alle OpenAI-kompatiblen Fremdanbieter.
+ * Das Feld für das Output-Budget unterscheidet sich je Anbieter (siehe
+ * ModelProfile.maxTokensField) – deshalb kommt es aus dem Profil statt
+ * hart codiert zu sein.
+ */
+function buildOpenAiKompatiblenBody(
+  modelId: string,
+  params: ChatParams,
+  maxTokensField: "max_tokens" | "max_completion_tokens"
+): Record<string, unknown> {
+  const { model: _ignored, max_completion_tokens, max_tokens, ...rest } = params as ChatParams & {
+    max_tokens?: number;
+  };
+  const budget = max_tokens ?? max_completion_tokens;
+
+  const body: Record<string, unknown> = {
+    model: modelId,
+    messages: rest.messages,
+    stream: false,
+  };
+  if (rest.temperature != null) body.temperature = rest.temperature;
+  if (rest.top_p != null) body.top_p = rest.top_p;
+  if (budget != null) body[maxTokensField] = budget;
+  if (rest.response_format) body.response_format = rest.response_format;
+  if (rest.tools?.length) {
+    body.tools = rest.tools;
+    if (rest.tool_choice != null) body.tool_choice = rest.tool_choice;
+    if ((rest as Record<string, unknown>).parallel_tool_calls != null) {
+      body.parallel_tool_calls = (rest as Record<string, unknown>).parallel_tool_calls;
+    }
+  }
+  if (rest.stop != null) body.stop = rest.stop;
+  return body;
+}
+
+/** Fehler eines Fremdanbieters in die Form bringen, die isRetryableModelError() erwartet. */
+function wirfProviderFehler(anbieter: string, res: Response, rawText: string, data: any): never {
+  const msg =
+    (Array.isArray(data?.errors) ? data.errors.map((e: any) => e?.message || JSON.stringify(e)).join("; ") : null) ||
+    data?.error?.message ||
+    data?.message ||
+    rawText ||
+    `${anbieter} HTTP ${res.status}`;
+  const err: any = new Error(msg);
+  err.status = res.status;
+  err.statusCode = res.status;
+  err.error = data?.error || data?.errors?.[0] || { message: msg };
+  err.code = data?.error?.code || data?.errors?.[0]?.code;
+  throw err;
+}
+
+/**
+ * OpenAI-kompatibler Aufruf gegen Mistral La Plateforme
+ * (https://api.mistral.ai/v1/chat/completions).
+ *
+ * Auth: MISTRAL_API_KEY (Bearer). Modell-IDs im Mistral-Format, z.B.
+ * mistral-medium-latest. Mistral nutzt `max_tokens` und kennt für den
+ * erzwungenen Tool-Aufruf den Wert "any" statt "required" – beides wird
+ * bereits in adaptParamsForModel()/dem Modellprofil geregelt.
+ */
+async function createMistralChatCompletion(
+  modelId: string,
+  params: ChatParams
+): Promise<ChatCompletion> {
+  const apiKey = process.env.MISTRAL_API_KEY?.trim();
+  if (!apiKey) {
+    const err: any = new Error("MISTRAL_API_KEY ist nicht gesetzt.");
+    err.status = 401;
+    throw err;
+  }
+
+  const body = buildOpenAiKompatiblenBody(modelId, params, "max_tokens");
+
+  const res = await fetch("https://api.mistral.ai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  const rawText = await res.text();
+  let data: any;
+  try {
+    data = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    data = { error: { message: rawText || res.statusText } };
+  }
+
+  if (!res.ok) wirfProviderFehler("Mistral", res, rawText, data);
+  return data as ChatCompletion;
+}
+
+/**
+ * OpenAI-kompatibler Aufruf gegen OpenRouter
+ * (https://openrouter.ai/api/v1/chat/completions).
+ *
+ * Auth: OPENROUTER_API_KEY (Bearer). Die Header HTTP-Referer und X-Title sind
+ * bei OpenRouter optional, aber empfohlen (Zuordnung in den Nutzungsstatistiken
+ * und relevant für die Rangfolge bei knapper Kapazität auf den kostenlosen
+ * Routen) – daher hier immer mitgeschickt.
+ *
+ * Besonderheit: OpenRouter liefert Fehler von Upstream-Anbietern teils MIT
+ * HTTP 200 im Body als {error:{code,message}}. Ohne die Sonderbehandlung unten
+ * würde so ein Fehler als erfolgreicher, leerer Aufruf durchgehen statt die
+ * Kette weiterlaufen zu lassen.
+ */
+async function createOpenRouterChatCompletion(
+  modelId: string,
+  params: ChatParams
+): Promise<ChatCompletion> {
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (!apiKey) {
+    const err: any = new Error("OPENROUTER_API_KEY ist nicht gesetzt.");
+    err.status = 401;
+    throw err;
+  }
+
+  const body = buildOpenAiKompatiblenBody(modelId, params, "max_tokens");
+
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": process.env.OPENROUTER_SITE_URL || "https://betriebskostenbot.ai",
+      "X-Title": process.env.OPENROUTER_APP_NAME || "BetriebsKostenBot AI",
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20_000), // Aggregator: ein Hop mehr als die Direktanbieter
+  });
+
+  const rawText = await res.text();
+  let data: any;
+  try {
+    data = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    data = { error: { message: rawText || res.statusText } };
+  }
+
+  if (!res.ok) wirfProviderFehler("OpenRouter", res, rawText, data);
+
+  // Upstream-Fehler im 200er-Body: als echten Fehler behandeln, damit die
+  // Fallback-Kette weiterläuft.
+  if (data?.error && !data?.choices?.length) {
+    const err: any = new Error(data.error.message || "OpenRouter: Upstream-Fehler ohne Antwort");
+    err.status = Number(data.error.code) || 502;
+    err.statusCode = err.status;
+    err.error = data.error;
+    throw err;
+  }
+
+  return data as ChatCompletion;
+}
+
 function messageHasImages(params: ChatParams): boolean {
   const messages = params.messages || [];
   for (const m of messages) {
@@ -846,6 +1190,13 @@ function estimateMessagesTokens(messages: ChatParams["messages"]): number {
  * der bisherige konservative Wert bestehen.
  */
 function safeTpmForModel(model: string): number {
+  // Die Werte liegen jetzt zentral in lib/llm-capabilities.ts (ModelProfile),
+  // damit Budget, JSON-Mode-Variante und Tool-Fähigkeit eines Modells an EINER
+  // Stelle stehen und nicht über zwei Dateien auseinanderlaufen. Die bisherigen
+  // Werte sind dort 1:1 übernommen — Verhalten unverändert.
+  const ausProfil = getModelProfile(model).safeTpm;
+  if (ausProfil) return ausProfil;
+
   if (model.startsWith("cloudflare:")) return 40000;
   if (model.startsWith("nvidia:")) {
     // meta/llama-3.3-70b-instruct scheitert in der Praxis eher an Latenz/Timeout
@@ -1030,17 +1381,48 @@ function applyTokenBudget(model: string, params: ChatParams): ChatParams {
 
 
 
-export async function createChatCompletion(params: ChatParams): Promise<ChatCompletion> {
+/**
+ * Steuerung der Fallback-Kette über die reine Fehlerbehandlung hinaus.
+ *
+ * `expect` ist der Kern des Teilergebnis-Verhaltens: Damit sagt der Aufrufer,
+ * WORAN man erkennt, dass die Antwort brauchbar ist (gültiges JSON? bestimmte
+ * Felder gefüllt? nicht-leere Arrays? ein echter Tool-Aufruf?). Ohne `expect`
+ * verhält sich die Kette exakt wie bisher — jede nicht-leere Antwort zählt als
+ * Erfolg.
+ */
+export interface ChainOptions {
+  expect?: ResultExpectation;
+  /** Diese Modelle in diesem Aufruf überspringen (z.B. bei Fortsetzungs-Blöcken). */
+  skipModels?: string[];
+}
+
+interface BestesTeilergebnis {
+  completion: ChatCompletion;
+  bewertung: Bewertung;
+  model: string;
+  stufe: number;
+}
+
+export async function createChatCompletion(
+  params: ChatParams,
+  opts?: ChainOptions
+): Promise<ChatCompletion> {
   const hasImages = messageHasImages(params);
   const isExplicitVision =
     params.model === VISION_MODEL ||
-    (typeof params.model === "string" && params.model.includes("llama-4-scout"));
+    (typeof params.model === "string" &&
+      (params.model.includes("llama-4-scout") || params.model.includes("qwen3.")));
 
   let models: string[];
 
   if (hasImages || isExplicitVision) {
     // Vision-Pfad: nur vision-fähige Modelle (kein Text-Fallback ohne Bilder).
     models = [params.model || VISION_MODEL];
+    // Zweites Groq-Vision-Modell direkt dahinter: eigenes Kontingent, gleicher
+    // Anbieter, kein zusätzlicher Key nötig. Wichtig geworden, seit
+    // llama-4-scout aus dem Groq-Katalog verschwunden ist und der Vision-Pfad
+    // sonst auf einer einzigen Stufe stünde.
+    if (!models.includes(GROQ_VISION_FALLBACK_MODEL)) models.push(GROQ_VISION_FALLBACK_MODEL);
     if (process.env.CEREBRAS_API_KEY) {
       const visionFallback = `${CEREBRAS_PREFIX}${CEREBRAS_VISION_MODEL}`;
       if (!models.includes(visionFallback) && !models.includes(CEREBRAS_VISION_MODEL)) {
@@ -1056,6 +1438,11 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
         models.push(cfVision);
       }
     }
+    // Mistral Medium/Small sind multimodal – als letzte Vision-Reserve.
+    if (process.env.MISTRAL_API_KEY?.trim()) {
+      const mistralVision = `${MISTRAL_PREFIX}${MISTRAL_VISION_MODEL}`;
+      if (!models.includes(mistralVision)) models.push(mistralVision);
+    }
   } else {
     const groqModels = params.model
       ? [params.model, ...getTextModels().filter((m) => m !== params.model)]
@@ -1067,11 +1454,23 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
     // ausschließen – gilt nur für Groq-Modelle; Cerebras/Cloudflare bleiben verfügbar.
     const needsStructuredOutput =
       Boolean(params.tools?.length) || params.response_format?.type === "json_object";
+
+    /**
+     * Nachrang statt Ausschluss: Modelle aus STRUCTURED_OUTPUT_UNSAFE_MODELS
+     * wandern bei strukturierten Aufrufen ans Ende der Liste, statt zu
+     * verschwinden. Die stabile Reihenfolge innerhalb beider Gruppen bleibt
+     * erhalten, die ersten Stufen sind also identisch mit dem bisherigen
+     * Verhalten – es kommen nur hinten Reservestufen dazu, die vorher
+     * verfielen. Siehe Kommentar an STRUCTURED_OUTPUT_UNSAFE_MODELS.
+     */
+    const nachrangSortieren = (liste: string[]): string[] => {
+      if (!needsStructuredOutput) return liste;
+      const sicher = liste.filter((m) => !STRUCTURED_OUTPUT_UNSAFE_MODELS.has(m));
+      const nachrang = liste.filter((m) => STRUCTURED_OUTPUT_UNSAFE_MODELS.has(m));
+      return [...sicher, ...nachrang];
+    };
+
     models = [...groqModels];
-    if (needsStructuredOutput) {
-      const filtered = models.filter((m) => !STRUCTURED_OUTPUT_UNSAFE_MODELS.has(m));
-      if (filtered.length > 0) models = filtered;
-    }
 
     // Groq-Modelle mit niedrigem TPM-Limit (8000, On-Demand-Tier) von
     // vornherein überspringen, wenn allein das Tools-Schema (z.B. die 48
@@ -1131,15 +1530,31 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
       if (!models.includes(nvm)) models.push(nvm);
     }
 
-    // Structured-Output-Filter erneut über die GESAMTE Kette anwenden (oben
-    // wirkte er nur auf den Groq-Teil, bevor Cerebras/Cloudflare/NVIDIA
-    // angehängt wurden – die frisch angehängten Modelle waren dadurch
-    // ungefiltert nutzbar, obwohl STRUCTURED_OUTPUT_UNSAFE_MODELS auch
-    // Cerebras-/Cloudflare-Modell-IDs enthält).
-    if (needsStructuredOutput) {
-      const filtered = models.filter((m) => !STRUCTURED_OUTPUT_UNSAFE_MODELS.has(m));
-      if (filtered.length > 0) models = filtered;
+    // NEUE KETTE 1: Mistral La Plateforme (eigener Free-Tier, EU-Anbieter).
+    const mistralModels = getMistralTextModels();
+    for (const mm of mistralModels) {
+      if (!models.includes(mm)) models.push(mm);
     }
+
+    // NEUE KETTE 2: OpenRouter als letzte Reserve (Aggregator über viele
+    // Anbieter, "openrouter/free" wählt selbst eine passende kostenlose Route).
+    const openRouterModels = getOpenRouterTextModels();
+    for (const om of openRouterModels) {
+      if (!models.includes(om)) models.push(om);
+    }
+
+    // Nachrang-Sortierung über die GESAMTE Kette anwenden (oben wirkte sie nur
+    // auf den Groq-Teil, bevor die anderen fünf Ketten angehängt wurden – die
+    // frisch angehängten Modelle blieben dadurch unsortiert, obwohl
+    // STRUCTURED_OUTPUT_UNSAFE_MODELS auch Cerebras-/Cloudflare-IDs enthält).
+    models = nachrangSortieren(models);
+  }
+
+  // Vom Aufrufer ausgeschlossene Modelle entfernen (Fortsetzungs-Blöcke geben
+  // hier das Modell mit, das die abgeschnittene Antwort erzeugt hat).
+  if (opts?.skipModels?.length) {
+    const ohne = models.filter((m) => !opts.skipModels!.includes(m));
+    if (ohne.length > 0) models = ohne;
   }
 
   // Modelle im aktuellen Cooldown (kürzlich als rate-limitiert/gesperrt
@@ -1156,6 +1571,11 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
   }
 
   let lastError: any;
+  /**
+   * Bestes bisher erreichtes Teilergebnis über ALLE Ketten hinweg. Wird nur
+   * benutzt, wenn keine Stufe ein vollständiges Ergebnis liefert.
+   */
+  let bestesTeilergebnis: BestesTeilergebnis | null = null;
   const groq = process.env.GROQ_API_KEY ? getGroqClient() : null;
 
   for (let i = 0; i < models.length; i++) {
@@ -1172,8 +1592,7 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
     // Nachricht trotz Kürzungsversuch (Bug behoben, aber als zusätzliche
     // Absicherung für unbekannte/zukünftige Edge-Cases) oder ein sehr großer
     // Verlauf über mehrere Agent-Turns hinweg immer noch zu groß ist.
-    const isGroqOnDemand =
-      !isCerebrasModel(model) && !isCloudflareModel(model) && !isNvidiaModel(model);
+    const isGroqOnDemand = !isExternalProviderModel(model);
     if (isGroqOnDemand) {
       const HARD_LIMIT_GROQ = 7900; // realer On-Demand-Ceiling (~8000), kleiner Sicherheitsabstand
       const finalEstimate =
@@ -1195,7 +1614,14 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
     }
 
     try {
-      // Branching-Logik als Closure (Cerebras/Cloudflare/NVIDIA/Groq).
+      // Anfrage auf DIESES Modell zuschneiden: JSON-Mode bzw. Tool-Kanal
+      // werden für Modelle ohne native Unterstützung in Prompt-Anweisungen
+      // übersetzt, nicht unterstützte Sampling-/Tool-Parameter entfernt.
+      // Siehe lib/llm-capabilities.ts.
+      const angepasst = adaptParamsForModel(model, budgeted);
+      const modellParams = angepasst.params;
+
+      // Branching-Logik als Closure (alle sechs Ketten).
       const attempt = async (p: ChatParams): Promise<ChatCompletion> => {
         if (isCerebrasModel(model)) {
           return createCerebrasChatCompletion(stripCerebrasPrefix(model), p);
@@ -1206,9 +1632,15 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
         if (isNvidiaModel(model)) {
           return createNvidiaChatCompletion(stripNvidiaPrefix(model), p);
         }
+        if (isMistralModel(model)) {
+          return createMistralChatCompletion(stripMistralPrefix(model), p);
+        }
+        if (isOpenRouterModel(model)) {
+          return createOpenRouterChatCompletion(stripOpenRouterPrefix(model), p);
+        }
         if (!groq) {
           const err: any = new Error(
-            "GROQ_API_KEY ist nicht gesetzt und kein Cerebras-/Cloudflare-/NVIDIA-Modell verfügbar."
+            "GROQ_API_KEY ist nicht gesetzt und kein Modell aus den Zusatzketten (Cerebras/Cloudflare/NVIDIA/Mistral/OpenRouter) verfügbar."
           );
           err.status = 401;
           throw err;
@@ -1232,28 +1664,64 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
       // doch noch ein kooperierendes Modell zu erreichen. Dieser Fehler wird
       // daher jetzt wieder wie jeder andere Modellfehler behandelt (siehe
       // äußeren catch-Block unten) und führt zum nächsten Fallback-Modell.
-      const completion = await attempt(budgeted);
-      // "Erfolgreich, aber leer" ist KEIN echter Erfolg: manche Modelle
-      // (v.a. die schwächeren Fallback-Stufen wie glm-4.7-flash) liefern
-      // gelegentlich HTTP 200 mit leerem content zurück, ohne dass ein Fehler
-      // geworfen wird. Ohne diese Prüfung wird das als "Erfolg" akzeptiert
-      // und an den Nutzer als "(Keine Antwort)" durchgereicht, obwohl noch
-      // weitere Fallback-Stufen verfügbar wären. Bei echten Tool-Calls ist
-      // leerer content dagegen normal (das Modell antwortet dann über
-      // tool_calls statt Text) – das wird hier bewusst nicht als leer gewertet.
-      const replyMsg = completion.choices?.[0]?.message as
-        | { content?: string | null; tool_calls?: unknown[] }
-        | undefined;
-      const hasToolCalls = Boolean(replyMsg?.tool_calls?.length);
-      const isBlankReply = !hasToolCalls && !String(replyMsg?.content ?? "").trim();
-      const hasMoreForBlank = i < models.length - 1;
-      if (isBlankReply && hasMoreForBlank) {
-        const next = models[i + 1];
-        console.warn(
-          `[${providerNameOf(model)}] Modell ${stripProviderPrefix(model)} lieferte leere Antwort (HTTP ok, aber kein content). Fallback → ${stripProviderPrefix(next)}`
-        );
-        trackModelCall(model, { success: false });
-        continue;
+      const rohCompletion = await attempt(modellParams);
+
+      // Antwort zurück ins einheitliche OpenAI-Format bringen: <think>-Blöcke
+      // entfernen, Pseudo-Tool-Aufrufe (GLM/Gemma-XML, <function=…>, nacktes
+      // JSON) in ein echtes tool_calls-Array übersetzen, Codefences um JSON
+      // entfernen. Damit sehen agent.ts und ai.ts bei JEDEM Modell dieselbe
+      // Struktur — unabhängig davon, welcher der sechs Anbieter geantwortet hat.
+      const completion = normalizeCompletion(model, rohCompletion, {
+        pseudoTools: angepasst.pseudoTools,
+        jsonViaPrompt: angepasst.jsonViaPrompt,
+      });
+
+      // Ergebnis bewerten statt nur auf "nicht leer" zu prüfen.
+      //
+      // "Erfolgreich, aber leer" war KEIN echter Erfolg — das galt schon bisher.
+      // Neu ist die Zwischenstufe "teilweise": eine Antwort, die zwar ankommt,
+      // aber das Geforderte nur halb erfüllt (abgeschnittenes JSON, fehlende
+      // Pflichtfelder, leere Arrays, unparsbare Tool-Argumente). Bisher wurde
+      // so etwas als Erfolg durchgereicht und ist erst beim Aufrufer als
+      // "Keine gültige JSON-Antwort erhalten" geplatzt — ohne dass je eine
+      // weitere Stufe probiert worden wäre.
+      //
+      // Jetzt: Kette läuft weiter, das Teilergebnis wird als Reserve gemerkt.
+      // Liefert keine spätere Stufe etwas Besseres, wird am Ende das BESTE
+      // Teilergebnis zurückgegeben (siehe nach der Schleife) statt eines
+      // Fehlers — ein halbes Ergebnis ist immer noch besser als gar keines.
+      const bewertung = bewerteErgebnis(completion, opts?.expect);
+      const hasMoreStufen = i < models.length - 1;
+
+      if (bewertung.stufe !== "vollstaendig") {
+        if (bewertung.stufe === "teilweise") {
+          if (!bestesTeilergebnis || bewertung.score > bestesTeilergebnis.bewertung.score) {
+            bestesTeilergebnis = { completion, bewertung, model, stufe: i + 1 };
+          }
+        }
+        if (hasMoreStufen) {
+          const next = models[i + 1];
+          console.warn(
+            `[${providerNameOf(model)}] Modell ${stripProviderPrefix(model)} lieferte ${
+              bewertung.stufe === "leer" ? "eine leere Antwort" : "nur ein Teilergebnis"
+            } (${bewertung.grund || "ohne nähere Angabe"}). Kette läuft weiter → ${stripProviderPrefix(next)}`
+          );
+          // Teilergebnisse sind keine Fehlaufrufe im Sinne der Kostenstatistik:
+          // das Modell hat geantwortet und Tokens verbraucht. Nur echte
+          // Leerantworten als Misserfolg zählen.
+          trackModelCall(model, { success: bewertung.stufe === "teilweise" });
+          continue;
+        }
+        // Letzte Stufe und immer noch kein vollständiges Ergebnis: Schleife
+        // beenden, damit unten das BESTE Teilergebnis der Gesamtkette gewählt
+        // wird — nicht zwangsläufig das der letzten (meist schwächsten) Stufe.
+        if (bestesTeilergebnis) {
+          trackModelCall(model, { success: bewertung.stufe === "teilweise" });
+          break;
+        }
+        // Gar kein Teilergebnis vorhanden (also rein leere Antwort auf der
+        // letzten Stufe): wie bisher durchreichen, damit der Aufrufer eine
+        // Antwort statt einer Exception bekommt.
       }
 
       // Sichtbares Erfolgs-Log, sobald NICHT das primäre Modell verwendet wurde –
@@ -1347,8 +1815,23 @@ export async function createChatCompletion(params: ChatParams): Promise<ChatComp
         continue;
       }
       trackModelCall(model, { success: false, rateLimited, freeTierExceeded }, errMsg);
+      // Bevor die letzte Stufe einen Fehler wirft: Wenn irgendwo vorher ein
+      // Teilergebnis angefallen ist, ist das mehr wert als eine Exception.
+      if (bestesTeilergebnis) break;
       throw err;
     }
+  }
+
+  // Keine Stufe war vollständig — aber mindestens eine hat etwas Brauchbares
+  // geliefert. Das beste Teilergebnis zurückgeben statt zu scheitern.
+  if (bestesTeilergebnis) {
+    console.warn(
+      `[llm] Keine Stufe der Kette (${models.length} Modelle) lieferte ein vollständiges Ergebnis. ` +
+        `Gebe bestes Teilergebnis zurück: ${stripProviderPrefix(bestesTeilergebnis.model)} ` +
+        `(Stufe ${bestesTeilergebnis.stufe}, Güte ${(bestesTeilergebnis.bewertung.score * 100).toFixed(0)}%, ` +
+        `${bestesTeilergebnis.bewertung.grund || "ohne nähere Angabe"}).`
+    );
+    return bestesTeilergebnis.completion;
   }
 
   // Klarere Meldung, wenn das Tageskontingent (TPD) weg ist
@@ -1401,19 +1884,25 @@ const CONTINUATION_TAIL_CHARS = 900;
  */
 export async function createChatCompletionWithContinuation(
   params: ChatParams,
-  opts?: { maxBlocks?: number; continuationHint?: string }
+  opts?: { maxBlocks?: number; continuationHint?: string; expect?: ResultExpectation }
 ): Promise<ChatCompletion> {
   const usesStructuredOutput =
     Boolean(params.tools?.length) || params.response_format?.type === "json_object";
   const maxBlocks = opts?.maxBlocks ?? CONTINUATION_MAX_BLOCKS;
 
-  let completion = await createChatCompletion(params);
+  let completion = await createChatCompletion(params, opts?.expect ? { expect: opts.expect } : undefined);
   if (usesStructuredOutput) return completion; // Konkatenation hier nicht sicher
 
   let choice = completion.choices?.[0] as { message?: { content?: string | null }; finish_reason?: string } | undefined;
   let accumulated = String(choice?.message?.content ?? "");
   let finishReason = choice?.finish_reason;
   let blocks = 1;
+  const verbrauchteModelle: string[] = [];
+  const merkeModell = (c: ChatCompletion) => {
+    const m = (c as unknown as { model?: string }).model;
+    if (m && !verbrauchteModelle.includes(m)) verbrauchteModelle.push(m);
+  };
+  merkeModell(completion);
 
   while (finishReason === "length" && blocks < maxBlocks) {
     const tail = accumulated.slice(-CONTINUATION_TAIL_CHARS);
@@ -1441,7 +1930,7 @@ export async function createChatCompletionWithContinuation(
 
     let next: ChatCompletion;
     try {
-      next = await createChatCompletion(continueParams);
+      next = await createChatCompletion(continueParams, { skipModels: [...verbrauchteModelle] });
     } catch (err) {
       console.warn(
         `[continuation] Fortsetzungs-Block ${blocks + 1} fehlgeschlagen, gebe bisherigen Text zurück:`,
@@ -1451,9 +1940,15 @@ export async function createChatCompletionWithContinuation(
     }
 
     const nextChoice = next.choices?.[0] as { message?: { content?: string | null }; finish_reason?: string } | undefined;
-    accumulated += String(nextChoice?.message?.content ?? "");
+    const zuwachs = String(nextChoice?.message?.content ?? "");
+    if (!zuwachs.trim()) {
+      console.warn(`[continuation] Block ${blocks + 1} lieferte keinen Zuwachs, breche Fortsetzung ab.`);
+      break;
+    }
+    accumulated += zuwachs;
     finishReason = nextChoice?.finish_reason;
     completion = next; // Metadaten (Modell/Usage) der letzten Stufe für Logging/Tracking behalten
+    merkeModell(next);
     blocks++;
   }
 
@@ -1491,7 +1986,7 @@ export async function createChatCompletionWithContinuation(
  */
 export async function createJsonChatCompletionWithContinuation(
   params: ChatParams,
-  opts?: { maxBlocks?: number }
+  opts?: { maxBlocks?: number; expect?: ResultExpectation }
 ): Promise<ChatCompletion> {
   const maxBlocks = opts?.maxBlocks ?? CONTINUATION_MAX_BLOCKS;
   const isValidJson = (s: string): boolean => {
@@ -1503,11 +1998,28 @@ export async function createJsonChatCompletionWithContinuation(
     }
   };
 
-  let completion = await createChatCompletion(params);
+  // Erwartung an die Kette weiterreichen: dadurch läuft schon der ERSTE Aufruf
+  // über alle Stufen weiter, wenn eine Stufe nur ein Teilergebnis liefert
+  // (z.B. 3 statt 20 Strategiepunkte) — und nicht erst, wenn das JSON komplett
+  // unparsbar ist.
+  const expect: ResultExpectation = { json: true, ...(opts?.expect || {}) };
+
+  let completion = await createChatCompletion(params, { expect });
   let choice = completion.choices?.[0] as { message?: { content?: string | null }; finish_reason?: string } | undefined;
   let accumulated = String(choice?.message?.content ?? "");
   let finishReason = choice?.finish_reason;
   let blocks = 1;
+  // Modelle, die bereits abgebrochen sind, beim Fortsetzungs-Block
+  // überspringen: ein Modell, dem gerade das Budget ausging, wird denselben
+  // Block mit hoher Wahrscheinlichkeit wieder abbrechen. So schreibt
+  // tatsächlich die NÄCHSTE Kette weiter, statt dass dieselbe Stufe erneut
+  // auf dieselbe Wand läuft.
+  const verbrauchteModelle: string[] = [];
+  const merkeModell = (c: ChatCompletion) => {
+    const m = (c as unknown as { model?: string }).model;
+    if (m && !verbrauchteModelle.includes(m)) verbrauchteModelle.push(m);
+  };
+  merkeModell(completion);
 
   while (finishReason === "length" && blocks < maxBlocks && !isValidJson(accumulated)) {
     const tail = accumulated.slice(-CONTINUATION_TAIL_CHARS);
@@ -1535,16 +2047,24 @@ export async function createJsonChatCompletionWithContinuation(
 
     let next: ChatCompletion;
     try {
-      next = await createChatCompletion(continueParams);
+      next = await createChatCompletion(continueParams, { skipModels: [...verbrauchteModelle] });
     } catch (err) {
       console.warn(`[json-continuation] Block ${blocks + 1} fehlgeschlagen, gebe bisherigen Text zurück:`, err);
       break;
     }
 
     const nextChoice = next.choices?.[0] as { message?: { content?: string | null }; finish_reason?: string } | undefined;
-    accumulated += String(nextChoice?.message?.content ?? "");
+    const zuwachs = String(nextChoice?.message?.content ?? "");
+    // Kein Fortschritt mehr (leerer Block): abbrechen, statt die restlichen
+    // Blöcke sinnlos zu verbrauchen.
+    if (!zuwachs.trim()) {
+      console.warn(`[json-continuation] Block ${blocks + 1} lieferte keinen Zuwachs, breche Fortsetzung ab.`);
+      break;
+    }
+    accumulated += zuwachs;
     finishReason = nextChoice?.finish_reason;
     completion = next;
+    merkeModell(next);
     blocks++;
   }
 

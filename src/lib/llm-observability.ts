@@ -3,7 +3,8 @@ import type { LedEntry, ModelCatalogEntry, RateLimitEvent, RateLimitKategorie } 
 // ============================================================
 // LLM & System Observability – zentrale Engine
 // ============================================================
-// „Super Spielekind-Agent": Registry aller 13 Fallback-Modelle (+ Vision),
+// „Super Spielekind-Agent": Registry aller Fallback-Modelle (+ Vision) über
+// sechs Ketten: Groq, Cerebras, Cloudflare, NVIDIA, Mistral, OpenRouter.
 // Rate-Limit-Parser, Health-Ping-Logik und Modell-Dokumentation.
 // Bewusst als eigenständiges Modul (kein DB-Zwang) – die Persistenz liegt in
 // db.ts, die Erkennung/Statik hier.
@@ -11,13 +12,15 @@ import type { LedEntry, ModelCatalogEntry, RateLimitEvent, RateLimitKategorie } 
 export const FUN_MODE_ENV = "BK_FUN_MODE";
 
 /** Erlaubte Provider-Präfixe für die Fallback-Kette. */
-export const PROVIDER_PREFIXES = ["cerebras:", "cloudflare:", "nvidia:"] as const;
+export const PROVIDER_PREFIXES = ["cerebras:", "cloudflare:", "nvidia:", "mistral:", "openrouter:"] as const;
 
 /** Ermittelt den Provider aus einem Modell-String (Präfix oder Standard). */
 export function providerOf(model: string): string {
   if (model.startsWith("cerebras:")) return "cerebras";
   if (model.startsWith("cloudflare:")) return "cloudflare";
   if (model.startsWith("nvidia:")) return "nvidia";
+  if (model.startsWith("mistral:")) return "mistral";
+  if (model.startsWith("openrouter:")) return "openrouter";
   return "groq";
 }
 
@@ -35,7 +38,7 @@ export function isFunModeEnabled(): boolean {
 }
 
 // ------------------------------------------------------------
-// Modell-Katalog (alle 13 Fallback-Modelle + Vision-Modelle)
+// Modell-Katalog (alle Fallback-Modelle aller sechs Ketten + Vision-Modelle)
 // ------------------------------------------------------------
 
 function baseHealth() {
@@ -90,6 +93,7 @@ export const KNOWN_FREE_TIER_LIMITS: Record<
   "groq:openai/gpt-oss-120b": { tpm: 8000, tpd: 200000 },
   "groq:openai/gpt-oss-20b": { tpm: 8000 },
   "groq:qwen/qwen3.6-27b": { tpm: 8000 },
+  "groq:qwen/qwen3.8-27b": { tpm: 8000 },
   "groq:groq/compound-mini": {
     tpm: 8000,
     hinweis: "Real beobachtet: 413 bei input≈8196 Tokens, trotz früherer Annahme (100000 TPD via llama-3.3-70b-versatile)",
@@ -170,6 +174,27 @@ export function getStaticModelCatalog(): ModelCatalogEntry[] {
       links: {
         docs: "https://qwen.readthedocs.io",
         github: "https://github.com/QwenLM/Qwen",
+        playground: "https://console.groq.com/playground",
+      },
+      health: { ...baseHealth() },
+      dataSource: "builtin",
+    },
+    {
+      id: "groq:qwen/qwen3.8-27b",
+      provider: "groq",
+      model: "qwen/qwen3.8-27b",
+      label: "Qwen 3.8 27B",
+      apiModel: "qwen/qwen3.8-27b",
+      providerPrefix: "groq",
+      fallbackPriority: 4,
+      company: "Alibaba Cloud (via Groq)",
+      released: "2026",
+      contextLength: 131042,
+      maxOutput: 16384,
+      capabilities: { ...baseCapabilities(), vision: true, reasoning: true, functionCalling: true, jsonMode: true, structuredOutput: true, toolUse: true },
+      links: {
+        api: "https://console.groq.com/docs/models",
+        docs: "https://console.groq.com/docs/model/qwen/qwen3.8-27b",
         playground: "https://console.groq.com/playground",
       },
       health: { ...baseHealth() },
@@ -395,12 +420,296 @@ export function getStaticModelCatalog(): ModelCatalogEntry[] {
       dataSource: "builtin",
     },
 
+
+    // ---- NVIDIA Build / NIM: zusätzliche tool-starke Stufen ----
+    // Beide laut NVIDIA-Modellkarte explizit für Function Calling / agentische
+    // Workflows gebaut – deshalb in der Kette VOR den kleinen Llama-Stufen,
+    // die Tool-Aufrufe in der Praxis nur als Text ankündigen.
+    {
+      id: "nvidia:nvidia/llama-3.3-nemotron-super-49b-v1",
+      provider: "nvidia",
+      model: "nvidia/llama-3.3-nemotron-super-49b-v1",
+      label: "Llama 3.3 Nemotron Super 49B",
+      apiModel: "nvidia/llama-3.3-nemotron-super-49b-v1",
+      providerPrefix: "nvidia:",
+      fallbackPriority: 11,
+      company: "NVIDIA",
+      released: "2025",
+      contextLength: 131072,
+      maxOutput: 16384,
+      capabilities: { ...baseCapabilities(), reasoning: true, functionCalling: true, jsonMode: true, structuredOutput: true, toolUse: true },
+      links: {
+        api: "https://build.nvidia.com/nvidia/llama-3_3-nemotron-super-49b-v1",
+        docs: "https://docs.api.nvidia.com/nim/reference/llm-apis",
+        pricing: "https://build.nvidia.com",
+      },
+      health: { ...baseHealth() },
+      dataSource: "builtin",
+    },
+    {
+      id: "nvidia:mistralai/mistral-nemotron",
+      provider: "nvidia",
+      model: "mistralai/mistral-nemotron",
+      label: "Mistral Nemotron",
+      apiModel: "mistralai/mistral-nemotron",
+      providerPrefix: "nvidia:",
+      fallbackPriority: 12,
+      company: "Mistral AI + NVIDIA",
+      released: "2025",
+      contextLength: 131072,
+      maxOutput: 16384,
+      capabilities: { ...baseCapabilities(), reasoning: true, functionCalling: true, jsonMode: true, structuredOutput: true, toolUse: true },
+      links: {
+        api: "https://build.nvidia.com/mistralai/mistral-nemotron",
+        docs: "https://docs.api.nvidia.com/nim/reference/llm-apis",
+        pricing: "https://build.nvidia.com",
+      },
+      health: { ...baseHealth() },
+      dataSource: "builtin",
+    },
+
+    // ---- Mistral La Plateforme (NEUE KETTE 1, Stufen 16-19) ----
+    // Eigener Free-Tier ("Experiment"), unabhängig von allen bisherigen
+    // Anbietern. EU-Anbieter (Frankreich) – bei Mieter-/Vertragsdaten
+    // datenschutzseitig deutlich unkomplizierter als die US-Stufen.
+    {
+      id: "mistral:mistral-medium-latest",
+      provider: "mistral",
+      model: "mistral-medium-latest",
+      label: "Mistral Medium (Flagship)",
+      apiModel: "mistral-medium-latest",
+      providerPrefix: "mistral:",
+      fallbackPriority: 16,
+      company: "Mistral AI",
+      released: "2026",
+      contextLength: 262144,
+      maxOutput: 32768,
+      capabilities: { ...baseCapabilities(), vision: true, reasoning: true, functionCalling: true, jsonMode: true, structuredOutput: true, toolUse: true },
+      links: {
+        api: "https://api.mistral.ai/v1/chat/completions",
+        docs: "https://docs.mistral.ai/",
+        playground: "https://console.mistral.ai/",
+        pricing: "https://mistral.ai/pricing",
+      },
+      health: { ...baseHealth() },
+      dataSource: "builtin",
+    },
+    {
+      id: "mistral:mistral-small-latest",
+      provider: "mistral",
+      model: "mistral-small-latest",
+      label: "Mistral Small",
+      apiModel: "mistral-small-latest",
+      providerPrefix: "mistral:",
+      fallbackPriority: 17,
+      company: "Mistral AI",
+      released: "2026",
+      contextLength: 131072,
+      maxOutput: 16384,
+      capabilities: { ...baseCapabilities(), vision: true, reasoning: true, functionCalling: true, jsonMode: true, structuredOutput: true, toolUse: true },
+      links: {
+        api: "https://api.mistral.ai/v1/chat/completions",
+        docs: "https://docs.mistral.ai/",
+        playground: "https://console.mistral.ai/",
+        pricing: "https://mistral.ai/pricing",
+      },
+      health: { ...baseHealth() },
+      dataSource: "builtin",
+    },
+    {
+      id: "mistral:magistral-small-latest",
+      provider: "mistral",
+      model: "magistral-small-latest",
+      label: "Magistral Small (Reasoning)",
+      apiModel: "magistral-small-latest",
+      providerPrefix: "mistral:",
+      fallbackPriority: 18,
+      company: "Mistral AI",
+      released: "2025",
+      contextLength: 131072,
+      maxOutput: 16384,
+      capabilities: { ...baseCapabilities(), reasoning: true, functionCalling: true, jsonMode: true, structuredOutput: true, toolUse: true },
+      links: {
+        api: "https://api.mistral.ai/v1/chat/completions",
+        docs: "https://docs.mistral.ai/",
+        playground: "https://console.mistral.ai/",
+        pricing: "https://mistral.ai/pricing",
+      },
+      health: { ...baseHealth() },
+      dataSource: "builtin",
+    },
+    {
+      id: "mistral:open-mistral-nemo",
+      provider: "mistral",
+      model: "open-mistral-nemo",
+      label: "Mistral Nemo 12B",
+      apiModel: "open-mistral-nemo",
+      providerPrefix: "mistral:",
+      fallbackPriority: 19,
+      company: "Mistral AI",
+      released: "2024",
+      contextLength: 131072,
+      maxOutput: 8192,
+      capabilities: { ...baseCapabilities(), jsonMode: true, multilingual: true },
+      links: {
+        api: "https://api.mistral.ai/v1/chat/completions",
+        docs: "https://docs.mistral.ai/",
+        playground: "https://console.mistral.ai/",
+        pricing: "https://mistral.ai/pricing",
+      },
+      health: { ...baseHealth() },
+      dataSource: "builtin",
+    },
+
+    // ---- OpenRouter (NEUE KETTE 2, Stufen 20-23) ----
+    // Bewusst letzte Kette: Aggregator, nicht eigener Inferenz-Anbieter.
+    // "openrouter/free" ist OpenRouters eigener Free-Models-Router – er wählt
+    // zur Laufzeit eine kostenlose Route und filtert dabei SELBST nach den
+    // Fähigkeiten des Requests (Tool-Calling, Structured Output, Vision).
+    // Genau deshalb steht er vor den festen Slugs: die ":free"-Routen
+    // rotieren schnell, der Router überlebt das ohne Code-Änderung.
+    {
+      id: "openrouter:openrouter/free",
+      provider: "openrouter",
+      model: "openrouter/free",
+      label: "Free Models Router",
+      apiModel: "openrouter/free",
+      providerPrefix: "openrouter:",
+      fallbackPriority: 20,
+      company: "OpenRouter",
+      released: "2026",
+      contextLength: 200000,
+      maxOutput: 16384,
+      capabilities: { ...baseCapabilities(), vision: true, reasoning: true, functionCalling: true, jsonMode: true, structuredOutput: true, toolUse: true },
+      links: {
+        api: "https://openrouter.ai/api/v1/chat/completions",
+        docs: "https://openrouter.ai/docs",
+        playground: "https://openrouter.ai/chat",
+        pricing: "https://openrouter.ai/models?q=free",
+      },
+      health: { ...baseHealth() },
+      dataSource: "builtin",
+    },
+    {
+      id: "openrouter:openai/gpt-oss-120b:free",
+      provider: "openrouter",
+      model: "openai/gpt-oss-120b:free",
+      label: "GPT-OSS 120B (free)",
+      apiModel: "openai/gpt-oss-120b:free",
+      providerPrefix: "openrouter:",
+      fallbackPriority: 21,
+      company: "OpenAI (via OpenRouter)",
+      released: "2025",
+      contextLength: 131072,
+      maxOutput: 32768,
+      capabilities: { ...baseCapabilities(), reasoning: true, functionCalling: true, jsonMode: true, structuredOutput: true, toolUse: true },
+      links: {
+        api: "https://openrouter.ai/api/v1/chat/completions",
+        docs: "https://openrouter.ai/docs",
+        playground: "https://openrouter.ai/chat",
+        pricing: "https://openrouter.ai/models?q=free",
+      },
+      health: { ...baseHealth() },
+      dataSource: "builtin",
+    },
+    {
+      id: "openrouter:nvidia/nemotron-3-nano-30b-a3b:free",
+      provider: "openrouter",
+      model: "nvidia/nemotron-3-nano-30b-a3b:free",
+      label: "Nemotron 3 Nano 30B (free)",
+      apiModel: "nvidia/nemotron-3-nano-30b-a3b:free",
+      providerPrefix: "openrouter:",
+      fallbackPriority: 22,
+      company: "NVIDIA (via OpenRouter)",
+      released: "2026",
+      contextLength: 131072,
+      maxOutput: 16384,
+      capabilities: { ...baseCapabilities(), reasoning: true, functionCalling: true, jsonMode: true, structuredOutput: true, toolUse: true },
+      links: {
+        api: "https://openrouter.ai/api/v1/chat/completions",
+        docs: "https://openrouter.ai/docs",
+        playground: "https://openrouter.ai/chat",
+        pricing: "https://openrouter.ai/models?q=free",
+      },
+      health: { ...baseHealth() },
+      dataSource: "builtin",
+    },
+    {
+      id: "openrouter:google/gemma-4-27b-it:free",
+      provider: "openrouter",
+      model: "google/gemma-4-27b-it:free",
+      label: "Gemma 4 27B (free)",
+      apiModel: "google/gemma-4-27b-it:free",
+      providerPrefix: "openrouter:",
+      fallbackPriority: 23,
+      company: "Google (via OpenRouter)",
+      released: "2025",
+      contextLength: 131072,
+      maxOutput: 8192,
+      capabilities: { ...baseCapabilities(), jsonMode: true, functionCalling: true, toolUse: true },
+      links: {
+        api: "https://openrouter.ai/api/v1/chat/completions",
+        docs: "https://openrouter.ai/docs",
+        playground: "https://openrouter.ai/chat",
+        pricing: "https://openrouter.ai/models?q=free",
+      },
+      health: { ...baseHealth() },
+      dataSource: "builtin",
+    },
+
     // ---- Vision-Modelle (Fallback für Bild-Verarbeitung) ----
+    // WICHTIG (Stand 17.09.2026): llama-4-scout wurde von Groq am 17.06.2026
+    // abgekündigt und ist seit 16.08.2026 abgeschaltet – der Eintrag bleibt
+    // nur noch zur Nachvollziehbarkeit alter Logs stehen (dataSource bleibt
+    // "builtin", Status wird beim Ping automatisch grau). Aktuelle
+    // Groq-Vision-Modelle sind die beiden Qwen-3er darunter.
+    {
+      id: "groq:qwen/qwen3.6-27b-vision",
+      provider: "groq",
+      model: "qwen/qwen3.6-27b",
+      label: "Qwen 3.6 27B (Vision)",
+      apiModel: "qwen/qwen3.6-27b",
+      providerPrefix: "groq",
+      fallbackPriority: 24,
+      company: "Alibaba Cloud (via Groq)",
+      released: "2026",
+      contextLength: 131072,
+      maxOutput: 16384,
+      capabilities: { ...baseCapabilities(), vision: true, reasoning: true, functionCalling: true, jsonMode: true, structuredOutput: true, toolUse: true },
+      links: {
+        docs: "https://console.groq.com/docs/vision",
+        api: "https://console.groq.com/docs/model/qwen/qwen3.6-27b",
+        playground: "https://console.groq.com/playground",
+      },
+      health: { ...baseHealth() },
+      dataSource: "builtin",
+    },
+    {
+      id: "groq:qwen/qwen3.8-27b-vision",
+      provider: "groq",
+      model: "qwen/qwen3.8-27b",
+      label: "Qwen 3.8 27B (Vision)",
+      apiModel: "qwen/qwen3.8-27b",
+      providerPrefix: "groq",
+      fallbackPriority: 25,
+      company: "Alibaba Cloud (via Groq)",
+      released: "2026",
+      contextLength: 131042,
+      maxOutput: 16384,
+      capabilities: { ...baseCapabilities(), vision: true, reasoning: true, functionCalling: true, jsonMode: true, structuredOutput: true, toolUse: true },
+      links: {
+        docs: "https://console.groq.com/docs/vision",
+        api: "https://console.groq.com/docs/model/qwen/qwen3.8-27b",
+        playground: "https://console.groq.com/playground",
+      },
+      health: { ...baseHealth() },
+      dataSource: "builtin",
+    },
     {
       id: "groq:meta-llama/llama-4-scout-17b-16e-instruct",
       provider: "groq",
       model: "meta-llama/llama-4-scout-17b-16e-instruct",
-      label: "Llama 4 Scout 17B",
+      label: "Llama 4 Scout 17B (abgekündigt)",
       apiModel: "meta-llama/llama-4-scout-17b-16e-instruct",
       providerPrefix: "groq",
       fallbackPriority: 14,
@@ -454,6 +763,27 @@ export function getStaticModelCatalog(): ModelCatalogEntry[] {
       links: {
         docs: "https://developers.cloudflare.com/workers-ai/models/",
         github: "https://github.com/google-deepmind/gemma",
+      },
+      health: { ...baseHealth() },
+      dataSource: "builtin",
+    },
+    {
+      id: "mistral:mistral-medium-latest-vision",
+      provider: "mistral",
+      model: "mistral-medium-latest",
+      label: "Mistral Medium (Vision)",
+      apiModel: "mistral-medium-latest",
+      providerPrefix: "mistral:",
+      fallbackPriority: 26,
+      company: "Mistral AI",
+      released: "2026",
+      contextLength: 262144,
+      maxOutput: 32768,
+      capabilities: { ...baseCapabilities(), vision: true, reasoning: true, functionCalling: true, jsonMode: true, structuredOutput: true, toolUse: true },
+      links: {
+        api: "https://api.mistral.ai/v1/chat/completions",
+        docs: "https://docs.mistral.ai/",
+        playground: "https://console.mistral.ai/",
       },
       health: { ...baseHealth() },
       dataSource: "builtin",
