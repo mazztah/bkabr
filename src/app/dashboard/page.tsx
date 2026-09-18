@@ -37,8 +37,8 @@ export default function DashboardPage() {
 
   return (
     <div className="h-full overflow-y-auto p-6">
-      <div className="mb-6">
-        <h1 className="mb-1 text-xl font-bold">🎛️ Business Command Center</h1>
+      <div className="hero-panel fade-in-up mb-6 px-5 py-4">
+        <h1 className="gradient-text-animated mb-1 text-xl font-bold lg:text-2xl">🎛️ Business Command Center</h1>
         <p className="text-sm text-muted-foreground">
           Alle Kennzahlen hier basieren auf echten Daten aus Buchhaltung, Stammdaten und
           Plausibilitätsprüfung — keine Platzhalterwerte. Je mehr Buchungen und Stammdaten erfasst
@@ -109,7 +109,7 @@ function HeroArea({ data }: { data: DashboardUebersicht }) {
   const { kennzahlen, objekte } = data;
 
   return (
-    <div className="grid h-full grid-cols-2 gap-3 rounded-xl border border-border bg-card p-5 sm:grid-cols-4">
+    <div className="shadow-hellblau grid h-full grid-cols-2 gap-3 rounded-xl border border-border bg-card p-5 sm:grid-cols-4">
       <div className="flex items-center gap-3">
         <ProgressRing percent={kennzahlen.businessHealthScore} size={52} />
         <div>

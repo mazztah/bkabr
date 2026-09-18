@@ -27,6 +27,9 @@
   --glass-highlight: rgba(255, 255, 255, 0.6);
   --glow-primary: rgba(37, 99, 235, 0.14);
   --glow-accent: rgba(6, 182, 212, 0.12);
+  --hellblau: #7dd3fc;
+  --glow-hellblau: rgba(56, 189, 248, 0.35);
+  --glow-hellblau-soft: rgba(56, 189, 248, 0.16);
 }
 
 .dark {
@@ -57,6 +60,9 @@
   --glass-highlight: rgba(244, 246, 251, 0.05);
   --glow-primary: rgba(59, 157, 255, 0.25);
   --glow-accent: rgba(34, 211, 238, 0.22);
+  --hellblau: #7dd3fc;
+  --glow-hellblau: rgba(125, 211, 252, 0.45);
+  --glow-hellblau-soft: rgba(125, 211, 252, 0.2);
 }
 
 @theme inline {
@@ -601,4 +607,145 @@ button:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .skeleton, .stat-card, .data-table tbody tr { animation: none !important; transition: none !important; }
+}
+
+/* ==========================================================================
+   Design-Refresh (Durchgang 15)
+   Hellblaue Glow-Schatten für Karten/Boxen, animierte Gradient-Überschriften,
+   Hero-Panel mit driftendem Aurora-Glow, gestaffeltes Einblenden.
+   Rein additiv — bestehende Klassen bleiben unverändert nutzbar.
+   ========================================================================== */
+
+/* Hellblauer "Signature"-Schatten für Karten/Div-Boxen, dezent im Ruhezustand,
+   deutlich sichtbar beim Hover — ersetzt keine bestehende Klasse, sondern
+   kann zusätzlich (className={cn("glass-panel", "shadow-hellblau")}) genutzt
+   oder direkt in .stat-card / .glass-panel eingehängt werden. */
+.shadow-hellblau {
+  box-shadow:
+    0 1px 0 0 var(--glass-highlight) inset,
+    0 10px 30px -12px var(--glow-hellblau-soft),
+    0 0 0 1px color-mix(in srgb, var(--hellblau) 18%, var(--glass-border));
+  transition: box-shadow 260ms cubic-bezier(0.22, 1, 0.36, 1), transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.shadow-hellblau:hover {
+  box-shadow:
+    0 1px 0 0 var(--glass-highlight) inset,
+    0 20px 45px -16px var(--glow-hellblau),
+    0 0 0 1px color-mix(in srgb, var(--hellblau) 40%, var(--glass-border));
+  transform: translateY(-3px);
+}
+
+/* .glass-panel und .stat-card bekommen den hellblauen Schatten standardmäßig
+   mit dazu (additiv zur bestehenden Definition weiter oben in der Datei). */
+.glass-panel {
+  box-shadow:
+    0 1px 0 0 var(--glass-highlight) inset,
+    0 20px 50px -20px rgba(0, 0, 0, 0.45),
+    0 0 0 1px color-mix(in srgb, var(--hellblau) 10%, transparent);
+  transition: box-shadow 280ms cubic-bezier(0.22, 1, 0.36, 1), transform 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.glass-panel:hover {
+  box-shadow:
+    0 1px 0 0 var(--glass-highlight) inset,
+    0 26px 60px -20px rgba(0, 0, 0, 0.5),
+    0 0 40px -8px var(--glow-hellblau);
+}
+.stat-card:hover {
+  box-shadow: 0 16px 36px -16px var(--glow-hellblau), 0 0 0 1px color-mix(in srgb, var(--hellblau) 30%, var(--glass-border));
+}
+
+/* Animierte Gradient-Überschrift: für Seiten-/Hero-Titel ("cooles" Headline-
+   Signature-Element). Dezent driftender Verlauf statt statischem Text. */
+@keyframes gradient-flow {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+.gradient-text-animated {
+  background-image: linear-gradient(
+    100deg,
+    var(--hellblau),
+    var(--primary),
+    var(--brand-accent-2),
+    var(--brand-accent),
+    var(--hellblau)
+  );
+  background-size: 300% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: gradient-flow 8s ease-in-out infinite;
+}
+
+/* Hero-Panel: Titelfläche mit sanft driftendem, hellblauem Glow-Schein im
+   Hintergrund ("Titelbild"-Charakter ohne echtes Bild-Asset). */
+.hero-panel {
+  position: relative;
+  overflow: hidden;
+  border-radius: 1.25rem;
+  border: 1px solid var(--glass-border);
+  background: color-mix(in srgb, var(--card) 94%, transparent);
+  box-shadow:
+    0 1px 0 0 var(--glass-highlight) inset,
+    0 24px 60px -24px rgba(0, 0, 0, 0.35),
+    0 0 50px -10px var(--glow-hellblau-soft);
+}
+.hero-panel::before {
+  content: "";
+  position: absolute;
+  top: -40%;
+  left: -10%;
+  width: 60%;
+  height: 180%;
+  background: radial-gradient(closest-side, var(--glow-hellblau) 0%, transparent 70%);
+  opacity: 0.5;
+  filter: blur(10px);
+  animation: aurora-drift 18s ease-in-out infinite;
+  pointer-events: none;
+}
+.hero-panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(closest-side, var(--glow-accent) 0%, transparent 65%);
+  top: auto;
+  bottom: -60%;
+  right: -15%;
+  left: auto;
+  width: 55%;
+  height: 160%;
+  opacity: 0.4;
+  filter: blur(10px);
+  animation: aurora-drift 24s ease-in-out infinite reverse;
+  pointer-events: none;
+}
+.hero-panel > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Leicht pulsierender, hellblauer Icon-Glow für Seitenkopf-Icons. */
+@keyframes icon-glow-pulse {
+  0%, 100% { box-shadow: 0 8px 24px -10px var(--glow-primary); }
+  50% { box-shadow: 0 8px 28px -6px var(--glow-hellblau); }
+}
+.icon-glow-pulse {
+  animation: icon-glow-pulse 3.2s ease-in-out infinite;
+}
+
+/* Gestaffeltes Einblenden beim Seitenaufbau (Seitenkopf, Hero, erste Karten). */
+.fade-in-up {
+  animation: fadein 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gradient-text-animated,
+  .hero-panel::before,
+  .hero-panel::after,
+  .icon-glow-pulse,
+  .fade-in-up,
+  .shadow-hellblau {
+    animation: none !important;
+    transition: none !important;
+  }
 }

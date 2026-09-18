@@ -20,7 +20,7 @@ export default function PremiumButton({
   const base = "interactive rounded-xl font-medium inline-flex items-center justify-center gap-1.5";
 
   const variants: Record<string, string> = {
-    primary: "bg-gradient-to-br from-[var(--primary)] to-[var(--brand-accent)] text-white glow-ring-primary",
+    primary: "bg-gradient-to-br from-[var(--primary)] to-[var(--brand-accent)] text-white glow-ring-primary hover:shadow-[0_10px_28px_-8px_var(--glow-hellblau)]",
     secondary: "bg-secondary text-secondary-foreground hover:brightness-110",
     accent: "bg-gradient-to-br from-[var(--brand-accent)] to-[var(--brand-accent-2)] text-white glow-ring-accent",
     ghost: "hover:bg-muted text-foreground",

@@ -17,7 +17,7 @@ export default function GlassCard({ children, className = "", hover = true, onCl
       whileHover={hover ? { y: -4, scale: 1.01 } : undefined}
       transition={{ duration: 0.25, ease: "easeOut" }}
       onClick={onClick}
-      className={cn("glass-panel relative overflow-hidden rounded-2xl", onClick && "cursor-pointer", className)}
+      className={cn("glass-panel shadow-hellblau relative overflow-hidden rounded-2xl", onClick && "cursor-pointer", className)}
     >
       {children}
     </motion.div>

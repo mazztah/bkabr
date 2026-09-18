@@ -12,13 +12,13 @@ interface PageHeaderProps {
 
 export default function PageHeader({ icon: Icon, title, description, reqRef, actions }: PageHeaderProps) {
   return (
-    <header className="page-header">
+    <header className="page-header fade-in-up">
       <div className="flex items-start gap-3">
-        <span className="page-header__icon" aria-hidden>
+        <span className="page-header__icon icon-glow-pulse" aria-hidden>
           <Icon className="h-5 w-5" />
         </span>
         <div>
-          <h1 className="text-xl font-bold tracking-tight lg:text-2xl">{title}</h1>
+          <h1 className="gradient-text-animated text-xl font-bold tracking-tight lg:text-2xl">{title}</h1>
           {description && <p className="mt-0.5 max-w-2xl text-sm text-muted-foreground">{description}</p>}
           {reqRef && (
             <span className="chip mt-2" data-tone="info">
