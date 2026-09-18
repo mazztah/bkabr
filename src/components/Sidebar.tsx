@@ -49,7 +49,7 @@ export default function Sidebar() {
       <div className="p-5 border-b border-border">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h1 className="text-xl font-bold leading-tight">BetriebsKostenBot</h1>
+            <h1 className="gradient-text-animated text-xl font-bold leading-tight">BetriebsKostenBot</h1>
             <p className="text-xs text-muted-foreground">KI-Betriebskostenabrechnungen</p>
           </div>
           <ThemeToggle />
@@ -115,7 +115,7 @@ export default function Sidebar() {
         </div>
       </div>
 
-      <div className="max-h-[46vh] overflow-y-auto p-4 space-y-3 lg:max-h-none lg:flex-1">
+      <div className="mc-stagger max-h-[46vh] overflow-y-auto p-4 space-y-3 lg:max-h-none lg:flex-1">
         {filtered.length === 0 && (
           <p className="text-sm text-muted-foreground text-center mt-8">
             Keine Abrechnungen gefunden.
@@ -125,10 +125,10 @@ export default function Sidebar() {
           <div
             key={a.id}
             onClick={() => select(a.id)}
-            className={`group relative rounded-xl border p-4 cursor-pointer transition-all ${
+            className={`group relative rounded-xl border p-4 cursor-pointer transition-all duration-200 ${
               selectedId === a.id
-                ? "border-primary bg-secondary"
-                : "border-border bg-background hover:border-primary/50"
+                ? "border-primary bg-secondary shadow-[0_10px_28px_-14px_var(--glow-hellblau)]"
+                : "border-border bg-background hover:border-primary/50 hover:shadow-[0_10px_24px_-16px_var(--glow-hellblau)] hover:-translate-y-0.5"
             }`}
           >
             <button

@@ -286,7 +286,7 @@ export default function KpiInfo({ kpiId, label }: { kpiId: string; label?: strin
           onMouseEnter={() => setOpen(true)}
           onMouseLeave={() => setOpen(false)}
           className={cn(
-            "absolute left-1/2 top-full z-50 mt-2 w-64 -translate-x-1/2 rounded-lg border border-border bg-card p-3 text-left text-xs shadow-lg"
+            "shadow-hellblau fade-in-up absolute left-1/2 top-full z-50 mt-2 w-64 -translate-x-1/2 rounded-lg border border-border bg-card p-3 text-left text-xs"
           )}
         >
           <div className="mb-1.5 font-semibold">{label || kpiId}</div>
