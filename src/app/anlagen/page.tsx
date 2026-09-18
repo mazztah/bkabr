@@ -3,26 +3,10 @@
 import { useEffect, useState } from "react";
 import { Wrench, Plus, Trash2, ClipboardList } from "lucide-react";
 import Modal from "@/components/Modal";
+import { ANLAGEN_TYPEN } from "@/lib/anlagen-katalog";
 import { Anlage, AnlagenTyp, AnlagenStatus, AnlagenWartung, Liegenschaft } from "@/lib/types";
 
-const TYPEN: AnlagenTyp[] = [
-  "Brandmeldeanlage (BMA)",
-  "Einbruchmeldeanlage (EMA)",
-  "Gebäudeleittechnik (GLT)",
-  "Raumlufttechnik (RLT)",
-  "Aufzug",
-  "Klimaanlage",
-  "Heizungsanlage",
-  "Trinkwasseranlage",
-  "Blitzschutzanlage",
-  "Rauch- und Wärmeabzugsanlage (RWA)",
-  "Notstromaggregat",
-  "Photovoltaikanlage",
-  "Sprinkleranlage",
-  "Torantrieb",
-  "Beleuchtungsanlage",
-  "Sonstige technische Anlage",
-];
+const TYPEN: AnlagenTyp[] = ANLAGEN_TYPEN; // 50 Katalogtypen aus dem Pflichtenheft + Bestandstypen
 const STATUS: AnlagenStatus[] = ["In Betrieb", "Wartung fällig", "Außer Betrieb", "Defekt"];
 
 const STATUS_FARBE: Record<AnlagenStatus, string> = {

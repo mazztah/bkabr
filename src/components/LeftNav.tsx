@@ -32,6 +32,8 @@ import {
   PieChart,
   TrendingUp,
   CalendarClock,
+  ClipboardCheck,
+  DoorOpen,
   Calculator,
   LayoutDashboard,
   ChevronDown,
@@ -87,6 +89,7 @@ const GROUPS: NavGroup[] = [
       { href: "/liegenschaften", label: "Liegenschaften", icon: Home },
       { href: "/flurstuecke", label: "Flurstücke", icon: MapPin },
       { href: "/gebaeude", label: "Gebäude", icon: Building2 },
+      { href: "/raeume", label: "Räume & Flächen", icon: DoorOpen },
       { href: "/wohnungen", label: "Wohnungen", icon: Building },
       { href: "/mieter", label: "Mieter", icon: Users },
       { href: "/schriftverkehr", label: "Schriftverkehr", icon: Mail },
@@ -122,7 +125,10 @@ const GROUPS: NavGroup[] = [
   },
   {
     title: "Verwaltung",
-    items: [{ href: "/kalender", label: "Kalender", icon: CalendarClock }],
+    items: [
+      { href: "/kalender", label: "Kalender", icon: CalendarClock },
+      { href: "/pflichtenheft", label: "Pflichtenheft", icon: ClipboardCheck },
+    ],
   },
   {
     title: "Systemadministration",

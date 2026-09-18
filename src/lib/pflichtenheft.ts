@@ -1,0 +1,182 @@
+/**
+ * Erfüllungsmatrix zum Pflichtenheft (Kap. 28 „Anbieterantwort / Bewertungsmatrix“).
+ * Selbsteinschätzung anhand des Code-Stands vom 18.09.2026 – NICHT durch Abnahmetests belegt.
+ * Bei Funktionsänderungen bitte hier nachziehen; die Seite /pflichtenheft rendert diese Liste.
+ */
+export type Erfuellung = "erfuellt" | "teilweise" | "offen";
+
+export interface Anforderung {
+  id: string;
+  modul: string;
+  text: string;
+  status: Erfuellung;
+  link?: string;
+  bemerkung?: string;
+}
+
+const M = {
+  LIE: "Liegenschaften",
+  IMM: "Immobilien",
+  VER: "Veranstaltungen",
+  VERTR: "Verträge",
+  KAL: "Kalender",
+  ANL: "Anlagen",
+  WART: "Wartung",
+  TKT: "Tickets",
+  ZAE: "Zähler",
+  DOK: "Dokumente",
+  UX: "Suche & UX",
+  TECH: "Technik",
+  SEC: "Datenschutz",
+  MIG: "Migration",
+} as const;
+
+type Row = [id: string, text: string, status: Erfuellung, link?: string, bemerkung?: string];
+
+const rows = (modul: string, list: Row[]): Anforderung[] =>
+  list.map(([id, text, status, link, bemerkung]) => ({ id, modul, text, status, link, bemerkung }));
+
+const E = "erfuellt" as const;
+const T = "teilweise" as const;
+const O = "offen" as const;
+
+export const ANFORDERUNGEN: Anforderung[] = [
+  ...rows(M.LIE, [
+    ["LIE-001", "≥ 3.000 Flurstücke mit eindeutiger Identifikation", T, "/flurstuecke", "Eindeutige Nr. vorhanden; Lasttest mit 3.000+ Datensätzen steht aus"],
+    ["LIE-002", "Flurstücksakte mit Bild/Karte und Katasterangaben", T, "/flurstuecke", "Akte vorhanden; Bild/Karte fehlt"],
+    ["LIE-003", "Lfd. Nr., Gemarkung, Flur, Flurstück, Wirtschaftsart, Lage, Größe", E, "/flurstuecke"],
+    ["LIE-004", "Flächenarten und Zuordnung von Teilflächen", T, "/flurstuecke", "Gesamtfläche vorhanden; Teilflächen fehlen"],
+    ["LIE-005", "Verknüpfung mit Gebäuden, Verträgen, Dokumenten, Kostenstellen", T, "/flurstuecke", "Verträge/Anhänge verknüpft; Gebäude und Kostenstelle offen"],
+    ["LIE-006", "Grundbuchdaten Abt. I, II, III", E, "/flurstuecke"],
+    ["LIE-007", "Historisierung mit Änderungsdatum und Quelle", T, "/flurstuecke", "Audit-Log vorhanden; Quelle je Eintrag prüfen"],
+    ["LIE-008", "Kartendarstellung / Geodaten", O, undefined, "Kein Kartendienst eingebunden"],
+    ["LIE-009", "Pachtverträge (Fläche, Partner, Laufzeit, Entgelt, Bedingungen, Fristen, Dokumente)", T, "/vertraege", "Bedingungen nur als Freitext"],
+    ["LIE-010", "Freigabe/Sperre für Kurzzeitvermietung", E, "/flurstuecke", "Flag am Flurstück; für Räume über /raeume"],
+  ]),
+  ...rows(M.IMM, [
+    ["IMM-001", "Gebäude-Stammdaten (Adresse, Nutzung, Fläche, Bild, Kostenstelle, Hausbeauftragte)", T, "/gebaeude", "Name, Baujahr, Heizung vorhanden; Adresse, Bild, Kostenstelle, Hausbeauftragte fehlen"],
+    ["IMM-002", "Grundrisspläne je Etage", O, undefined, "Upload/Zuordnung noch nicht umgesetzt"],
+    ["IMM-003", "Räume je Etage mit lfd. Nr., Nutzung, Fläche", E, "/raeume", "Neu in Durchgang 14"],
+    ["IMM-004", "Flächenangaben nach DIN 277 / Flächenverordnung", E, "/raeume", "DIN-277-Gruppen; WoFlV nicht separat"],
+    ["IMM-005", "Nutzungsgruppen zusammenfassen und auswerten", E, "/raeume", "Neu in Durchgang 14"],
+    ["IMM-006", "Zusammenhängende Veranstaltungsflächen markieren und freigeben", T, "/raeume", "Flag + Verbundgruppe; Übernahme ins Veranstaltungsmodul offen"],
+    ["IMM-007", "Grundrisse ↔ Räume; räumliche Zuordnung technischer Anlagen", T, "/anlagen", "Anlagenstandort nur als Freitext, keine Raum-Referenz"],
+  ]),
+  ...rows(M.VER, [
+    ["VER-001", "Eigene Maske für Veranstaltungsflächen", E, "/veranstaltungsflaechen"],
+    ["VER-002", "Fläche, Kapazität, Lage, Verfügbarkeit, Gebäude/Flurstück", E, "/veranstaltungsflaechen"],
+    ["VER-003", "Anfragen, Reservierungen, bestätigte Veranstaltungen unterscheiden", T, "/veranstaltungsflaechen", "Statusmodell gegen Kap. 10 abgleichen"],
+    ["VER-004", "Doppelbelegung verhindern oder als Konflikt anzeigen", E, "/veranstaltungsflaechen", "Konfliktprüfung in der Reservierungs-API"],
+    ["VER-005", "Verknüpfung mit Verträgen, Partnern, Flächen, Kalender", T, "/veranstaltungsflaechen", "Kein Vertragsbezug an der Reservierung"],
+    ["VER-006", "Veranstaltungszeiträume sowie Auf-/Abbauzeiten", O, undefined, "Nur Beginn/Ende"],
+  ]),
+  ...rows(M.VERTR, [
+    ["VERTR-001", "Vertragspartner mit Kontaktdaten und Rollen", T, "/vertraege", "Partner als Text; kein Partnerstamm"],
+    ["VERTR-002", "Vertragstypen und Vertragsstatus", E, "/vertraege"],
+    ["VERTR-003", "Präambel, Sachgegenstand, Objekt, Entgelt, Bedingungen", T, "/vertraege", "Teilweise in Notizen"],
+    ["VERTR-004", "Beginn, Ende, Kündigungsfristen, Verlängerung, Optionen, Wiedervorlagen", T, "/vertraege", "Verlängerung/Optionen/Wiedervorlage fehlen"],
+    ["VERTR-005", "PDF speichern, öffnen, Objektakte zuordnen", E, "/vertraege"],
+    ["VERTR-006", "Mehrere Dokumentversionen und Anlagen", T, "/ablage", "Versionierung in der Ablage; nicht am Vertrag"],
+    ["VERTR-007", "Fristen automatisch in den Kalender", T, "/kalender"],
+    ["VERTR-008", "Erinnerungen mit konfigurierbaren Vorlaufzeiten", O],
+    ["VERTR-009", "Filter nach Objekt, Partner, Art, Status, Frist", T, "/vertraege"],
+  ]),
+  ...rows(M.KAL, [
+    ["KAL-001", "Zentraler Kalender (Veranstaltungen, Fristen, Wartungen, Prüfungen, Tickets)", T, "/kalender", "Abgeleitete Ereignisse vorhanden; Vollständigkeit prüfen"],
+    ["KAL-002", "Filter nach Gebäude, Flurstück, Fläche, Anlage, Vertrag, Mitarbeiter, Terminart", T, "/kalender"],
+    ["KAL-003", "Konflikte und Überschneidungen visuell erkennbar", O],
+    ["KAL-004", "Termine aus Fachmodulen erzeugen und rückverlinken", T, "/kalender"],
+    ["KAL-005", "Erinnerungen und Eskalation überfälliger Fristen", O],
+  ]),
+  ...rows(M.ANL, [
+    ["ANL-001", "Vollständige Anlagenliste je Gebäude", E, "/anlagen"],
+    ["ANL-002", "Räumliche Zuordnung (Gebäude, Etage, Raum, Bereich)", T, "/anlagen", "Gebäude + Freitext; keine Raum-Referenz"],
+    ["ANL-003", "Typ, Hersteller, Baujahr, Wartungsfirma, letzte Wartung", E, "/anlagen", "Katalog mit 50 Positionen neu"],
+    ["ANL-004", "Wartungsverträge als PDF und im Vertragsmanagement verknüpft", T, "/anlagen", "Anhänge ja; Verknüpfung zu Verträgen offen"],
+    ["ANL-005", "Wartungs-/Prüftermine im Kalender", E, "/kalender"],
+    ["ANL-006", "Status, Bemerkungen, Dokumente, Historie", E, "/anlagen"],
+  ]),
+  ...rows(M.WART, [
+    ["WART-001", "Wartungszyklen und Prüfintervalle je Anlage", E, "/anlagen"],
+    ["WART-002", "Letzte/nächste Wartung regelbasiert führen", E, "/instandhaltung", "Neu: Einstufung überfällig/30/90 Tage"],
+    ["WART-003", "Wartungsfirmen und -verträge verknüpfen", T, "/anlagen", "Firma als Text"],
+    ["WART-004", "Wartungsnachweise und Protokolle als PDF", T, "/anlagen", "Anhang an Anlage, nicht am Wartungseintrag"],
+    ["WART-005", "Wartungskalender mit Veranstaltungen und Fristen zusammenführen", E, "/kalender"],
+    ["WART-006", "Überfällige Wartungen als offene Aufgaben sichtbar", E, "/instandhaltung", "Neu, inkl. Ticket-Erzeugung"],
+  ]),
+  ...rows(M.TKT, [
+    ["TKT-001", "Mitarbeiter inkl. Arbeitsplatz als Bearbeiter/Anfordernde", T, "/systemadministration/nutzer", "Zuständiger als Text"],
+    ["TKT-002", "Tickets direkt Mitarbeitern zuweisen", E, "/ticketsystem"],
+    ["TKT-003", "Eindeutige laufende Auftragsnummer", E, "/ticketsystem"],
+    ["TKT-004", "Anfordernde Person inkl. Signatur-/Kontaktdaten", T, "/ticketsystem"],
+    ["TKT-005", "Liegenschaft, Gebäude, Raum/Bereich, Objekt", T, "/ticketsystem", "Raum-Referenz fehlt"],
+    ["TKT-006", "Kostenstelle und/oder Innenauftrag", T, "/ticketsystem", "Innenauftrag fehlt"],
+    ["TKT-007", "Fälligkeit, Priorität, Dringlichkeit", E, "/ticketsystem", "SLA aus Priorität"],
+    ["TKT-008", "Aufgabenbeschreibung und auszuführende Arbeiten", E, "/ticketsystem"],
+    ["TKT-009", "Erledigung, Datum, benötigte Arbeitszeit", T, "/ticketsystem", "Arbeitszeit fehlt"],
+    ["TKT-010", "Status neu, angenommen, in Bearbeitung, wartet, erledigt, geschlossen", T, "/ticketsystem", "Eigenes Workflow-Modell; Mapping offen"],
+    ["TKT-011", "Historie aller Änderungen", E, "/ticketsystem"],
+    ["TKT-012", "Anhänge, Fotos, Dokumente", E, "/ticketsystem"],
+  ]),
+  ...rows(M.ZAE, [
+    ["ZAE-001", "Zähler Gas/Wasser/Strom je Gebäude und Fläche", E, "/zaehler"],
+    ["ZAE-002", "Zähler mehreren versorgten Flächen zuordnen", O, "/zaehler", "Nur eine Wohnung je Zähler"],
+    ["ZAE-003", "Übersicht für Zähler mit mehreren Versorgten", O],
+    ["ZAE-004", "Zählerart, -nummer, Eigentümer (eigener/Versorger)", T, "/zaehler", "Eigentümer fehlt"],
+    ["ZAE-005", "Nutzer/Endverbraucher und versorgte Fläche", T, "/zaehler"],
+    ["ZAE-006", "Menge, Einheit, Eichung, Wartung", T, "/zaehler", "Eichung/Wartung fehlen"],
+    ["ZAE-007", "Kosten und Verbrauch je Energieträger", T, "/zaehler"],
+    ["ZAE-008", "Zählerstände mit Datum, Quelle, Ableser", T, "/zaehler", "Quelle fehlt"],
+    ["ZAE-009", "Verbrauchsauswertungen je Zähler, Fläche, Gebäude, Zeitraum", T, "/zaehler"],
+    ["ZAE-010", "Zählerwechsel und Zuordnungsänderungen nachvollziehbar", T, "/zaehler", "Über Audit-Log"],
+  ]),
+  ...rows(M.DOK, [
+    ["DOK-001", "PDFs allen relevanten Objekten und Vorgängen zuordnen", E, "/ablage"],
+    ["DOK-002", "Dokumente über die Objektakte erreichbar", T],
+    ["DOK-003", "Dokumenttypen und Metadaten konfigurierbar", T, "/ablage"],
+    ["DOK-004", "Versionierung und Ablagehistorie", E, "/ablage"],
+    ["DOK-005", "Berechtigungen auch für sensible Dokumente", T, "/ablage", "Modulebene; Dokumentebene offen"],
+    ["DOK-006", "Volltextsuche in Metadaten; optional OCR", T, "/ablage", "OCR vorhanden"],
+  ]),
+  ...rows(M.UX, [
+    ["UX-001", "Globale Suche über alle Objektarten", T, undefined, "Räume und Tickets noch nicht indexiert"],
+    ["UX-002", "Schnellzugriff / zuletzt verwendete Datensätze", O],
+    ["UX-003", "Dashboards (Tickets, Verträge, Wartungen, Veranstaltungen, Fristen)", T, "/dashboard"],
+    ["UX-004", "Auswertungen nach Gebäude, Fläche, Nutzung, Kostenstelle, Partner, Zeitraum", T, "/auswertung"],
+    ["UX-005", "Listen filter-, sortier- und exportierbar", T, undefined, "Export vorhanden; Sortierung uneinheitlich"],
+    ["UX-006", "Objektakte ohne Medienbruch navigierbar", T],
+    ["UX-007", "Responsive Masken", T],
+    ["UX-008", "Auswahllisten, Suchfelder, Plausibilitätsprüfungen", T],
+    ["UX-009", "Pflichtfelder, Status und Fristen visuell eindeutig", T, undefined, "Neue Bausteine (Chips, Pflichtfeld-Marker) in Durchgang 14"],
+  ]),
+  ...rows(M.TECH, [
+    ["TECH-001", "Offene, dokumentierte API", T, undefined, "REST-Routen vorhanden; keine OpenAPI-Doku"],
+    ["TECH-002", "Import aus CSV/XLSX", T, "/smart-upload"],
+    ["TECH-003", "Export XLSX/CSV/PDF", E],
+    ["TECH-004", "Kartendienste / GIS-Schnittstelle", O],
+    ["TECH-005", "Revisionssichere, datenschutzkonforme Ablage", T],
+    ["TECH-006", "Zentrale Authentifizierung/Berechtigungen; optional Verzeichnisdienst", T, "/systemadministration/nutzer", "Verzeichnisdienst offen"],
+    ["TECH-007", "Auslegung für 140 Gebäude / 3.000+ Flurstücke", T, undefined, "Lasttest offen"],
+    ["TECH-008", "Sicherung, Wiederherstellung, Protokollierung", T, undefined, "Protokollierung ja; Betriebskonzept offen"],
+  ]),
+  ...rows(M.SEC, [
+    ["SEC-001", "Datenminimierung bei personenbezogenen Daten", T],
+    ["SEC-002", "Rollenbasierte Einschränkung sensibler Daten", E, "/systemadministration/nutzer"],
+    ["SEC-003", "Protokollierung wesentlicher Änderungen", E],
+    ["SEC-004", "Konfigurierbare Lösch- und Aufbewahrungsregeln", O],
+    ["SEC-005", "Backup und Wiederherstellung nach Betriebskonzept", O],
+  ]),
+  ...rows(M.MIG, [
+    ["MIG-001", "Bestandsdaten analysieren, bereinigen, überführen", T, "/smart-upload"],
+    ["MIG-002", "Importvorlagen und Mappingregeln", O],
+    ["MIG-003", "PDFs mit migrierten Objekten verknüpfen", T, "/smart-upload"],
+    ["MIG-004", "Testmigration und Datenqualitätsabnahme", O],
+    ["MIG-005", "Schulungs- und Rollenkonzept", T, undefined, "Rollenkonzept dokumentiert; Schulung offen"],
+  ]),
+];
+
+export const STATUS_LABEL: Record<Erfuellung, string> = {
+  erfuellt: "Erfüllt",
+  teilweise: "Teilweise",
+  offen: "Offen",
+};

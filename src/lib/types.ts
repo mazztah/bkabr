@@ -500,23 +500,12 @@ export interface Vertrag {
  * als String statt geschlossenes Enum, damit weitere Anlagenarten ohne
  * Codeänderung ergänzt werden können (Erweiterbarkeits-Kriterium).
  */
-export type AnlagenTyp =
-  | "Brandmeldeanlage (BMA)"
-  | "Einbruchmeldeanlage (EMA)"
-  | "Gebäudeleittechnik (GLT)"
-  | "Raumlufttechnik (RLT)"
-  | "Aufzug"
-  | "Klimaanlage"
-  | "Heizungsanlage"
-  | "Trinkwasseranlage"
-  | "Blitzschutzanlage"
-  | "Rauch- und Wärmeabzugsanlage (RWA)"
-  | "Notstromaggregat"
-  | "Photovoltaikanlage"
-  | "Sprinkleranlage"
-  | "Torantrieb"
-  | "Beleuchtungsanlage"
-  | "Sonstige technische Anlage";
+/**
+ * Anlagentyp – bewusst als offener String geführt (Pflichtenheft Kap. 23,
+ * „Erweiterbarkeit“: neue Anlagenarten ohne Programmänderung). Der vorkonfigurierte
+ * Katalog (50 Positionen aus Kap. 13) liegt in `src/lib/anlagen-katalog.ts`.
+ */
+export type AnlagenTyp = string;
 
 export type AnlagenStatus = "In Betrieb" | "Wartung fällig" | "Außer Betrieb" | "Defekt";
 
@@ -2383,6 +2372,39 @@ export interface Ticket {
   faelligkeitsdatum?: string;
   dokumente?: Anhang[];
   historie: TicketHistorieEintrag[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+
+// ————— Räume, Etagen & Flächen (IMM-002 bis IMM-007) —————
+
+/** Nutzungsgruppen nach DIN 277 (Nutzungsflächen NUF 1–7, TF, VF). */
+export type DinGruppe =
+  | "NUF 1 Wohnen und Aufenthalt"
+  | "NUF 2 Büroarbeit"
+  | "NUF 3 Produktion, Hand- und Maschinenarbeit, Experimente"
+  | "NUF 4 Lagern, Verteilen und Verkaufen"
+  | "NUF 5 Bildung, Unterricht und Kultur"
+  | "NUF 6 Heilen und Pflegen"
+  | "NUF 7 Sonstige Nutzungen"
+  | "TF Technikfläche"
+  | "VF Verkehrsfläche";
+
+export interface Raum {
+  id: string;
+  nummer?: string;
+  gebaeudeId: string;
+  liegenschaftId?: string;
+  etage: string; // z.B. "UG", "EG", "1. OG"
+  laufendeNr: number; // laufende Raumnummer je Etage (IMM-003)
+  bezeichnung: string;
+  nutzung: string; // frei erweiterbare Nutzungsart
+  dinGruppe?: DinGruppe;
+  flaeche: number; // m²
+  veranstaltungsflaeche?: boolean; // IMM-006
+  zusammenhangGruppe?: string; // Räume mit gleichem Wert bilden eine zusammenhängende Fläche
+  notizen?: string;
   createdAt: string;
   updatedAt: string;
 }

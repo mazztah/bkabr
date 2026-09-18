@@ -3,6 +3,7 @@ import path from "path";
 import { pingProviderModel } from "./llm-observability";
 import * as dbSupabase from "./db-supabase";
 import {
+  Raum,
   AblageDokument,
   Abrechnung,
   Abrechnungskreis,
@@ -83,6 +84,7 @@ interface DbShape {
   vertraege: Vertrag[];
   anlagen: Anlage[];
   anlagenWartungen: AnlagenWartung[];
+  raeume: Raum[];
   zaehler: Zaehler[];
   zaehlerAblesungen: ZaehlerAblesung[];
   veranstaltungsflaechen: Veranstaltungsflaeche[];
@@ -161,6 +163,7 @@ function withDefaults(db: Partial<DbShape>): DbShape {
     vertraege: db.vertraege || [],
     anlagen: db.anlagen || [],
     anlagenWartungen: db.anlagenWartungen || [],
+    raeume: db.raeume || [],
     zaehler: db.zaehler || [],
     zaehlerAblesungen: db.zaehlerAblesungen || [],
     veranstaltungsflaechen: db.veranstaltungsflaechen || [],
@@ -393,6 +396,7 @@ export const grundbuchDb = makeCrud<GrundbuchEintrag>("grundbuchEintraege", "GB"
 export const vertraegeDb = makeCrud<Vertrag>("vertraege", "VT");
 export const anlagenDb = makeCrud<Anlage>("anlagen", "AN");
 export const anlagenWartungenDb = makeCrud<AnlagenWartung>("anlagenWartungen", "AW");
+export const raeumeDb = makeCrud<Raum>("raeume", "RM");
 export const zaehlerDb = makeCrud<Zaehler>("zaehler", "ZA");
 export const zaehlerAblesungenDb = makeCrud<ZaehlerAblesung>("zaehlerAblesungen", "ZL");
 export const veranstaltungsflaechenDb = makeCrud<Veranstaltungsflaeche>("veranstaltungsflaechen", "VF");
