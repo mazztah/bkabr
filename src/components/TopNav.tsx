@@ -24,7 +24,7 @@ export default function TopNav() {
             className={cn(
               "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
               active
-                ? "bg-primary text-primary-foreground"
+                ? "bg-primary text-primary-foreground shadow-[0_6px_18px_-6px_var(--glow-hellblau)]"
                 : "text-muted-foreground hover:bg-muted hover:text-foreground"
             )}
           >

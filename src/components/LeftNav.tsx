@@ -348,7 +348,7 @@ export default function LeftNav() {
           <button
             onClick={goHome}
             title="Startseite – cleane Arbeitsoberfläche"
-            className="interactive flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[var(--primary)] to-[var(--brand-accent)] text-white shadow-sm glow-ring-primary"
+            className="interactive icon-glow-pulse flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[var(--primary)] to-[var(--brand-accent)] text-white shadow-sm glow-ring-primary"
           >
             <Home className="h-[18px] w-[18px]" strokeWidth={2.25} />
           </button>
@@ -358,7 +358,7 @@ export default function LeftNav() {
               !expanded && "lg:pointer-events-none lg:opacity-0"
             )}
           >
-            <p className="truncate text-sm font-bold gradient-text">BetriebsKosten-KI</p>
+            <p className="truncate text-sm font-bold gradient-text-animated">BetriebsKosten-KI</p>
             <p className="truncate text-[10px] text-muted-foreground">Hausverwaltung</p>
           </div>
           <button
@@ -427,7 +427,7 @@ export default function LeftNav() {
                     className={cn(
                       "interactive mx-auto flex h-10 w-10 items-center justify-center rounded-xl transition-colors",
                       active
-                        ? "bg-primary text-primary-foreground shadow-sm"
+                        ? "bg-primary text-primary-foreground shadow-[0_6px_18px_-6px_var(--glow-hellblau)]"
                         : "text-muted-foreground hover:bg-muted hover:text-foreground"
                     )}
                   >
@@ -466,7 +466,7 @@ export default function LeftNav() {
                               className={cn(
                                 "interactive flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm",
                                 active
-                                  ? "bg-primary text-primary-foreground font-medium"
+                                  ? "bg-primary text-primary-foreground font-medium shadow-[0_6px_16px_-6px_var(--glow-hellblau)]"
                                   : "text-muted-foreground hover:bg-muted hover:text-foreground"
                               )}
                             >

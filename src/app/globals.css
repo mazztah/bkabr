@@ -738,13 +738,50 @@ button:focus-visible {
   animation: fadein 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* Auth-Shell: Login-/Auth-Seiten mit sanft driftendem, hellblau-cyanem
+   Aurora-Hintergrund – dient als "Titelbild"-Ersatz auf dem ersten Screen,
+   den Nutzer:innen sehen. */
+.auth-shell {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+.auth-shell::before,
+.auth-shell::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  border-radius: 9999px;
+  filter: blur(60px);
+  pointer-events: none;
+}
+.auth-shell::before {
+  top: -15%;
+  left: -10%;
+  width: 55%;
+  height: 55%;
+  background: radial-gradient(closest-side, var(--glow-hellblau) 0%, transparent 70%);
+  opacity: 0.55;
+  animation: aurora-drift 20s ease-in-out infinite;
+}
+.auth-shell::after {
+  bottom: -20%;
+  right: -10%;
+  width: 50%;
+  height: 50%;
+  background: radial-gradient(closest-side, var(--glow-accent) 0%, transparent 70%);
+  opacity: 0.45;
+  animation: aurora-drift 26s ease-in-out infinite reverse;
+}
 @media (prefers-reduced-motion: reduce) {
   .gradient-text-animated,
   .hero-panel::before,
   .hero-panel::after,
   .icon-glow-pulse,
   .fade-in-up,
-  .shadow-hellblau {
+  .shadow-hellblau,
+  .auth-shell::before,
+  .auth-shell::after {
     animation: none !important;
     transition: none !important;
   }
