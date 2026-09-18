@@ -384,6 +384,13 @@ export interface Flurstueck {
   flaecheQm?: number;
   grundbuchblatt?: string;
   grundbuchamt?: string;
+  /** Freitext-Lagebeschreibung des Flurstücks (Pflichtenheft §7 „1. Flurstück“). */
+  lage?: string;
+  /**
+   * Freigabe der Grundstücksfläche für Kurzzeitvermietung/Veranstaltungen
+   * (LIE-010). undefined/false = gesperrt (Default), true = freigegeben.
+   */
+  veranstaltungsfreigabe?: boolean;
   notizen?: string;
   anhaenge?: Anhang[];
   createdAt: string;

@@ -10,9 +10,11 @@ export async function GET(req: NextRequest) {
   if (auth instanceof NextResponse) return auth;
 
   const liegenschaftId = req.nextUrl.searchParams.get("liegenschaftId") || undefined;
+  const flurstueckId = req.nextUrl.searchParams.get("flurstueckId") || undefined;
   const art = req.nextUrl.searchParams.get("art") || undefined;
   const filter: Partial<Vertrag> = {};
   if (liegenschaftId) filter.liegenschaftId = liegenschaftId;
+  if (flurstueckId) filter.flurstueckId = flurstueckId;
   if (art) filter.art = art as Vertrag["art"];
   const vertraege = await vertraegeDb.list(Object.keys(filter).length ? filter : undefined);
   return NextResponse.json({
