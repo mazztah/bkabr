@@ -48,6 +48,11 @@ export default function AblagePage() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bestaetigungOffen, setBestaetigungOffen] = useState(false);
   const [detailsOffen, setDetailsOffen] = useState<AblageDokument | null>(null);
+  // Separater Busy-State (statt busyId mitzunutzen), weil dieselbe Zeile
+  // theoretisch mehrere Aktionen anbietet (Löschen, Details, Investor
+  // anlegen) — busyId würde sonst den Löschen-Button fälschlich mitsperren.
+  const [investorBusyId, setInvestorBusyId] = useState<string | null>(null);
+  const [investorFehler, setInvestorFehler] = useState<string | null>(null);
 
   const laden = async () => {
     setLoading(true);
@@ -91,6 +96,29 @@ export default function AblagePage() {
       }
     } finally {
       setBulkBusy(false);
+    }
+  };
+
+  // Übernimmt eine Ablage-Datei als neuen "Vorschlag (Freigabe offen)" in
+  // die Investorenliste (/investoren, Status "vorschlag") — die finale
+  // Freigabe passiert dort mit dem bestehenden "✓ Freigeben"-Button. Die
+  // Datei verschwindet hier sofort aus der Ablage, sobald sie in der
+  // Investorenliste gelandet ist.
+  const alsInvestorAnlegen = async (id: string, dateiName: string) => {
+    setInvestorFehler(null);
+    setInvestorBusyId(id);
+    try {
+      const res = await fetch(`/api/ablage/${id}/investor-vorschlag`, { method: "POST" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Anlegen als Investor fehlgeschlagen.");
+      setDokumente((prev) => prev.filter((d) => d.id !== id));
+      if (detailsOffen?.id === id) setDetailsOffen(null);
+    } catch (e) {
+      setInvestorFehler(
+        `„${dateiName}" konnte nicht als Investor angelegt werden: ${e instanceof Error ? e.message : String(e)}`
+      );
+    } finally {
+      setInvestorBusyId(null);
     }
   };
 
@@ -153,6 +181,12 @@ export default function AblagePage() {
         </div>
       )}
 
+      {investorFehler && (
+        <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          ⚠️ {investorFehler}
+        </div>
+      )}
+
       <div className="mb-6 grid gap-2">
         {loading ? (
           <p className="text-sm text-muted-foreground">Lade …</p>
@@ -194,6 +228,14 @@ export default function AblagePage() {
                 📄 Details
               </button>
               <button
+                onClick={() => alsInvestorAnlegen(d.id, d.dateiName)}
+                disabled={investorBusyId === d.id}
+                title="Als Investoren-Vorschlag in die Investorenliste übernehmen (Datei wird danach aus der Ablage entfernt)"
+                className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:border-primary hover:text-primary disabled:opacity-50"
+              >
+                {investorBusyId === d.id ? "…" : "🏦 Als Investor freigeben"}
+              </button>
+              <button
                 onClick={() => einzelnLoeschen(d.id)}
                 disabled={busyId === d.id}
                 className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:border-destructive hover:text-destructive disabled:opacity-50"
@@ -210,6 +252,9 @@ export default function AblagePage() {
           dokument={detailsOffen}
           onClose={() => setDetailsOffen(null)}
           onChanged={laden}
+          onAlsInvestorAnlegen={alsInvestorAnlegen}
+          investorBusy={investorBusyId === detailsOffen.id}
+          investorFehler={investorFehler}
         />
       )}
 
@@ -226,10 +271,16 @@ function DokumentDetails({
   dokument,
   onClose,
   onChanged,
+  onAlsInvestorAnlegen,
+  investorBusy,
+  investorFehler,
 }: {
   dokument: AblageDokument;
   onClose: () => void;
   onChanged: () => void;
+  onAlsInvestorAnlegen: (id: string, dateiName: string) => void;
+  investorBusy: boolean;
+  investorFehler: string | null;
 }) {
   const [tab, setTab] = useState<"metadaten" | "inhalt" | "version" | "historie">("metadaten");
   const [metaKey, setMetaKey] = useState("");
@@ -279,6 +330,20 @@ function DokumentDetails({
             </button>
           ))}
         </div>
+
+        <button
+          onClick={() => onAlsInvestorAnlegen(dokument.id, dokument.dateiName)}
+          disabled={investorBusy}
+          title="Als Investoren-Vorschlag in die Investorenliste übernehmen (Datei wird danach aus der Ablage entfernt)"
+          className="w-full rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs font-medium text-primary hover:bg-primary/10 disabled:opacity-50"
+        >
+          {investorBusy ? "Wird angelegt …" : "🏦 Als Investor freigeben"}
+        </button>
+        {investorFehler && (
+          <div className="rounded-md bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--destructive)]">
+            {investorFehler}
+          </div>
+        )}
 
         {fehler && (
           <div className="rounded-md bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--destructive)]">{fehler}</div>

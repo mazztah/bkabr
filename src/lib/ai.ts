@@ -1543,6 +1543,87 @@ export async function enrichInvestorStammdaten(
  * Anschreiben an einen Investor: Vorstellung von Person/Philosophie/App,
  * Offenheit für Zusammenarbeit, Kaufangebote oder Stellenangebote.
  */
+/**
+ * Extrahiert aus dem OCR-/PDF-Text eines Ablage-Dokuments einen ersten
+ * Investoren-Stammdaten-Vorschlag (für den "🏦 Investor anlegen"-Button in
+ * der Ablage — siehe /api/ablage/[id]/investor-vorschlag).
+ *
+ * Bewusst NUR aus dem übergebenen Dokumenttext extrahiert, KEINE Websuche
+ * (anders als enrichInvestorStammdaten): der Nutzer hat hier bereits eine
+ * konkrete Datei vor sich (z.B. eine Firmenpräsentation, ein Anschreiben
+ * eines Investors, ein Kurzprofil) und möchte daraus schnell einen
+ * "vorschlag"-Investor anlegen, keine Recherche starten. Fehlt der Text oder
+ * schlägt die Extraktion fehl, liefert die Funktion einen minimalen
+ * Fallback (Dateiname als Firma) statt zu werfen — der Button darf nie an
+ * einer leeren/schlecht lesbaren Datei scheitern, der Nutzer ergänzt die
+ * fehlenden Felder danach manuell im Investor-Datensatz.
+ */
+export async function extractInvestorVorschlagAusDokument(
+  dateiName: string,
+  dokumentText: string
+): Promise<Partial<Investor>> {
+  const dateiNameOhneEndung = dateiName.replace(/\.[^./\\]+$/, "").trim() || dateiName;
+  const fallback: Partial<Investor> = { firma: dateiNameOhneEndung, land: "Unbekannt" };
+
+  const text = (dokumentText || "").trim();
+  if (!text) return fallback;
+
+  try {
+    const completion = await createChatCompletion(
+      {
+        max_completion_tokens: 700,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              "Du liest ein aus der Ablage stammendes Dokument (z.B. Firmenpräsentation, Anschreiben, " +
+              "Kurzprofil) einer deutschen Immobilien-/PropTech-App und extrahierst daraus Stammdaten für " +
+              "einen NEUEN Investoren-Datensatz (Status: Vorschlag, wartet auf manuelle Freigabe). " +
+              "Erfinde KEINE Fakten, die nicht im Text stehen – fehlt ein Feld, lasse es im JSON weg " +
+              "(nicht raten, nicht 'unbekannt' setzen). Antworte AUSSCHLIESSLICH mit einem JSON-Objekt:\n" +
+              '{"firma":"Pflichtfeld – Firmen-/Fondsname; falls nicht sicher erkennbar, kürzester passender ' +
+              'Name aus dem Text", "land":"...", "ansprechpartnerName":"...", "ansprechpartnerRolle":"...", ' +
+              '"email":"...", "telefon":"...", "webseite":"...", "kurzprofil":"max. 3 Sätze"}',
+          },
+          { role: "user", content: `Dateiname: ${dateiName}\n\nDokumenttext (ggf. gekürzt):\n${text.slice(0, 6000)}` },
+        ],
+      },
+      // Teilergebnis-Kaskade: ohne "firma" ist der Vorschlag wertlos, dann
+      // läuft die Fallback-Kette weiter statt eine leere Antwort zu akzeptieren.
+      { expect: { json: true, requiredKeys: ["firma"] } }
+    );
+    const parsed = extractJson(completion.choices[0]?.message?.content || "") as {
+      firma?: string;
+      land?: string;
+      ansprechpartnerName?: string;
+      ansprechpartnerRolle?: string;
+      email?: string;
+      telefon?: string;
+      webseite?: string;
+      kurzprofil?: string;
+    };
+    if (!parsed?.firma) return fallback;
+    return {
+      firma: parsed.firma,
+      land: parsed.land || "Unbekannt",
+      ansprechpartnerName: parsed.ansprechpartnerName || undefined,
+      ansprechpartnerRolle: parsed.ansprechpartnerRolle || undefined,
+      email: parsed.email || undefined,
+      telefon: parsed.telefon || undefined,
+      webseite: parsed.webseite || undefined,
+      kurzprofil: parsed.kurzprofil || undefined,
+    };
+  } catch (err) {
+    console.warn(
+      `[investor-vorschlag] KI-Extraktion für „${dateiName}" fehlgeschlagen, nutze Dateiname als Firma:`,
+      err
+    );
+    return fallback;
+  }
+}
+
 export async function generateInvestorAnschreiben(
   investor: Pick<Investor, "firma" | "ansprechpartnerName" | "land" | "sektoren" | "kurzprofil" | "sprache">,
   kontext: { absenderName?: string; philosophie?: string; anlass?: string } = {}
