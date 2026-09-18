@@ -22,6 +22,7 @@ export default function ProgressRing({ percent, size = 32 }: { percent: number; 
           strokeDashoffset={offset}
           strokeLinecap="round"
           className="transition-all duration-500 ease-out"
+          style={{ filter: `drop-shadow(0 0 3px ${color})` }}
         />
       </svg>
       <span className="absolute text-[9px] font-bold" style={{ color }}>

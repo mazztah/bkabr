@@ -28,7 +28,7 @@ export default function PreviewModal({
 
   return (
     <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-card rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] flex flex-col">
+      <div className="glass-panel shadow-hellblau rounded-xl max-w-3xl w-full max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between p-4 border-b border-border no-print">
           <h2 className="font-semibold">Vorschau – Druckbar</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl leading-none">

@@ -46,7 +46,7 @@ export default function Sparkline({
   const strokeColor = color || (trendUp ? "var(--success)" : "var(--destructive)");
 
   return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="overflow-visible">
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="fade-in-up overflow-visible">
       {fill && <path d={areaPath} fill={strokeColor} opacity={0.12} />}
       <path d={path} fill="none" stroke={strokeColor} strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" />
       {points.length > 0 && (

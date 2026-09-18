@@ -29,7 +29,7 @@ export default function CategoryBars({
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
             <div
-              className="h-full rounded-full"
+              className="mc-bar-fill h-full rounded-full"
               style={{ width: `${Math.max(2, (betrag / max) * 100)}%`, backgroundColor: color }}
             />
           </div>
