@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, X } from "lucide-react";
+import { Search, X, Clock } from "lucide-react";
+import { addRecentlyViewed, getRecentlyViewed, type RecentItem } from "@/lib/recently-viewed";
 
 interface Treffer {
   typ: string;
@@ -18,6 +19,7 @@ export default function GlobalSearch() {
   const [query, setQuery] = useState("");
   const [treffer, setTreffer] = useState<Treffer[]>([]);
   const [loading, setLoading] = useState(false);
+  const [zuletzt, setZuletzt] = useState<RecentItem[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Cmd/Ctrl+K öffnet die Suche von überall aus — Standard-Shortcut für
@@ -35,7 +37,12 @@ export default function GlobalSearch() {
   }, []);
 
   useEffect(() => {
-    if (offen) setTimeout(() => inputRef.current?.focus(), 50);
+    if (offen) {
+      setTimeout(() => inputRef.current?.focus(), 50);
+      // UX-002: bei jedem Öffnen aktuellen Stand der zuletzt verwendeten
+      // Datensätze laden (kann sich seit dem letzten Öffnen geändert haben).
+      setZuletzt(getRecentlyViewed());
+    }
   }, [offen]);
 
   useEffect(() => {
@@ -54,6 +61,7 @@ export default function GlobalSearch() {
   }, [query]);
 
   function gehZu(t: Treffer) {
+    addRecentlyViewed(t);
     setOffen(false);
     setQuery("");
     router.push(t.link);
@@ -82,7 +90,7 @@ export default function GlobalSearch() {
       onClick={() => setOffen(false)}
     >
       <div
-        className="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-card shadow-xl"
+        className="glass-panel shadow-hellblau w-full max-w-lg overflow-hidden rounded-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
@@ -100,6 +108,31 @@ export default function GlobalSearch() {
         </div>
 
         <div className="max-h-[50vh] overflow-y-auto p-2">
+          {query.trim().length < 2 && (
+            <>
+              {zuletzt.length === 0 ? (
+                <p className="px-2 py-3 text-xs text-muted-foreground">
+                  Suche starten oder zuletzt verwendete Datensätze erscheinen hier.
+                </p>
+              ) : (
+                <div className="mb-1">
+                  <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    <Clock size={11} /> Zuletzt verwendet
+                  </div>
+                  {zuletzt.map((t) => (
+                    <button
+                      key={`recent-${t.typ}-${t.id}`}
+                      onClick={() => gehZu(t)}
+                      className="flex w-full flex-col items-start rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
+                    >
+                      <span className="truncate font-medium">{t.titel}</span>
+                      {t.untertitel && <span className="truncate text-xs text-muted-foreground">{t.untertitel}</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
           {loading && <p className="px-2 py-3 text-xs text-muted-foreground">Suche …</p>}
           {!loading && query.trim().length >= 2 && treffer.length === 0 && (
             <p className="px-2 py-3 text-xs text-muted-foreground">Keine Treffer für &bdquo;{query}&ldquo;.</p>

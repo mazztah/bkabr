@@ -140,7 +140,7 @@ export const ANFORDERUNGEN: Anforderung[] = [
   ]),
   ...rows(M.UX, [
     ["UX-001", "Globale Suche über alle Objektarten", T, undefined, "Räume und Tickets noch nicht indexiert"],
-    ["UX-002", "Schnellzugriff / zuletzt verwendete Datensätze", O],
+    ["UX-002", "Schnellzugriff / zuletzt verwendete Datensätze", T, undefined, "Neu: 'Zuletzt verwendet' in der Cmd/Ctrl+K-Suche (localStorage, pro Browser); Tracking bislang nur bei Suchauswahl, nicht bei Direktnavigation"],
     ["UX-003", "Dashboards (Tickets, Verträge, Wartungen, Veranstaltungen, Fristen)", T, "/dashboard"],
     ["UX-004", "Auswertungen nach Gebäude, Fläche, Nutzung, Kostenstelle, Partner, Zeitraum", T, "/auswertung"],
     ["UX-005", "Listen filter-, sortier- und exportierbar", T, undefined, "Export vorhanden; Sortierung uneinheitlich"],
