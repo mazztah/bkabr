@@ -25,7 +25,7 @@ export default function GlassDropzone({
       hover={false}
       className={cn(
         "border-2 border-dashed border-border transition-colors",
-        isDragging && "border-primary bg-primary/5 scale-[1.01]"
+        isDragging && "border-primary bg-primary/5 scale-[1.01] shadow-[0_20px_45px_-16px_var(--glow-hellblau)]"
       )}
       onClick={() => document.getElementById("gdz-file-input")?.click()}
     >

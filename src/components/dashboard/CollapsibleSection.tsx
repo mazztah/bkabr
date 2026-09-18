@@ -22,7 +22,7 @@ export default function CollapsibleSection({
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <div className="mb-3 overflow-hidden rounded-xl border border-border bg-card">
+    <div className="shadow-hellblau mb-3 overflow-hidden rounded-xl border border-border bg-card">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50"

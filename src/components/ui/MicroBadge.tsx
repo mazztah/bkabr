@@ -9,8 +9,8 @@ export default function MicroBadge({
   color?: "primary" | "accent" | "success";
 }) {
   const colors: Record<string, string> = {
-    primary: "bg-primary/10 text-primary",
-    accent: "bg-[var(--brand-accent)]/10 text-[var(--brand-accent)]",
+    primary: "bg-primary/10 text-primary hover:shadow-[0_4px_14px_-6px_var(--glow-hellblau)]",
+    accent: "bg-[var(--brand-accent)]/10 text-[var(--brand-accent)] hover:shadow-[0_4px_14px_-6px_var(--glow-hellblau)]",
     success: "bg-[var(--success-bg)] text-[var(--success)]",
   };
 

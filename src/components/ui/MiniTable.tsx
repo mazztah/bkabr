@@ -2,7 +2,7 @@ import { ReactNode } from "react";
 
 export default function MiniTable({ headers, children }: { headers: string[]; children: ReactNode }) {
   return (
-    <table className="w-full text-sm">
+    <table className="mini-table w-full text-sm">
       <thead>
         <tr className="border-b border-border">
           {headers.map((h, i) => (

@@ -586,6 +586,15 @@ button:focus-visible {
 .data-table tbody tr:hover { background: color-mix(in srgb, var(--primary) 5%, transparent); }
 .data-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 0.875rem; background: var(--card); }
 
+/* Feine Hover-Zeile auch für einfache Tabellen (MiniTable), die nicht die
+   .data-table-Klasse nutzen. */
+.mini-table tbody tr {
+  transition: background-color 0.15s ease;
+}
+.mini-table tbody tr:hover {
+  background: color-mix(in srgb, var(--primary) 5%, transparent);
+}
+
 .skeleton {
   border-radius: 0.5rem;
   background: linear-gradient(90deg, var(--muted) 25%, color-mix(in srgb, var(--muted) 60%, var(--card)) 50%, var(--muted) 75%);
