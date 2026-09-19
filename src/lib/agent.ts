@@ -69,6 +69,7 @@ import {
   renderBrief,
 } from "./schriftverkehr";
 import { createChatCompletion } from "./groq-client";
+import { compactToolContent } from "./llm-message-hygiene";
 import { deleteStoredFile, readStoredFile, storeFile } from "./storage";
 import { computeNextRun, validateRecurrence } from "./schedule";
 import { webSearch } from "./websearch";
@@ -4680,7 +4681,11 @@ export async function runAgent(params: {
           // name!" fehl und der Agent fällt unbemerkt auf schwächere Fallback-Modelle
           // zurück (sichtbar in den Logs als wiederholte 400er auf genau diesen Modellen).
           name: call.function.name,
-          content: JSON.stringify(result),
+          // Große Ergebnisse (z.B. Listen über alle Wohnungen/Buchungen) auf
+          // ~8000 Zeichen begrenzen — bleibt gültiges JSON mit "gekuerzt"-
+          // Hinweis. Ohne Deckel sprengt ein einziges Tool-Ergebnis das
+          // Token-Budget der Folgeschritte (413/429 auf allen Stufen).
+          content: compactToolContent(JSON.stringify(result) ?? "{}", 8000),
         } as Groq.Chat.Completions.ChatCompletionMessageParam);
       }
     }

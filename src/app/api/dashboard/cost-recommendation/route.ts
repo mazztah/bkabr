@@ -1,18 +1,50 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getObservabilityOverview } from "@/lib/db";
-import { createChatCompletion } from "@/lib/groq-client";
+import { getChainStats, getObservabilityOverview } from "@/lib/db";
 import { KNOWN_FREE_TIER_LIMITS } from "@/lib/llm-observability";
+import { KLASSEN_TEXT, type LlmErrorClass } from "@/lib/llm-error-classifier";
 
 /**
  * GET /api/dashboard/cost-recommendation?modelId=...
  *
- * Nimmt die server-seitig bereits vorliegende Call-Statistik eines einzelnen
- * Modells (aus dem Modellkatalog der Observability-Übersicht – NICHT vom
- * Client übernommen, damit hier nichts gefälscht werden kann) und lässt die
- * normale LLM-Fallback-Kette eine kurze, konkrete Empfehlung formulieren,
- * wie sich dessen Fehlerquote senken ließe. Wird im Dashboard im
- * "Cost & Rate-Limits"-Tab per Button je Modell angezeigt.
+ * Liefert eine DETERMINISTISCHE Diagnose aus den tatsächlich protokollierten
+ * Fehlerklassen des Modells (siehe llm-error-classifier.ts / recordModelCallStats).
+ *
+ * Vorher wurde die Empfehlung von der LLM-Fallback-Kette selbst formuliert –
+ * nur aus Zählern, ohne Fehlerursache. Ergebnis waren generische Ratschläge
+ * ("Backoff, Caching, Queue"), die im Code längst umgesetzt sind, und jede
+ * Empfehlung erzeugte selbst einen weiteren Kettenaufruf (und damit weitere
+ * Fehlversuche in genau der Statistik, die sie erklären sollte).
  */
+
+/** Konkrete Maßnahme je Fehlerklasse – bezogen auf das, was das System bereits tut. */
+const MASSNAHME: Record<LlmErrorClass, (ctx: { tpm?: number }) => string> = {
+  rate_limit_minute: ({ tpm }) =>
+    `Minuten-Limit${tpm ? ` (${tpm.toLocaleString("de-DE")} TPM)` : ""}: Die Kette weicht automatisch aus und sperrt das Modell für die vom Provider genannte Wartezeit. Dauerhaft entlasten: parallele Analysen/Uploads zeitlich entzerren und große Prompts kürzen – ein Limit dieser Größe trifft vor allem mehrere gleichzeitige Anfragen.`,
+  rate_limit_day: () =>
+    "Tageslimit (TPD) erschöpft: Das Modell fällt bis zum Reset aus. Nur ein anderer Provider/Tarif hilft; die Kette überspringt es automatisch.",
+  quota_exhausted: () =>
+    "Free-Tier/Guthaben beim Provider aufgebraucht (402): Kein Codeproblem. Konto/Kontingent prüfen – oder die Stufe per ENV (…_TEXT_MODELS) aus der Kette nehmen, damit sie nicht alle 30 Min. erneut probiert wird.",
+  auth: () =>
+    "Zugriff verweigert (401/403): API-Key bzw. Plan-Freigabe beim Provider prüfen (z. B. Workers-Free-Plan). Das Modell wird 6 h ausgesetzt.",
+  too_large: () =>
+    "Anfrage überstieg das Limit: Kürzung greift bereits (Tool-Ergebnisse, älterer Verlauf). Anfragen ab der abgelehnten Größe werden 10 Min. nicht mehr an dieses Modell geschickt, kleinere laufen weiter. Bei Häufung: System-Prompt/Tool-Katalog verkleinern.",
+  model_unavailable: () =>
+    "Modell beim Provider nicht (mehr) vorhanden (404/abgekündigt): Modell-ID aus der ENV-Liste entfernen bzw. durch den Nachfolger ersetzen.",
+  unsupported_feature: () =>
+    "Modell unterstützt Tools/JSON-Mode nicht: wird für strukturierte Aufrufe 12 h ausgesetzt, bleibt für Freitext nutzbar. Kein Handlungsbedarf, solange andere Stufen strukturierte Aufrufe übernehmen.",
+  malformed_output: () =>
+    "Modell liefert ungültiges JSON/fehlerhafte Tool-Calls: Kette läuft weiter, nach Serien wird das Modell im strukturierten Modus kurz ausgesetzt. Modell dauerhaft nachrangig einsortieren (STRUCTURED_OUTPUT_UNSAFE_MODELS).",
+  bad_request: () =>
+    "Anfrage abgelehnt (400): meist Nachrichtenstruktur (Tool-Paare, Rollenfolge, Tool-IDs). Diese wird vor jedem Versuch modellspezifisch bereinigt; bleibt der Fehler bestehen, die letzte Fehlermeldung unten prüfen.",
+  timeout: () =>
+    "Timeouts/Netzwerkabbrüche: Modell zu langsam oder überlastet. Nach zwei Fehlern in Folge wird es exponentiell länger ausgesetzt (bis 10 Min.).",
+  server_error: () =>
+    "Serverfehler beim Provider (5xx): vorübergehend; Breaker setzt das Modell nach Wiederholung automatisch aus.",
+  empty_or_partial: () =>
+    "Modell antwortet leer oder unvollständig: Kette läuft zur nächsten Stufe; bei Serien wird das Modell kurz ausgesetzt.",
+  unknown: () => "Sonstige Fehler: siehe letzte Fehlermeldung unten.",
+};
+
 export async function GET(req: NextRequest) {
   try {
     const modelId = req.nextUrl.searchParams.get("modelId");
@@ -28,50 +60,61 @@ export async function GET(req: NextRequest) {
 
     const h = model.health;
     const failedCalls = Math.max(0, h.totalCalls - h.successCalls);
-    const fehlerQuoteProzent = h.totalCalls > 0 ? Math.round((failedCalls / h.totalCalls) * 100) : 0;
-
     if (h.totalCalls === 0) {
       return NextResponse.json({
-        recommendation: "Noch keine Aufrufe für dieses Modell protokolliert – noch keine Datenbasis für eine Empfehlung.",
+        recommendation: "Noch keine Aufrufe für dieses Modell protokolliert – noch keine Datenbasis für eine Diagnose.",
       });
     }
 
+    const zeilen: string[] = [];
+    const quote = Math.round((failedCalls / h.totalCalls) * 100);
     const limits = KNOWN_FREE_TIER_LIMITS[modelId];
-    const statistikText = [
-      `Modell: ${model.label} (${model.provider}, Fallback-Stufe ${model.fallbackPriority})`,
-      `Aufrufe gesamt: ${h.totalCalls}`,
-      `Erfolgreich: ${h.successCalls}`,
-      `Fehlgeschlagen: ${failedCalls}`,
-      `Fehlerquote: ${fehlerQuoteProzent}%`,
-      `Davon Rate-Limits (429/413): ${h.rateLimitCount}`,
-      `Free-Tier-Überschreitungen (402): ${h.freeTierExceededCount}`,
-      `Bekanntes Provider-Limit: ${limits?.tpm ? `${limits.tpm} TPM` : "unbekannt"}${limits?.tpd ? `, ${limits.tpd} TPD` : ""}`,
-    ].join("\n");
 
-    const completion = await createChatCompletion({
-      messages: [
-        {
-          role: "system",
-          content:
-            "Du bist ein knapper technischer Berater für ein LLM-Fallback-System (Betriebskosten-Buchhaltungs-App). " +
-            "Du bekommst die Call-Statistik eines einzelnen Modells und gibst NUR eine kurze, konkrete, umsetzbare " +
-            "Empfehlung auf Deutsch, wie sich dessen Fehlerquote senken lässt. Maximal 4 kurze Sätze oder Stichpunkte. " +
-            "Keine Einleitung, keine Höflichkeitsfloskeln, direkt zur Sache. Wenn die Fehlerquote niedrig/unauffällig " +
-            "ist, sag das kurz und ehrlich statt eine Empfehlung zu erfinden.",
-        },
-        {
-          role: "user",
-          content: `Statistik:\n${statistikText}\n\nWas empfiehlst du, um die Fehlerquote zu senken?`,
-        },
-      ],
-      temperature: 0.3,
-      max_completion_tokens: 300,
-    });
+    // 1) Ketten-Sicht: was Nutzer tatsächlich erleben
+    const kette = await getChainStats();
+    if (kette && kette.anfragen > 0) {
+      const ok = Math.round((kette.erfolgreich / kette.anfragen) * 100);
+      const erste = Math.round((kette.ersteStufe / kette.anfragen) * 100);
+      zeilen.push(
+        `Gesamtkette: ${kette.erfolgreich}/${kette.anfragen} Anfragen erfolgreich (${ok} %), ${erste} % schon auf der ersten Stufe. Die Modell-Fehlerquote unten zählt JEDEN Zwischenschritt einer Kette – ein Fehlversuch mit späterem Erfolg ist kein Nutzerfehler.`
+      );
+    }
 
-    const text = completion.choices?.[0]?.message?.content?.trim();
-    return NextResponse.json({
-      recommendation: text || "Keine Antwort von der LLM-Kette erhalten.",
-    });
+    // 2) Diagnose dieses Modells
+    const klassen = Object.entries(h.errorClasses || {})
+      .filter(([, n]) => n > 0)
+      .sort((a, b) => b[1] - a[1]) as [LlmErrorClass, number][];
+
+    if (failedCalls === 0) {
+      zeilen.push("Keine Fehlschläge – nichts zu tun.");
+    } else if (klassen.length > 0) {
+      const summe = klassen.reduce((s, [, n]) => s + n, 0);
+      zeilen.push(
+        `Fehlerquote ${quote} % (${failedCalls} von ${h.totalCalls}). Ursachen seit Erfassung: ` +
+          klassen
+            .slice(0, 4)
+            .map(([k, n]) => `${KLASSEN_TEXT[k] || k} ${Math.round((n / summe) * 100)} %`)
+            .join(", ") +
+          "."
+      );
+      for (const [k] of klassen.slice(0, 3)) {
+        zeilen.push(`- ${(MASSNAHME[k] || MASSNAHME.unknown)({ tpm: limits?.tpm })}`);
+      }
+    } else {
+      // Ältere Zähler ohne Klasse: nur Rate-Limit-/402-Anteile sind bekannt.
+      const unklar = Math.max(0, failedCalls - h.rateLimitCount - h.freeTierExceededCount);
+      zeilen.push(
+        `Fehlerquote ${quote} % (${failedCalls} von ${h.totalCalls}): davon ${h.rateLimitCount} Rate-Limits, ${h.freeTierExceededCount} × 402, ${unklar} ohne erfasste Ursache. Fehlerklassen werden erst seit diesem Update mitgeschrieben – nach einigen Aufrufen erscheint hier die genaue Aufschlüsselung.`
+      );
+      if (h.freeTierExceededCount > 0) zeilen.push(`- ${MASSNAHME.quota_exhausted({})}`);
+      if (h.rateLimitCount > 0) zeilen.push(`- ${MASSNAHME.rate_limit_minute({ tpm: limits?.tpm })}`);
+    }
+
+    if (h.lastErrorMessage) {
+      zeilen.push(`Letzter Fehler${h.lastErrorAt ? ` (${new Date(h.lastErrorAt).toLocaleString("de-DE")})` : ""}: ${h.lastErrorMessage}`);
+    }
+
+    return NextResponse.json({ recommendation: zeilen.join("\n") });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[api/dashboard/cost-recommendation]", message);

@@ -3,7 +3,7 @@ import type {
   ChatCompletion,
   ChatCompletionCreateParamsNonStreaming,
 } from "groq-sdk/resources/chat/completions";
-import { recordAiUsage, recordModelCallStats, recordRateLimitEvent } from "./db";
+import { recordAiUsage, recordChainOutcome, recordModelCallStats, recordRateLimitEvent } from "./db";
 import type { RateLimitEvent, RateLimitKategorie } from "./types";
 import { uid } from "./utils";
 import type { AiProvider } from "./types";
@@ -15,6 +15,16 @@ import {
   type Bewertung,
   type ResultExpectation,
 } from "./llm-capabilities";
+
+import {
+  classifyLlmError,
+  isModeBreakerOpen,
+  isSizeBlocked,
+  noteModeSuccess,
+  registerFailure,
+  type LlmErrorClass,
+} from "./llm-error-classifier";
+import { dropOldestUnit, sanitizeMessagesForModel, shrinkToolResults } from "./llm-message-hygiene";
 
 export type { ResultExpectation } from "./llm-capabilities";
 
@@ -519,7 +529,13 @@ function toCatalogModelId(model: string): string {
  */
 function trackModelCall(
   model: string,
-  outcome: { success: boolean; rateLimited?: boolean; freeTierExceeded?: boolean },
+  outcome: {
+    success: boolean;
+    rateLimited?: boolean;
+    freeTierExceeded?: boolean;
+    errorClass?: LlmErrorClass;
+    errorMessage?: string;
+  },
   errMessage?: string,
   fallbackInfo?: { fallbackTo: string; fallbackStufe: number; gesamteKette: number }
 ): void {
@@ -1248,7 +1264,19 @@ function applyTokenBudget(model: string, params: ChatParams): ChatParams {
   // Tool-Calls ohnehin sequenziell (ein Schritt = ein Tool), daher generell
   // deaktiviert — schadet bei Providern ohne diese Einschränkung nicht.
   const parallelToolCalls = params.tools?.length ? false : undefined;
-  const messages = [...(params.messages || [])];
+  let messages = [...(params.messages || [])];
+
+  // Erst die großen Tool-Ergebnisse älterer Schritte verkleinern (das sind bei
+  // mehrstufigen Agent-Läufen fast immer die Token-Treiber), BEVOR ganze
+  // Nachrichten verworfen werden. Verhindert, dass der Auftrag oder
+  // tool_call/tool-Paare weggekürzt werden.
+  {
+    const toolsTaxVorab = params.tools?.length ? estimateTokens(JSON.stringify(params.tools)) : 0;
+    for (const grenze of [3000, 1200, 400]) {
+      if (estimateMessagesTokens(messages) + toolsTaxVorab + (params.tools?.length ? 500 : 256) <= TPM_SAFE) break;
+      messages = shrinkToolResults(messages as any[], grenze) as typeof messages;
+    }
+  }
 
   // System + letzte User-Nachricht priorisieren; ältere Turns kürzen
   let inputTokens = estimateMessagesTokens(messages);
@@ -1278,8 +1306,12 @@ function applyTokenBudget(model: string, params: ChatParams): ChatParams {
       const trial = [...system, ...kept];
       const t = estimateMessagesTokens(trial) + toolsTax;
       if (t + MIN_COMPLETION <= TPM_SAFE) break;
-      // älteste droppen
-      kept = kept.slice(1);
+      // Älteste EINHEIT droppen (nie ein tool_call/tool-Paar zerreißen, nie den
+      // Auftrag = letzte user-Nachricht). Vorher: kept.slice(1) → verwaiste
+      // tool-Nachrichten → 400 bei JEDEM Modell der Kette.
+      const kleiner = dropOldestUnit(kept as any[]) as typeof kept;
+      if (kleiner.length === kept.length) break; // nichts mehr entfernbar
+      kept = kleiner;
     }
     // Falls immer noch zu groß: letzte User-Nachricht hart kürzen
     let trialMsgs = [...system, ...kept];
@@ -1414,6 +1446,11 @@ export async function createChatCompletion(
       (params.model.includes("llama-4-scout") || params.model.includes("qwen3.")));
 
   let models: string[];
+  // Strukturierter Aufruf (Tools/JSON-Mode)? Breaker werden pro Modus geführt:
+  // ein Modell, das bei Tools versagt, kann im Freitext trotzdem laufen.
+  const strukturiert =
+    Boolean(params.tools?.length) || params.response_format?.type === "json_object";
+  const hasToolsInRequest = Boolean(params.tools?.length);
 
   if (hasImages || isExplicitVision) {
     // Vision-Pfad: nur vision-fähige Modelle (kein Text-Fallback ohne Bilder).
@@ -1570,6 +1607,24 @@ export async function createChatCompletion(
     models = nichtGekuehlt;
   }
 
+  // Modus-Breaker (Fehlerserien: Timeouts, 5xx, dauerhaft kaputtes JSON,
+  // "nicht unterstützt", 404). Bleibt nichts übrig, wird die Liste behalten.
+  {
+    const ohneBreaker = models.filter((m) => !isModeBreakerOpen(m, strukturiert));
+    if (ohneBreaker.length > 0 && ohneBreaker.length < models.length) {
+      console.info(
+        `[llm] ${models.length - ohneBreaker.length} Modell(e) wegen Fehlerserie (Breaker, ${strukturiert ? "strukturiert" : "Freitext"}) übersprungen.`
+      );
+      models = ohneBreaker;
+    }
+  }
+
+  const chainDone = (success: boolean, versuche: number, klasse?: string) => {
+    void recordChainOutcome({ success, versuche, errorClass: klasse }).catch(() => {});
+  };
+  /** Für Vergiftungs-Erkennung: gleiche 400-Meldung bei mehreren Providern. */
+  const badRequestSignaturen = new Map<string, Set<string>>();
+
   let lastError: any;
   /**
    * Bestes bisher erreichtes Teilergebnis über ALLE Ketten hinweg. Wird nur
@@ -1580,7 +1635,28 @@ export async function createChatCompletion(
 
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
-    const budgeted = applyTokenBudget(model, params);
+    // Nachrichten VOR dem Kürzen auf dieses Zielmodell normalisieren (Tool-
+    // Paare, Rollenfolge, Tool-IDs, Text-Verlauf für Modelle ohne Tool-Kanal),
+    // danach nochmals (Kürzen kann Paare zerreißen; die Funktion ist idempotent).
+    const bereinigt = {
+      ...params,
+      messages: sanitizeMessagesForModel(model, params.messages as any[], { hasTools: hasToolsInRequest }),
+    } as ChatParams;
+    const budgetiert = applyTokenBudget(model, bereinigt);
+    const budgeted = {
+      ...budgetiert,
+      messages: sanitizeMessagesForModel(model, budgetiert.messages as any[], { hasTools: hasToolsInRequest }),
+    } as ChatParams;
+    const anfrageTokens =
+      estimateMessagesTokens(budgeted.messages) +
+      (budgeted.tools?.length ? estimateTokens(JSON.stringify(budgeted.tools)) : 0);
+
+    // 413-Gedächtnis: Anfragen ab der zuletzt abgelehnten Größe gar nicht erst
+    // an dieses Modell schicken (kleinere Anfragen dürfen weiter).
+    if (i < models.length - 1 && isSizeBlocked(model, anfrageTokens)) {
+      console.info(`[llm] ${stripProviderPrefix(model)}: Anfrage (≈${anfrageTokens} Tokens) liegt über der zuletzt abgelehnten Größe — übersprungen.`);
+      continue;
+    }
 
     // Letztes Sicherheitsnetz VOR dem eigentlichen API-Call: greift zusätzlich
     // zur Vorab-Skip-Prüfung weiter oben (die nur System+Tools ohne Verlauf
@@ -1605,7 +1681,10 @@ export async function createChatCompletion(
           `[groq] ${model}: bleibt nach Kürzung zu groß für das reale Limit (input+completion≈${finalTotal}, hard_limit≈${HARD_LIMIT_GROQ}) — übersprungen` +
             (hasMoreModels ? `, Fallback → ${stripProviderPrefix(models[i + 1])}.` : ".")
         );
-        trackModelCall(model, { success: false });
+        // Bewusst KEIN trackModelCall: es hat kein echter Aufruf stattgefunden.
+        // Diese Vorab-Überspringer wurden bisher als Fehlschlag gezählt und
+        // bliesen die Fehlerquote auf (Compound/Compound-Mini: 141 "Aufrufe",
+        // 0 Tokens, 100 % Fehler).
         lastError = new Error(
           `Prompt bleibt für ${model} zu groß (input+completion≈${finalTotal}, hard_limit≈${HARD_LIMIT_GROQ})`
         );
@@ -1709,7 +1788,20 @@ export async function createChatCompletion(
           // Teilergebnisse sind keine Fehlaufrufe im Sinne der Kostenstatistik:
           // das Modell hat geantwortet und Tokens verbraucht. Nur echte
           // Leerantworten als Misserfolg zählen.
-          trackModelCall(model, { success: bewertung.stufe === "teilweise" });
+          trackModelCall(model, {
+            success: bewertung.stufe === "teilweise",
+            ...(bewertung.stufe === "leer"
+              ? { errorClass: "empty_or_partial" as LlmErrorClass, errorMessage: bewertung.grund || "leere Antwort" }
+              : {}),
+          });
+          if (bewertung.stufe === "leer") {
+            registerFailure(
+              model,
+              strukturiert,
+              { klasse: "empty_or_partial", status: 0, message: "leere Antwort", retryAfterSec: 0, requested: 0, limit: 0 },
+              anfrageTokens
+            );
+          }
           continue;
         }
         // Letzte Stufe und immer noch kein vollständiges Ergebnis: Schleife
@@ -1732,6 +1824,8 @@ export async function createChatCompletion(
       }
       trackModelCall(model, { success: true });
       modelCooldowns.delete(model);
+      noteModeSuccess(model, strukturiert);
+      chainDone(true, i + 1);
       // AI Cost & Model Observatory (Durchgang 6): jeder erfolgreiche Aufruf
       // wird protokolliert (Tokens exakt aus completion.usage, sonst
       // geschätzt). Bewusst fire-and-forget mit eigenem try/catch — ein
@@ -1759,34 +1853,51 @@ export async function createChatCompletion(
     } catch (err: any) {
       lastError = err;
       const hasMore = i < models.length - 1;
-      // 402 = Payment required → Free-Tier-Kontingent/Guthaben aufgebraucht.
-      // 429 = klassisches Rate-Limit. 413 = "Request too large", bei Groqs
-      // Free-Tier faktisch auch ein TPM-Rate-Limit (siehe applyTokenBudget).
-      const status = Number(err?.status) || 0;
-      const errMsg = String(err?.message || err || "");
-      const freeTierExceeded = status === 402;
+      // Fehler klassifizieren (siehe llm-error-classifier.ts) statt nur auf
+      // Statuscodes zu schauen: jede Klasse hat eine eigene Reaktion.
+      const info = classifyLlmError(err);
+      const status = info.status;
+      const errMsg = info.message;
+      const freeTierExceeded = info.klasse === "quota_exhausted";
       const rateLimited =
-        !freeTierExceeded &&
-        (status === 429 || status === 413 || /rate_limit_exceeded|tokens per (minute|day)|requests per (minute|day)/i.test(errMsg));
+        info.klasse === "rate_limit_minute" || info.klasse === "rate_limit_day" || info.klasse === "too_large";
 
-      // 400 mit "nicht unterstützt"/"not supported" ist bei diesen Providern
-      // keine transiente Rate-Limit-Meldung, sondern eine strukturelle
-      // Fähigkeits-Lücke des Modells (z.B. groq/compound(-mini) unterstützt
-      // grundsätzlich kein Tool-Calling). STRUCTURED_OUTPUT_UNSAFE_MODELS
-      // filtert bekannte Fälle bereits vorher raus – dieser Cooldown ist das
-      // Sicherheitsnetz für alle anderen/zukünftigen Modelle mit demselben
-      // Fehlerbild, damit sie nicht bei JEDER Nachricht erneut ~15-20s lang
-      // garantiert erfolglos probiert werden.
-      const structurallyUnsupported =
-        status === 400 && /not supported|nicht unterstützt/i.test(errMsg);
+      // Modellweite Sperren (gelten für Freitext UND strukturierte Aufrufe):
+      //  - Rate-Limit/Quota: Wartezeit laut Provider bzw. Standardwerte
+      //  - Auth (401/403): Key/Plan-Problem → 6 h
+      if (info.klasse === "auth") {
+        setModelCooldown(model, 6 * 60 * 60);
+      } else if (info.klasse === "quota_exhausted" || info.klasse === "rate_limit_minute" || info.klasse === "rate_limit_day") {
+        setModelCooldown(model, cooldownSecondsFor(err, status || 429));
+      }
+      // Alles andere (413, 404, "nicht unterstützt", Timeouts, 5xx, kaputtes JSON):
+      // größen- bzw. MODUS-bezogen — 413 sperrt nur große Anfragen, "nicht
+      // unterstützt"/kaputtes JSON nur den strukturierten Modus.
+      const sperre = registerFailure(model, strukturiert, info, anfrageTokens);
+      if (sperre.sekunden > 0) {
+        console.info(
+          `[llm] ${stripProviderPrefix(model)}: ${info.klasse} → ${
+            sperre.scope === "groesse" ? "große Anfragen" : strukturiert ? "strukturierte Aufrufe" : "Freitext-Aufrufe"
+          } für ${Math.round(sperre.sekunden / 60) || "<1"} min gesperrt.`
+        );
+      }
 
-      // Cooldown setzen, damit nachfolgende Nachrichten dieses Modell nicht
-      // sofort wieder anfragen und erneut abgelehnt bekommen (siehe
-      // setModelCooldown-Dokumentation oben).
-      if (status === 402 || status === 403 || status === 413 || status === 429) {
-        setModelCooldown(model, cooldownSecondsFor(err, status));
-      } else if (structurallyUnsupported) {
-        setModelCooldown(model, 12 * 60 * 60); // strukturell, ändert sich nicht kurzfristig – 12h Pause
+      // Vergiftete Anfrage erkennen: dieselbe 400-Meldung bei ≥3 verschiedenen
+      // Anbietern heißt "die ANFRAGE ist kaputt", nicht "das Modell". Weitere
+      // Stufen zu probieren kostet nur Zeit und verfälscht die Statistik.
+      if (info.klasse === "bad_request") {
+        const signatur = errMsg.toLowerCase().replace(/[\d"'`]+/g, "").slice(0, 70);
+        const anbieter = badRequestSignaturen.get(signatur) || new Set<string>();
+        anbieter.add(providerNameOf(model));
+        badRequestSignaturen.set(signatur, anbieter);
+        if (anbieter.size >= 3) {
+          console.error(
+            `[llm] Anfrage bei ${anbieter.size} Anbietern mit identischer 400-Meldung abgelehnt — Kette wird abgebrochen: ${errMsg.slice(0, 200)}`
+          );
+          trackModelCall(model, { success: false, errorClass: info.klasse, errorMessage: errMsg }, errMsg);
+          chainDone(false, i + 1, info.klasse);
+          throw err;
+        }
       }
 
       if (hasMore && isRetryableModelError(err)) {
@@ -1794,7 +1905,7 @@ export async function createChatCompletion(
         console.warn(
           `[${providerNameOf(model)}] Modell ${stripProviderPrefix(model)} fehlgeschlagen (${err?.status || ""} ${err?.message || err}). Fallback → ${stripProviderPrefix(next)}`
         );
-        trackModelCall(model, { success: false, rateLimited, freeTierExceeded }, errMsg, {
+        trackModelCall(model, { success: false, rateLimited, freeTierExceeded, errorClass: info.klasse, errorMessage: errMsg }, errMsg, {
           fallbackTo: next,
           fallbackStufe: i + 1,
           gesamteKette: models.length,
@@ -1807,17 +1918,18 @@ export async function createChatCompletion(
         console.warn(
           `[llm] Modell ${stripProviderPrefix(model)} fehlgeschlagen (${err?.status || ""} ${err?.message || err}). Fallback → ${stripProviderPrefix(next)}`
         );
-        trackModelCall(model, { success: false, rateLimited, freeTierExceeded }, errMsg, {
+        trackModelCall(model, { success: false, rateLimited, freeTierExceeded, errorClass: info.klasse, errorMessage: errMsg }, errMsg, {
           fallbackTo: next,
           fallbackStufe: i + 1,
           gesamteKette: models.length,
         });
         continue;
       }
-      trackModelCall(model, { success: false, rateLimited, freeTierExceeded }, errMsg);
+      trackModelCall(model, { success: false, rateLimited, freeTierExceeded, errorClass: info.klasse, errorMessage: errMsg }, errMsg);
       // Bevor die letzte Stufe einen Fehler wirft: Wenn irgendwo vorher ein
       // Teilergebnis angefallen ist, ist das mehr wert als eine Exception.
       if (bestesTeilergebnis) break;
+      chainDone(false, models.length, info.klasse);
       throw err;
     }
   }
@@ -1831,8 +1943,11 @@ export async function createChatCompletion(
         `(Stufe ${bestesTeilergebnis.stufe}, Güte ${(bestesTeilergebnis.bewertung.score * 100).toFixed(0)}%, ` +
         `${bestesTeilergebnis.bewertung.grund || "ohne nähere Angabe"}).`
     );
+    chainDone(true, models.length);
     return bestesTeilergebnis.completion;
   }
+
+  chainDone(false, models.length, lastError ? classifyLlmError(lastError).klasse : "unknown");
 
   // Klarere Meldung, wenn das Tageskontingent (TPD) weg ist
   const msg = String(lastError?.message || lastError || "");

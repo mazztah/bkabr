@@ -2003,6 +2003,11 @@ export interface ModelCatalogEntry {
     /** Summierte Tokens aus aiUsageLog (nur echte Aufrufe, kein Ping) */
     promptTokens?: number;
     completionTokens?: number;
+    /** Fehler je Klasse (siehe llm-error-classifier.ts), z.B. { rate_limit_minute: 12, timeout: 3 } */
+    errorClasses?: Record<string, number>;
+    lastErrorClass?: string;
+    lastErrorMessage?: string;
+    lastErrorAt?: string;
   };
   /** Free-Tier-Info */
   freeTier?: {

@@ -1509,7 +1509,14 @@ export async function updateModelHealth(
  */
 export async function recordModelCallStats(
   modelId: string,
-  outcome: { success: boolean; rateLimited?: boolean; freeTierExceeded?: boolean }
+  outcome: {
+    success: boolean;
+    rateLimited?: boolean;
+    freeTierExceeded?: boolean;
+    /** Fehlerklasse aus llm-error-classifier.ts (nur bei Fehlschlag) */
+    errorClass?: string;
+    errorMessage?: string;
+  }
 ): Promise<void> {
   const db = await readDb();
   const current = db.modelHealth[modelId] || {
@@ -1526,8 +1533,67 @@ export async function recordModelCallStats(
     rateLimitCount: current.rateLimitCount + (outcome.rateLimited ? 1 : 0),
     freeTierExceededCount: current.freeTierExceededCount + (outcome.freeTierExceeded ? 1 : 0),
     ...(outcome.success ? { lastSuccessAt: new Date().toISOString() } : {}),
+    ...(!outcome.success && outcome.errorClass
+      ? {
+          errorClasses: {
+            ...(current.errorClasses || {}),
+            [outcome.errorClass]: ((current.errorClasses || {})[outcome.errorClass] || 0) + 1,
+          },
+          lastErrorClass: outcome.errorClass,
+          lastErrorMessage: String(outcome.errorMessage || "").slice(0, 240),
+          lastErrorAt: new Date().toISOString(),
+        }
+      : {}),
   };
   await writeDb(db);
+}
+
+/**
+ * Ketten-Statistik: zählt ANFRAGEN an die Fallback-Kette (nicht einzelne
+ * Modell-Versuche). Nur das ist die Fehlerquote, die Nutzer tatsächlich
+ * spüren — die Modell-Kacheln zählen dagegen jeden Zwischenschritt einer
+ * Kette (eine Anfrage kann 8 Fehlversuche und trotzdem ein Ergebnis haben).
+ * Liegt unter der reservierten ID "__chain__" in modelHealth; der Katalog
+ * ignoriert unbekannte IDs.
+ */
+export async function recordChainOutcome(outcome: {
+  success: boolean;
+  /** Anzahl Versuche bis zum Ergebnis (1 = erste Stufe) */
+  versuche: number;
+  errorClass?: string;
+}): Promise<void> {
+  const db = await readDb();
+  const current = db.modelHealth["__chain__"] || {
+    status: "unknown" as const,
+    freeTierExceededCount: 0,
+    rateLimitCount: 0,
+    totalCalls: 0,
+    successCalls: 0,
+  };
+  const ec: Record<string, number> = { ...(current.errorClasses || {}) };
+  if (outcome.success && outcome.versuche <= 1) ec["__erststufe"] = (ec["__erststufe"] || 0) + 1;
+  if (!outcome.success && outcome.errorClass) ec[outcome.errorClass] = (ec[outcome.errorClass] || 0) + 1;
+  db.modelHealth["__chain__"] = {
+    ...current,
+    totalCalls: current.totalCalls + 1,
+    successCalls: current.successCalls + (outcome.success ? 1 : 0),
+    errorClasses: ec,
+  };
+  await writeDb(db);
+}
+
+/** Liest die Ketten-Statistik (siehe recordChainOutcome). */
+export async function getChainStats(): Promise<{
+  anfragen: number;
+  erfolgreich: number;
+  ersteStufe: number;
+  fehlerKlassen: Record<string, number>;
+} | null> {
+  const db = await readDb();
+  const c = db.modelHealth["__chain__"];
+  if (!c) return null;
+  const { __erststufe, ...klassen } = c.errorClasses || {};
+  return { anfragen: c.totalCalls, erfolgreich: c.successCalls, ersteStufe: __erststufe || 0, fehlerKlassen: klassen };
 }
 
 /**
