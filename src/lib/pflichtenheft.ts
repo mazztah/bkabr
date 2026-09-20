@@ -1,6 +1,6 @@
 /**
  * Erfüllungsmatrix zum Pflichtenheft (Kap. 28 „Anbieterantwort / Bewertungsmatrix“).
- * Selbsteinschätzung anhand des Code-Stands vom 18.09.2026 – NICHT durch Abnahmetests belegt.
+ * Selbsteinschätzung anhand des Code-Stands vom 20.09.2026 (Abgleich gegen Code, inkl. Korrekturen zu zu optimistischen Einträgen) – NICHT durch Abnahmetests belegt.
  * Bei Funktionsänderungen bitte hier nachziehen; die Seite /pflichtenheft rendert diese Liste.
  */
 export type Erfuellung = "erfuellt" | "teilweise" | "offen";
@@ -43,7 +43,7 @@ const O = "offen" as const;
 export const ANFORDERUNGEN: Anforderung[] = [
   ...rows(M.LIE, [
     ["LIE-001", "≥ 3.000 Flurstücke mit eindeutiger Identifikation", T, "/flurstuecke", "Eindeutige Nr. vorhanden; Lasttest mit 3.000+ Datensätzen steht aus"],
-    ["LIE-002", "Flurstücksakte mit Bild/Karte und Katasterangaben", T, "/flurstuecke", "Akte vorhanden; Bild/Karte fehlt"],
+    ["LIE-002", "Flurstücksakte mit Bild/Karte und Katasterangaben", T, "/flurstuecke", "Bild-Upload vorhanden; Karte fehlt"],
     ["LIE-003", "Lfd. Nr., Gemarkung, Flur, Flurstück, Wirtschaftsart, Lage, Größe", E, "/flurstuecke"],
     ["LIE-004", "Flächenarten und Zuordnung von Teilflächen", T, "/flurstuecke", "Gesamtfläche vorhanden; Teilflächen fehlen"],
     ["LIE-005", "Verknüpfung mit Gebäuden, Verträgen, Dokumenten, Kostenstellen", T, "/flurstuecke", "Verträge/Anhänge verknüpft; Gebäude und Kostenstelle offen"],
@@ -64,7 +64,7 @@ export const ANFORDERUNGEN: Anforderung[] = [
   ]),
   ...rows(M.VER, [
     ["VER-001", "Eigene Maske für Veranstaltungsflächen", E, "/veranstaltungsflaechen"],
-    ["VER-002", "Fläche, Kapazität, Lage, Verfügbarkeit, Gebäude/Flurstück", E, "/veranstaltungsflaechen"],
+    ["VER-002", "Fläche, Kapazität, Lage, Verfügbarkeit, Gebäude/Flurstück", T, "/veranstaltungsflaechen", "Kein Bezug zu Gebäude/Raum/Flurstück; Verfügbarkeit nur indirekt"],
     ["VER-003", "Anfragen, Reservierungen, bestätigte Veranstaltungen unterscheiden", T, "/veranstaltungsflaechen", "Statusmodell gegen Kap. 10 abgleichen"],
     ["VER-004", "Doppelbelegung verhindern oder als Konflikt anzeigen", E, "/veranstaltungsflaechen", "Konfliktprüfung in der Reservierungs-API"],
     ["VER-005", "Verknüpfung mit Verträgen, Partnern, Flächen, Kalender", T, "/veranstaltungsflaechen", "Kein Vertragsbezug an der Reservierung"],
@@ -83,7 +83,7 @@ export const ANFORDERUNGEN: Anforderung[] = [
   ]),
   ...rows(M.KAL, [
     ["KAL-001", "Zentraler Kalender (Veranstaltungen, Fristen, Wartungen, Prüfungen, Tickets)", T, "/kalender", "Abgeleitete Ereignisse vorhanden; Vollständigkeit prüfen"],
-    ["KAL-002", "Filter nach Gebäude, Flurstück, Fläche, Anlage, Vertrag, Mitarbeiter, Terminart", T, "/kalender"],
+    ["KAL-002", "Filter nach Gebäude, Flurstück, Fläche, Anlage, Vertrag, Mitarbeiter, Terminart", O, undefined, "Kein Filter im Kalender; nur Flurstück-Reiter vorgefiltert"],
     ["KAL-003", "Konflikte und Überschneidungen visuell erkennbar", O],
     ["KAL-004", "Termine aus Fachmodulen erzeugen und rückverlinken", T, "/kalender"],
     ["KAL-005", "Erinnerungen und Eskalation überfälliger Fristen", O],
@@ -101,12 +101,12 @@ export const ANFORDERUNGEN: Anforderung[] = [
     ["WART-002", "Letzte/nächste Wartung regelbasiert führen", E, "/instandhaltung", "Neu: Einstufung überfällig/30/90 Tage"],
     ["WART-003", "Wartungsfirmen und -verträge verknüpfen", T, "/anlagen", "Firma als Text"],
     ["WART-004", "Wartungsnachweise und Protokolle als PDF", T, "/anlagen", "Anhang an Anlage, nicht am Wartungseintrag"],
-    ["WART-005", "Wartungskalender mit Veranstaltungen und Fristen zusammenführen", E, "/kalender"],
+    ["WART-005", "Wartungskalender mit Veranstaltungen und Fristen zusammenführen", T, "/kalender", "Wiedervorlagen fehlen"],
     ["WART-006", "Überfällige Wartungen als offene Aufgaben sichtbar", E, "/instandhaltung", "Neu, inkl. Ticket-Erzeugung"],
   ]),
   ...rows(M.TKT, [
     ["TKT-001", "Mitarbeiter inkl. Arbeitsplatz als Bearbeiter/Anfordernde", T, "/systemadministration/nutzer", "Zuständiger als Text"],
-    ["TKT-002", "Tickets direkt Mitarbeitern zuweisen", E, "/ticketsystem"],
+    ["TKT-002", "Tickets direkt Mitarbeitern zuweisen", T, "/ticketsystem", "Zuweisung an Handwerker; interner Mitarbeiter nur als Text"],
     ["TKT-003", "Eindeutige laufende Auftragsnummer", E, "/ticketsystem"],
     ["TKT-004", "Anfordernde Person inkl. Signatur-/Kontaktdaten", T, "/ticketsystem"],
     ["TKT-005", "Liegenschaft, Gebäude, Raum/Bereich, Objekt", T, "/ticketsystem", "Raum-Referenz fehlt"],
@@ -131,7 +131,7 @@ export const ANFORDERUNGEN: Anforderung[] = [
     ["ZAE-010", "Zählerwechsel und Zuordnungsänderungen nachvollziehbar", T, "/zaehler", "Über Audit-Log"],
   ]),
   ...rows(M.DOK, [
-    ["DOK-001", "PDFs allen relevanten Objekten und Vorgängen zuordnen", E, "/ablage"],
+    ["DOK-001", "PDFs allen relevanten Objekten und Vorgängen zuordnen", T, "/ablage", "Anhänge fehlen an Raum, Gebäude, Zähler, Reservierung"],
     ["DOK-002", "Dokumente über die Objektakte erreichbar", T],
     ["DOK-003", "Dokumenttypen und Metadaten konfigurierbar", T, "/ablage"],
     ["DOK-004", "Versionierung und Ablagehistorie", E, "/ablage"],
@@ -139,9 +139,9 @@ export const ANFORDERUNGEN: Anforderung[] = [
     ["DOK-006", "Volltextsuche in Metadaten; optional OCR", T, "/ablage", "OCR vorhanden"],
   ]),
   ...rows(M.UX, [
-    ["UX-001", "Globale Suche über alle Objektarten", T, undefined, "Räume und Tickets noch nicht indexiert"],
+    ["UX-001", "Globale Suche über alle Objektarten", T, undefined, "Räume und Mitarbeiter noch nicht indexiert"],
     ["UX-002", "Schnellzugriff / zuletzt verwendete Datensätze", T, undefined, "Neu: 'Zuletzt verwendet' in der Cmd/Ctrl+K-Suche (localStorage, pro Browser); Tracking bislang nur bei Suchauswahl, nicht bei Direktnavigation"],
-    ["UX-003", "Dashboards (Tickets, Verträge, Wartungen, Veranstaltungen, Fristen)", T, "/dashboard"],
+    ["UX-003", "Dashboards (Tickets, Verträge, Wartungen, Veranstaltungen, Fristen)", O, undefined, "Dashboard ist finanzzentriert; keine Kacheln für Tickets, Fristen, Veranstaltungen"],
     ["UX-004", "Auswertungen nach Gebäude, Fläche, Nutzung, Kostenstelle, Partner, Zeitraum", T, "/auswertung"],
     ["UX-005", "Listen filter-, sortier- und exportierbar", T, undefined, "Export vorhanden; Sortierung uneinheitlich"],
     ["UX-006", "Objektakte ohne Medienbruch navigierbar", T],
@@ -152,17 +152,17 @@ export const ANFORDERUNGEN: Anforderung[] = [
   ...rows(M.TECH, [
     ["TECH-001", "Offene, dokumentierte API", T, undefined, "REST-Routen vorhanden; keine OpenAPI-Doku"],
     ["TECH-002", "Import aus CSV/XLSX", T, "/smart-upload"],
-    ["TECH-003", "Export XLSX/CSV/PDF", E],
+    ["TECH-003", "Export XLSX/CSV/PDF", T, undefined, "Export XLSX/CSV/PDF nur für Abrechnungen; sonst vereinzelt CSV"],
     ["TECH-004", "Kartendienste / GIS-Schnittstelle", O],
     ["TECH-005", "Revisionssichere, datenschutzkonforme Ablage", T],
     ["TECH-006", "Zentrale Authentifizierung/Berechtigungen; optional Verzeichnisdienst", T, "/systemadministration/nutzer", "Verzeichnisdienst offen"],
-    ["TECH-007", "Auslegung für 140 Gebäude / 3.000+ Flurstücke", T, undefined, "Lasttest offen"],
+    ["TECH-007", "Auslegung für 140 Gebäude / 3.000+ Flurstücke", T, undefined, "Fachmodule liegen in db.json; Schema supabase/schema_fachmodule.sql liegt vor, Adapter offen; Lasttest offen"],
     ["TECH-008", "Sicherung, Wiederherstellung, Protokollierung", T, undefined, "Protokollierung ja; Betriebskonzept offen"],
   ]),
   ...rows(M.SEC, [
     ["SEC-001", "Datenminimierung bei personenbezogenen Daten", T],
-    ["SEC-002", "Rollenbasierte Einschränkung sensibler Daten", E, "/systemadministration/nutzer"],
-    ["SEC-003", "Protokollierung wesentlicher Änderungen", E],
+    ["SEC-002", "Rollenbasierte Einschränkung sensibler Daten", T, "/systemadministration/nutzer", "Wirkt nur mit Supabase-Auth; 46 API-Routen ohne Modulprüfung"],
+    ["SEC-003", "Protokollierung wesentlicher Änderungen", T, undefined, "logAudit nur mit Supabase, fail open; Trigger für Fachmodule in schema_fachmodule.sql"],
     ["SEC-004", "Konfigurierbare Lösch- und Aufbewahrungsregeln", O],
     ["SEC-005", "Backup und Wiederherstellung nach Betriebskonzept", O],
   ]),
