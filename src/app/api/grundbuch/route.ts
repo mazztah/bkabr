@@ -46,6 +46,7 @@ export async function POST(req: NextRequest) {
     waehrung: body.waehrung || (typeof body.betrag === "number" ? "EUR" : undefined),
     beschreibung: body.beschreibung || undefined,
     eingetragenAm: body.eingetragenAm,
+    quelle: body.quelle || undefined,
     notizen: body.notizen || undefined,
     createdAt: now,
     updatedAt: now,

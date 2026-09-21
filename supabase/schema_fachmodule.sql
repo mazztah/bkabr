@@ -134,7 +134,7 @@ create index if not exists flurstueck_teilflaechen_fs_idx on flurstueck_teilflae
 
 create table if not exists grundbuch_eintraege (
   id uuid primary key default gen_random_uuid(),
-  flurstueck_id uuid not null references flurstuecke(id) on delete cascade,
+  flurstueck_id uuid not null references flurstuecke(id) on delete restrict, -- Historie (LIE-007) darf nicht mitgelöscht werden
   abteilung text not null check (abteilung in ('I','II','III')),
   lfd_nummer text not null,
   art text not null,

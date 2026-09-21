@@ -21,7 +21,7 @@
 import { getSupabaseClient } from "./supabase";
 import type { Liegenschaft, Gebaeude, Wohnung, Mieter, Mietvertrag, SollIstEintrag, MietkontoBuchung, Anhang } from "./types";
 
-function requireClient() {
+export function requireClient() {
   const sb = getSupabaseClient();
   if (!sb) {
     throw new Error(
@@ -31,7 +31,7 @@ function requireClient() {
   return sb;
 }
 
-async function nextNummerSupabase(prefix: string): Promise<string> {
+export async function nextNummerSupabase(prefix: string): Promise<string> {
   const sb = requireClient();
   const year = new Date().getFullYear();
   const key = `${prefix}-${year}`;
@@ -42,7 +42,7 @@ async function nextNummerSupabase(prefix: string): Promise<string> {
 
 /** Setzt row[dbKey] nur, wenn tsKey im Quellobjekt vorhanden ist — macht toRow() für
  *  volle Objekte (create) UND Partial-Patches (update) gleichermaßen korrekt. */
-function set(row: Record<string, unknown>, obj: Record<string, unknown>, tsKey: string, dbKey: string, transform: (v: unknown) => unknown = (v) => v) {
+export function set(row: Record<string, unknown>, obj: Record<string, unknown>, tsKey: string, dbKey: string, transform: (v: unknown) => unknown = (v) => v) {
   if (Object.prototype.hasOwnProperty.call(obj, tsKey)) {
     const v = obj[tsKey];
     row[dbKey] = v === undefined ? null : transform(v);

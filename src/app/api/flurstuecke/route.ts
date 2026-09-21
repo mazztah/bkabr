@@ -25,6 +25,20 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
+  // Dublettenvermeidung (LIE-001): gleiche Gemarkung/Flur/Nummer innerhalb einer Liegenschaft nur einmal.
+  // Entspricht dem UNIQUE-Constraint in supabase/schema_fachmodule.sql, greift aber auch im JSON-Betrieb.
+  const dubletten = await flurstueckeDb.list({
+    liegenschaftId: body.liegenschaftId,
+    gemarkung: body.gemarkung,
+    flur: body.flur,
+    flurstueckNummer: body.flurstueckNummer,
+  });
+  if (dubletten.length > 0) {
+    return NextResponse.json(
+      { error: `Flurstück ${body.gemarkung} Flur ${body.flur} Nr. ${body.flurstueckNummer} existiert in dieser Liegenschaft bereits (${dubletten[0].nummer || dubletten[0].id}).` },
+      { status: 409 }
+    );
+  }
   const now = new Date().toISOString();
   const flurstueck: Flurstueck = {
     id: uid(),
@@ -36,6 +50,10 @@ export async function POST(req: NextRequest) {
     flaecheQm: typeof body.flaecheQm === "number" ? body.flaecheQm : undefined,
     grundbuchblatt: body.grundbuchblatt || undefined,
     grundbuchamt: body.grundbuchamt || undefined,
+    lage: body.lage || undefined,
+    veranstaltungsfreigabe: body.veranstaltungsfreigabe === true,
+    kostenstelle: body.kostenstelle || undefined,
+    innenauftrag: body.innenauftrag || undefined,
     notizen: body.notizen || undefined,
     createdAt: now,
     updatedAt: now,

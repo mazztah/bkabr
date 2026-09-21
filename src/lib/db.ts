@@ -2,6 +2,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { pingProviderModel } from "./llm-observability";
 import * as dbSupabase from "./db-supabase";
+import * as dbSupabaseFach from "./db-supabase-fach";
 import {
   Raum,
   AblageDokument,
@@ -195,15 +196,41 @@ aiUsageLog: db.aiUsageLog || [],
   };
 }
 
+let corruptCopyDone = false;
+let lastBackupAt = 0;
+const BACKUP_INTERVAL_MS = 10 * 60 * 1000;
+
 async function readDb(): Promise<DbShape> {
   if (dbState.cache) return dbState.cache;
   await ensureDataDir();
+  let raw: string;
   try {
-    const raw = await fs.readFile(DB_FILE, "utf-8");
+    raw = await fs.readFile(DB_FILE, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      // Erststart: Datei existiert noch nicht → leere Datenbank anlegen.
+      dbState.cache = withDefaults({});
+      await writeDb(dbState.cache);
+      return dbState.cache!;
+    }
+    // Jeder andere Lesefehler (Rechte, I/O): NICHT überschreiben, sondern sichtbar scheitern.
+    throw new Error(`[db] ${DB_FILE} nicht lesbar: ${(err as Error).message}`);
+  }
+  try {
     dbState.cache = withDefaults(JSON.parse(raw) as Partial<DbShape>);
-  } catch {
-    dbState.cache = withDefaults({});
-    await writeDb(dbState.cache);
+  } catch (err) {
+    // Defektes/von Hand bearbeitetes JSON: Datei unangetastet lassen (früher wurde sie mit einer
+    // leeren Datenbank überschrieben = Totalverlust). Einmalig eine Kopie zur Analyse ablegen.
+    let hinweis = "";
+    if (!corruptCopyDone) {
+      corruptCopyDone = true;
+      const kopie = `${DB_FILE}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      await fs.copyFile(DB_FILE, kopie).then(() => (hinweis = ` Kopie: ${kopie}.`)).catch(() => {});
+    }
+    throw new Error(
+      `[db] ${DB_FILE} enthält kein gültiges JSON und wurde NICHT überschrieben.${hinweis} ` +
+        `Datei prüfen oder aus ${DB_FILE}.bak wiederherstellen. (${(err as Error).message})`
+    );
   }
   return dbState.cache!;
 }
@@ -214,6 +241,10 @@ async function writeDb(db: DbShape) {
     await ensureDataDir();
     const tmp = DB_FILE + ".tmp";
     await fs.writeFile(tmp, JSON.stringify(db, null, 2), "utf-8");
+    // Rollierende Sicherung: höchstens alle 10 Minuten eine Kopie des Vorzustands (eine Generation).
+    if (Date.now() - lastBackupAt > BACKUP_INTERVAL_MS) {
+      await fs.copyFile(DB_FILE, DB_FILE + ".bak").then(() => (lastBackupAt = Date.now())).catch(() => {});
+    }
     await fs.rename(tmp, DB_FILE);
   });
   await dbState.writeQueue;
@@ -391,8 +422,24 @@ export const mietvertraegeDb = pickBackend(
   dbSupabase.mietvertraegeDb
 );
 export const eigentuemerDb = makeCrud<Eigentuemer>("eigentuemer", "EG");
-export const flurstueckeDb = makeCrud<Flurstueck>("flurstuecke", "FL");
-export const grundbuchDb = makeCrud<GrundbuchEintrag>("grundbuchEintraege", "GB");
+// Fachmodule (Pflichtenheft): Schema in supabase/schema_fachmodule.sql. Reihenfolge der Aktivierung:
+// erst "liegenschaften" (FK), dann "flurstuecke", dann "grundbuch" — siehe supabase/MIGRATION_FACHMODULE.md.
+if (SUPABASE_MODULES.has("flurstuecke") && !SUPABASE_MODULES.has("liegenschaften")) {
+  console.warn("[db] DB_SUPABASE_MODULES enthält 'flurstuecke' ohne 'liegenschaften' — Fremdschlüssel liegenschaft_id schlägt fehl.");
+}
+if (SUPABASE_MODULES.has("grundbuch") && !SUPABASE_MODULES.has("flurstuecke")) {
+  console.warn("[db] DB_SUPABASE_MODULES enthält 'grundbuch' ohne 'flurstuecke' — Fremdschlüssel flurstueck_id schlägt fehl.");
+}
+export const flurstueckeDb = pickBackend(
+  "flurstuecke",
+  makeCrud<Flurstueck>("flurstuecke", "FL"),
+  dbSupabaseFach.flurstueckeDb
+);
+export const grundbuchDb = pickBackend(
+  "grundbuch",
+  makeCrud<GrundbuchEintrag>("grundbuchEintraege", "GB"),
+  dbSupabaseFach.grundbuchDb
+);
 export const vertraegeDb = makeCrud<Vertrag>("vertraege", "VT");
 export const anlagenDb = makeCrud<Anlage>("anlagen", "AN");
 export const anlagenWartungenDb = makeCrud<AnlagenWartung>("anlagenWartungen", "AW");

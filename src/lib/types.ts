@@ -391,6 +391,9 @@ export interface Flurstueck {
    * (LIE-010). undefined/false = gesperrt (Default), true = freigegeben.
    */
   veranstaltungsfreigabe?: boolean;
+  /** Kostenstelle / Innenauftrag (LIE-005). Spalten existieren in supabase/schema_fachmodule.sql. */
+  kostenstelle?: string;
+  innenauftrag?: string;
   notizen?: string;
   anhaenge?: Anhang[];
   createdAt: string;
@@ -419,6 +422,8 @@ export interface GrundbuchEintrag {
   waehrung?: string;
   beschreibung?: string;
   eingetragenAm: string;
+  /** Quelle der Information, z. B. „Grundbuchauszug vom 12.03.2026“ (LIE-007). */
+  quelle?: string;
   // Historisierung: ein Eintrag wird nie hart gelöscht, sondern bei
   // Wegfall/Ablösung mit geloeschtAm "gerötet" — bleibt so im Grundbuchblatt
   // nachvollziehbar sichtbar, statt spurlos zu verschwinden. null/undefined

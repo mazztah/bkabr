@@ -591,6 +591,7 @@ function GrundbuchTab({ flurstueckId }: { flurstueckId: string }) {
                         eingetragen {formatDate(e.eingetragenAm)}
                         {typeof e.betrag === "number" && ` · ${e.betrag.toLocaleString("de-DE")} ${e.waehrung || "EUR"}`}
                         {e.beschreibung && ` · ${e.beschreibung}`}
+                        {e.quelle && ` · Quelle: ${e.quelle}`}
                       </div>
                     </div>
                     {!e.geloeschtAm && (
@@ -642,6 +643,7 @@ function GrundbuchEintragFormular({
     berechtigter: "",
     betrag: "",
     beschreibung: "",
+    quelle: "",
     eingetragenAm: new Date().toISOString().slice(0, 10),
   });
   const [busy, setBusy] = useState(false);
@@ -732,6 +734,15 @@ function GrundbuchEintragFormular({
           <input
             value={werte.beschreibung}
             onChange={(e) => setWerte({ ...werte, beschreibung: e.target.value })}
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">Quelle</label>
+          <input
+            value={werte.quelle}
+            placeholder="z. B. Grundbuchauszug vom 12.03.2026"
+            onChange={(e) => setWerte({ ...werte, quelle: e.target.value })}
             className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
           />
         </div>
