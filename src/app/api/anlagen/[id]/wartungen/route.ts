@@ -4,6 +4,7 @@ import { AnlagenWartung } from "@/lib/types";
 import { uid } from "@/lib/utils";
 import { requirePermission } from "@/lib/auth";
 import { logAudit } from "@/lib/audit";
+import { naechsteFaelligkeitAus } from "@/lib/wartung";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requirePermission("anlagen", "read");
@@ -33,6 +34,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!body.durchgefuehrtAm || !body.art) {
     return NextResponse.json({ error: "durchgefuehrtAm und art sind erforderlich" }, { status: 400 });
   }
+  // WART-002: Ohne manuell genannten Folgetermin aus dem Prüfintervall der Anlage fortschreiben
+  // (nur bei Wartung/Prüfung, nicht bei Reparatur/Sonstiges).
+  let naechsteFaelligkeit: string | undefined = body.naechsteFaelligkeit || undefined;
+  if (!naechsteFaelligkeit && anlage.pruefintervallMonate && (body.art === "Wartung" || body.art === "Prüfung")) {
+    naechsteFaelligkeit = naechsteFaelligkeitAus(body.durchgefuehrtAm, anlage.pruefintervallMonate);
+  }
   const now = new Date().toISOString();
   const eintrag: AnlagenWartung = {
     id: uid(),
@@ -42,7 +49,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     art: body.art,
     ergebnis: body.ergebnis || undefined,
     beschreibung: body.beschreibung || undefined,
-    naechsteFaelligkeit: body.naechsteFaelligkeit || undefined,
+    naechsteFaelligkeit,
     kosten: typeof body.kosten === "number" ? body.kosten : undefined,
     notizen: body.notizen || undefined,
     createdAt: now,
@@ -50,9 +57,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   };
   const saved = await anlagenWartungenDb.create(eintrag);
 
-  if (body.naechsteFaelligkeit) {
+  if (naechsteFaelligkeit) {
     await anlagenDb.update(id, {
-      naechstePruefung: body.naechsteFaelligkeit,
+      naechstePruefung: naechsteFaelligkeit,
       status: anlage.status === "Wartung fällig" ? "In Betrieb" : anlage.status,
     });
   }

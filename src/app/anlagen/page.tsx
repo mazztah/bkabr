@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { Wrench, Plus, Trash2, ClipboardList } from "lucide-react";
 import Modal from "@/components/Modal";
+import { Anhaenge, hochladenUndAnhaengen } from "@/components/Anhaenge";
 import { ANLAGEN_TYPEN } from "@/lib/anlagen-katalog";
-import { Anlage, AnlagenTyp, AnlagenStatus, AnlagenWartung, Liegenschaft } from "@/lib/types";
+import { Anhang, AnhangTyp, Anlage, AnlagenTyp, AnlagenStatus, AnlagenWartung, Gebaeude, Liegenschaft } from "@/lib/types";
 
 const TYPEN: AnlagenTyp[] = ANLAGEN_TYPEN; // 50 Katalogtypen aus dem Pflichtenheft + Bestandstypen
 const STATUS: AnlagenStatus[] = ["In Betrieb", "Wartung fällig", "Außer Betrieb", "Defekt"];
@@ -20,6 +21,7 @@ const LEER = {
   typ: "Sonstige technische Anlage" as AnlagenTyp,
   bezeichnung: "",
   liegenschaftId: "",
+  gebaeudeId: "",
   standortDetail: "",
   hersteller: "",
   modell: "",
@@ -184,6 +186,7 @@ export default function AnlagenPage() {
           liegenschaften={liegenschaften}
           vorausgewaehlteLiegenschaft={filter}
           onClose={() => setFormularOffen(null)}
+          onAnhaengeChanged={refresh}
           onDone={() => {
             setFormularOffen(null);
             refresh();
@@ -200,12 +203,14 @@ function AnlageFormular({
   vorausgewaehlteLiegenschaft,
   onClose,
   onDone,
+  onAnhaengeChanged,
 }: {
   anlage: Anlage | null;
   liegenschaften: Liegenschaft[];
   vorausgewaehlteLiegenschaft: string;
   onClose: () => void;
   onDone: () => void;
+  onAnhaengeChanged?: () => void;
 }) {
   const [werte, setWerte] = useState(
     anlage
@@ -213,6 +218,7 @@ function AnlageFormular({
           typ: anlage.typ,
           bezeichnung: anlage.bezeichnung,
           liegenschaftId: anlage.liegenschaftId,
+          gebaeudeId: anlage.gebaeudeId || "",
           standortDetail: anlage.standortDetail || "",
           hersteller: anlage.hersteller || "",
           modell: anlage.modell || "",
@@ -228,6 +234,36 @@ function AnlageFormular({
   );
   const [busy, setBusy] = useState(false);
   const [fehler, setFehler] = useState<string | null>(null);
+  const [gebaeude, setGebaeude] = useState<Gebaeude[]>([]);
+  const [anhaenge, setAnhaenge] = useState<Anhang[]>(anlage?.anhaenge || []);
+
+  // ANL-001/002: Gebäude zur gewählten Liegenschaft wählbar (ohne Recht "immobilien:read" bleibt die Liste leer)
+  useEffect(() => {
+    fetch("/api/gebaeude")
+      .then((r) => (r.ok ? r.json() : { gebaeude: [] }))
+      .then((j) => setGebaeude(j.gebaeude || []))
+      .catch(() => setGebaeude([]));
+  }, []);
+  const gebaeudeZurLiegenschaft = gebaeude.filter((g) => g.liegenschaftId === werte.liegenschaftId);
+
+  // ANL-004/ANL-006/WART-004: Wartungsverträge, Prüfberichte und Nachweise als Dokument an der Anlage
+  async function anhangHochladen(typ: AnhangTyp, file: File) {
+    if (!anlage) return;
+    const neu = await hochladenUndAnhaengen(file, typ);
+    if (!neu) return;
+    const liste = [...anhaenge, neu];
+    const r = await fetch(`/api/anlagen/${anlage.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ anhaenge: liste }),
+    });
+    if (r.ok) {
+      setAnhaenge(liste);
+      onAnhaengeChanged?.();
+    } else {
+      setFehler("Dokument konnte nicht an der Anlage gespeichert werden.");
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -236,6 +272,8 @@ function AnlageFormular({
     try {
       const payload = {
         ...werte,
+        // Beim Bearbeiten muss ein geleertes Gebäude als null ankommen (undefined würde im JSON entfallen)
+        gebaeudeId: werte.gebaeudeId || (anlage ? null : undefined),
         baujahr: werte.baujahr ? Number(werte.baujahr) : undefined,
         pruefintervallMonate: werte.pruefintervallMonate ? Number(werte.pruefintervallMonate) : undefined,
       };
@@ -304,7 +342,7 @@ function AnlageFormular({
             <select
               required
               value={werte.liegenschaftId}
-              onChange={(e) => setWerte({ ...werte, liegenschaftId: e.target.value })}
+              onChange={(e) => setWerte({ ...werte, liegenschaftId: e.target.value, gebaeudeId: "" })}
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
             >
               <option value="">Bitte wählen …</option>
@@ -315,6 +353,24 @@ function AnlageFormular({
               ))}
             </select>
           </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Gebäude</label>
+            <select
+              value={werte.gebaeudeId}
+              onChange={(e) => setWerte({ ...werte, gebaeudeId: e.target.value })}
+              disabled={!werte.liegenschaftId}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm disabled:opacity-50"
+            >
+              <option value="">— kein Gebäude —</option>
+              {gebaeudeZurLiegenschaft.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="mb-1 block text-xs font-medium text-muted-foreground">Standort (Detail)</label>
             <input
@@ -392,6 +448,17 @@ function AnlageFormular({
         {werte.naechstePruefung && (
           <p className="text-xs text-muted-foreground">
             Der Prüftermin wird automatisch als Frist im Kalender angezeigt.
+          </p>
+        )}
+        {anlage ? (
+          <Anhaenge
+            anhaenge={anhaenge}
+            typen={["Wartungsnachweis", "Prüfbericht", "Vertrag", "Sonstiges"]}
+            onUpload={anhangHochladen}
+          />
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Dokumente (PDF) können nach dem Anlegen an der Anlage hinterlegt werden.
           </p>
         )}
         {fehler && (

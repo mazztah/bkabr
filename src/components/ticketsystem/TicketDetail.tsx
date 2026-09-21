@@ -310,6 +310,26 @@ export default function TicketDetail({
             className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
           />
         </div>
+        <div>
+          <div className="text-xs font-medium text-muted-foreground">Arbeitszeit (Minuten)</div>
+          <input
+            type="number"
+            min={0}
+            step={5}
+            defaultValue={ticket.arbeitszeitMinuten}
+            onBlur={(e) => {
+              if (e.target.value === "") return;
+              patchTicket(ticket.id, { arbeitszeitMinuten: Number(e.target.value) }).then(onChanged);
+            }}
+            className="mt-1 w-full rounded border border-border bg-background px-2 py-1 text-sm"
+          />
+          {ticket.erledigtAm && (
+            <div className="mt-1 text-xs text-muted-foreground">
+              Erledigt am {new Date(ticket.erledigtAm).toLocaleDateString("de-DE")}
+              {ticket.erledigtVon ? ` von ${ticket.erledigtVon}` : ""}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Kaufmännische Daten */}

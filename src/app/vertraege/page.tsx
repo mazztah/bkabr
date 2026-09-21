@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { FileSignature, Plus, Trash2 } from "lucide-react";
 import Modal from "@/components/Modal";
-import { Liegenschaft, Vertrag, VertragArt, VertragStatus, Zahlungsintervall, PachtNutzungsart } from "@/lib/types";
+import { Anhaenge, hochladenUndAnhaengen } from "@/components/Anhaenge";
+import { Anhang, AnhangTyp, Liegenschaft, Vertrag, VertragArt, VertragStatus, Zahlungsintervall, PachtNutzungsart } from "@/lib/types";
 
 const ARTEN: VertragArt[] = ["Pacht", "Dienstleistung", "Wartung", "Versicherung", "Erbbaurecht", "Sonstige"];
 const NUTZUNGSARTEN: PachtNutzungsart[] = ["Jagd", "Fischerei", "Kleingarten", "Wiese", "Ackerland", "Sonstige Nutzung"];
@@ -37,6 +38,10 @@ export default function VertraegePage() {
   const [vertraege, setVertraege] = useState<Vertrag[]>([]);
   const [liegenschaften, setLiegenschaften] = useState<Liegenschaft[]>([]);
   const [artFilter, setArtFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [liegenschaftFilter, setLiegenschaftFilter] = useState("");
+  const [suche, setSuche] = useState("");
+  const [fristFilter, setFristFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [formularOffen, setFormularOffen] = useState<Vertrag | null | "neu">(null);
@@ -61,7 +66,29 @@ export default function VertraegePage() {
   const liegenschaftName = (id?: string) =>
     id ? liegenschaften.find((l) => l.id === id)?.name || "—" : "—";
 
-  const gefiltert = artFilter ? vertraege.filter((v) => v.art === artFilter) : vertraege;
+  // VERTR-009: Filter nach Art, Status, Liegenschaft sowie Freitextsuche (Bezeichnung, Partner)
+  const sucheKlein = suche.trim().toLowerCase();
+  // Frist: Vertragsende innerhalb der nächsten N Tage (nur befristete, noch nicht beendete Verträge) bzw. abgelaufen
+  const heute = new Date();
+  const tageBisEnde = (v: Vertrag) =>
+    !v.unbefristet && v.ende ? Math.ceil((new Date(v.ende).getTime() - heute.getTime()) / 86_400_000) : null;
+  const passtZurFrist = (v: Vertrag) => {
+    if (!fristFilter) return true;
+    const t = tageBisEnde(v);
+    if (t === null) return false;
+    if (fristFilter === "abgelaufen") return t < 0;
+    return t >= 0 && t <= Number(fristFilter);
+  };
+  const gefiltert = vertraege.filter(
+    (v) =>
+      passtZurFrist(v) &&
+      (!artFilter || v.art === artFilter) &&
+      (!statusFilter || v.status === statusFilter) &&
+      (!liegenschaftFilter || v.liegenschaftId === liegenschaftFilter) &&
+      (!sucheKlein ||
+        v.bezeichnung.toLowerCase().includes(sucheKlein) ||
+        v.vertragspartner.toLowerCase().includes(sucheKlein))
+  );
 
   async function handleDelete(id: string) {
     if (!confirm("Vertrag wirklich löschen?")) return;
@@ -92,7 +119,13 @@ export default function VertraegePage() {
         </button>
       </div>
 
-      <div className="mb-4">
+      <div className="mb-4 flex flex-wrap gap-2">
+        <input
+          value={suche}
+          onChange={(e) => setSuche(e.target.value)}
+          placeholder="Suche: Bezeichnung oder Partner"
+          className="w-64 rounded-md border border-border bg-background px-3 py-2 text-sm"
+        />
         <select
           value={artFilter}
           onChange={(e) => setArtFilter(e.target.value)}
@@ -102,6 +135,41 @@ export default function VertraegePage() {
           {ARTEN.map((a) => (
             <option key={a} value={a}>
               {a}
+            </option>
+          ))}
+        </select>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="rounded-md border border-border bg-background px-3 py-2 text-sm"
+        >
+          <option value="">Alle Status</option>
+          {STATUS.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+        <select
+          value={fristFilter}
+          onChange={(e) => setFristFilter(e.target.value)}
+          className="rounded-md border border-border bg-background px-3 py-2 text-sm"
+        >
+          <option value="">Alle Fristen</option>
+          <option value="30">Ende in ≤ 30 Tagen</option>
+          <option value="90">Ende in ≤ 90 Tagen</option>
+          <option value="365">Ende in ≤ 12 Monaten</option>
+          <option value="abgelaufen">Bereits abgelaufen</option>
+        </select>
+        <select
+          value={liegenschaftFilter}
+          onChange={(e) => setLiegenschaftFilter(e.target.value)}
+          className="rounded-md border border-border bg-background px-3 py-2 text-sm"
+        >
+          <option value="">Alle Liegenschaften</option>
+          {liegenschaften.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.name}
             </option>
           ))}
         </select>
@@ -179,6 +247,7 @@ export default function VertraegePage() {
           vertrag={formularOffen === "neu" ? null : formularOffen}
           liegenschaften={liegenschaften}
           onClose={() => setFormularOffen(null)}
+          onAnhaengeChanged={refresh}
           onDone={() => {
             setFormularOffen(null);
             refresh();
@@ -194,11 +263,13 @@ function VertragFormular({
   liegenschaften,
   onClose,
   onDone,
+  onAnhaengeChanged,
 }: {
   vertrag: Vertrag | null;
   liegenschaften: Liegenschaft[];
   onClose: () => void;
   onDone: () => void;
+  onAnhaengeChanged?: () => void;
 }) {
   const [werte, setWerte] = useState(
     vertrag
@@ -221,6 +292,26 @@ function VertragFormular({
   );
   const [busy, setBusy] = useState(false);
   const [fehler, setFehler] = useState<string | null>(null);
+  const [anhaenge, setAnhaenge] = useState<Anhang[]>(vertrag?.anhaenge || []);
+
+  // VERTR-005/006: Vertrags-PDF und Nachträge an bestehenden Vertrag hängen (sofort gespeichert)
+  async function anhangHochladen(typ: AnhangTyp, file: File) {
+    if (!vertrag) return;
+    const neu = await hochladenUndAnhaengen(file, typ);
+    if (!neu) return;
+    const liste = [...anhaenge, neu];
+    const r = await fetch(`/api/vertraege/${vertrag.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ anhaenge: liste }),
+    });
+    if (r.ok) {
+      setAnhaenge(liste);
+      onAnhaengeChanged?.();
+    } else {
+      setFehler("Dokument konnte nicht am Vertrag gespeichert werden.");
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -409,6 +500,17 @@ function VertragFormular({
             className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
           />
         </div>
+        {vertrag ? (
+          <Anhaenge
+            anhaenge={anhaenge}
+            typen={["Vertrag", "Nachtrag", "Sonstiges"]}
+            onUpload={anhangHochladen}
+          />
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Dokumente (PDF) können nach dem Anlegen am Vertrag hinterlegt werden.
+          </p>
+        )}
         {werte.ende && !werte.unbefristet && (
           <p className="text-xs text-muted-foreground">
             Das Vertragsende wird automatisch als Frist im Kalender angezeigt.

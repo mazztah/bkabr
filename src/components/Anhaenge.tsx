@@ -10,7 +10,12 @@ export async function hochladenUndAnhaengen(file: File, typ: AnhangTyp): Promise
   const fd = new FormData();
   fd.append("file", file);
   const res = await fetch("/api/upload", { method: "POST", body: fd });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    // Upload-Richtlinie (Größe/Dateityp) und Berechtigungen liefern eine Meldung — nicht still verschlucken
+    const fehler = await res.json().catch(() => ({}));
+    if (typeof window !== "undefined") window.alert(fehler.error || "Upload fehlgeschlagen.");
+    return null;
+  }
   const json = await res.json();
   return {
     id: crypto.randomUUID(),

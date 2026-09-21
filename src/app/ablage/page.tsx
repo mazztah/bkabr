@@ -44,6 +44,7 @@ export default function AblagePage() {
   const [dokumente, setDokumente] = useState<AblageDokument[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"offen" | "alle">("offen");
+  const [suche, setSuche] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bestaetigungOffen, setBestaetigungOffen] = useState(false);
@@ -69,7 +70,16 @@ export default function AblagePage() {
     laden();
   }, []);
 
-  const sichtbar = dokumente.filter((d) => (filter === "alle" ? true : d.status !== "zugeordnet"));
+  // DOK-006: Suche über Dateiname, erkannten Typ, eigene Metadaten (Schlüssel und Wert) und den extrahierten Text
+  const sucheKlein = suche.trim().toLowerCase();
+  const passtZurSuche = (d: AblageDokument) =>
+    !sucheKlein ||
+    [d.dateiName, d.erkannterTyp, d.extraktText, ...Object.entries(d.metadaten || {}).flat()].some((t) =>
+      String(t ?? "").toLowerCase().includes(sucheKlein)
+    );
+  const sichtbar = dokumente.filter(
+    (d) => (filter === "alle" ? true : d.status !== "zugeordnet") && passtZurSuche(d)
+  );
   const nichtZugeordnetAnzahl = dokumente.filter((d) => d.status !== "zugeordnet").length;
 
   const einzelnLoeschen = async (id: string) => {
@@ -137,6 +147,12 @@ export default function AblagePage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <input
+            value={suche}
+            onChange={(e) => setSuche(e.target.value)}
+            placeholder="Suche: Name, Typ, Metadaten, Inhalt"
+            className="w-56 rounded border border-border bg-background px-2 py-1.5 text-sm"
+          />
           <select
             value={filter}
             onChange={(e) => setFilter(e.target.value as "offen" | "alle")}

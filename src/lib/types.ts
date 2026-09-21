@@ -733,6 +733,9 @@ export type AnhangTyp =
   | "Angebot"
   | "Rechnung"
   | "Foto"
+  | "Vertrag"
+  | "Wartungsnachweis"
+  | "Prüfbericht"
   | "Sonstiges";
 
 export interface Anhang {
@@ -2380,6 +2383,10 @@ export interface Ticket {
   wartungspartner?: string;
   // Sonstiges
   faelligkeitsdatum?: string;
+  // Erledigung (TKT-009): erledigtAm/erledigtVon setzt der Server beim Statuswechsel auf „Erledigt“
+  erledigtAm?: string;
+  erledigtVon?: string;
+  arbeitszeitMinuten?: number;
   dokumente?: Anhang[];
   historie: TicketHistorieEintrag[];
   createdAt: string;

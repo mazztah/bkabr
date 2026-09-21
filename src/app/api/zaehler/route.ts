@@ -4,6 +4,7 @@ import { Zaehler } from "@/lib/types";
 import { uid } from "@/lib/utils";
 import { requirePermission } from "@/lib/auth";
 import { logAudit } from "@/lib/audit";
+import { zaehlernummerVergeben } from "@/lib/validierung";
 
 const EINHEIT_VORSCHLAG: Record<string, string> = {
   Strom: "kWh",
@@ -36,6 +37,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { error: "zaehlernummer, art und liegenschaftId sind erforderlich" },
       { status: 400 }
+    );
+  }
+  if (zaehlernummerVergeben(await zaehlerDb.list(), body.art, String(body.zaehlernummer))) {
+    return NextResponse.json(
+      { error: `Zählernummer „${body.zaehlernummer}" ist für die Art ${body.art} bereits vergeben.` },
+      { status: 409 }
     );
   }
   const now = new Date().toISOString();

@@ -834,6 +834,18 @@ function VertraegeTab({ flurstueck }: { flurstueck: Flurstueck }) {
                       <ExternalLink size={12} /> PDF
                     </a>
                   )}
+                  {(v.anhaenge || []).map((a) => (
+                    <a
+                      key={a.id}
+                      href={`/api/files/${a.storedFileName}?name=${encodeURIComponent(a.dateiName)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={`${a.typ}: ${a.dateiName}`}
+                      className="interactive flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                    >
+                      <ExternalLink size={12} /> {a.typ}
+                    </a>
+                  ))}
                 </div>
               </div>
             </GlassCard>

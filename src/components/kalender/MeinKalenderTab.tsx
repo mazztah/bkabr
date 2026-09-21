@@ -20,6 +20,14 @@ const KATEGORIE_FARBE: Record<KalenderKategorie, string> = {
 
 const WOCHENTAGE_KURZ = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 
+const KATEGORIEN: KalenderKategorie[] = ["Termin", "Frist", "Aufgabe", "Erinnerung"];
+
+/** Lokaler Kalendertag als YYYY-MM-DD. toISOString() würde in Deutschland (UTC+1/+2) auf den Vortag fallen. */
+const tagKey = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+/** Tag eines Termins: reine Datumsangaben unverändert, Zeitstempel in lokale Zeit umrechnen. */
+const eintragTag = (datum: string) => (datum.length > 10 ? tagKey(new Date(datum)) : datum);
+
 function monatsGrid(jahr: number, monat: number): Date[] {
   const erster = new Date(jahr, monat, 1);
   // Montag als Wochenstart: JS getDay() 0=So..6=Sa → verschieben auf 0=Mo..6=So
@@ -36,6 +44,9 @@ export default function MeinKalenderTab() {
   const [loading, setLoading] = useState(true);
   const [gewaehlterTag, setGewaehlterTag] = useState<Date | null>(null);
   const [showForm, setShowForm] = useState(false);
+  // KAL-002: Filter nach Kategorie und Herkunft (manuell bzw. Fachmodul)
+  const [kategorieFilter, setKategorieFilter] = useState("");
+  const [quelleFilter, setQuelleFilter] = useState("");
 
   const refresh = () => {
     setLoading(true);
@@ -55,13 +66,14 @@ export default function MeinKalenderTab() {
   const tage = useMemo(() => monatsGrid(aktuell.getFullYear(), aktuell.getMonth()), [aktuell]);
 
   const alleTermine = useMemo(() => {
-    type Eintrag = { datum: string; titel: string; kategorie: KalenderKategorie; manuell: boolean; id: string };
+    type Eintrag = { datum: string; titel: string; kategorie: KalenderKategorie; manuell: boolean; id: string; quelle: string };
     const manuell: Eintrag[] = ereignisse.map((e) => ({
       datum: e.datum,
       titel: e.titel,
       kategorie: e.kategorie,
       manuell: true,
       id: e.id,
+      quelle: "Manuell",
     }));
     const abgel: Eintrag[] = abgeleitet.map((e) => ({
       datum: e.datum,
@@ -69,12 +81,17 @@ export default function MeinKalenderTab() {
       kategorie: e.kategorie,
       manuell: false,
       id: e.id,
+      quelle: e.quelle,
     }));
-    return [...manuell, ...abgel];
-  }, [ereignisse, abgeleitet]);
+    return [...manuell, ...abgel].filter(
+      (t) => (!kategorieFilter || t.kategorie === kategorieFilter) && (!quelleFilter || t.quelle === quelleFilter)
+    );
+  }, [ereignisse, abgeleitet, kategorieFilter, quelleFilter]);
+
+  const quellen = useMemo(() => ["Manuell", ...Array.from(new Set(abgeleitet.map((e) => e.quelle))).sort()], [abgeleitet]);
 
   const termineFuerTag = (tag: Date) =>
-    alleTermine.filter((t) => t.datum.slice(0, 10) === tag.toISOString().slice(0, 10));
+    alleTermine.filter((t) => eintragTag(t.datum) === tagKey(tag));
 
   const remove = async (id: string) => {
     await fetch(`/api/kalender-ereignisse/${id}`, { method: "DELETE" });
@@ -113,6 +130,44 @@ export default function MeinKalenderTab() {
         >
           ＋ Termin
         </button>
+      </div>
+
+      <div className="mb-3 flex flex-wrap gap-2">
+        <select
+          value={kategorieFilter}
+          onChange={(e) => setKategorieFilter(e.target.value)}
+          className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+        >
+          <option value="">Alle Kategorien</option>
+          {KATEGORIEN.map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
+        </select>
+        <select
+          value={quelleFilter}
+          onChange={(e) => setQuelleFilter(e.target.value)}
+          className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+        >
+          <option value="">Alle Herkünfte</option>
+          {quellen.map((q) => (
+            <option key={q} value={q}>
+              {q}
+            </option>
+          ))}
+        </select>
+        {(kategorieFilter || quelleFilter) && (
+          <button
+            onClick={() => {
+              setKategorieFilter("");
+              setQuelleFilter("");
+            }}
+            className="text-xs text-primary hover:underline"
+          >
+            Filter zurücksetzen
+          </button>
+        )}
       </div>
 
       <div className="grid grid-cols-7 gap-px overflow-hidden rounded-lg border border-border bg-border text-xs">

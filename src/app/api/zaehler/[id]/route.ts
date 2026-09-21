@@ -3,6 +3,15 @@ import { zaehlerDb, zaehlerAblesungenDb, logEvent } from "@/lib/db";
 import { ZaehlerAblesung } from "@/lib/types";
 import { requirePermission } from "@/lib/auth";
 import { logAudit } from "@/lib/audit";
+import { pickAllowed } from "@/lib/patch-whitelist";
+import { zaehlernummerVergeben } from "@/lib/validierung";
+import type { Zaehler } from "@/lib/types";
+
+// Nicht überschreibbar: id, createdAt, updatedAt
+const ZAEHLER_PATCH_FELDER = [
+  "zaehlernummer", "art", "einheit", "liegenschaftId", "gebaeudeId", "wohnungId", "standortDetail",
+  "einbauDatum", "status", "notizen",
+] as const satisfies ReadonlyArray<keyof Zaehler>;
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requirePermission("zaehler", "read");
@@ -20,7 +29,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   const { id } = await params;
   const vorher = await zaehlerDb.get(id);
-  const patch = await req.json().catch(() => ({}));
+  const patch = pickAllowed<Zaehler>(await req.json().catch(() => ({})), ZAEHLER_PATCH_FELDER);
+  if (vorher && (patch.zaehlernummer !== undefined || patch.art !== undefined)) {
+    const art = patch.art ?? vorher.art;
+    const nummer = patch.zaehlernummer ?? vorher.zaehlernummer;
+    if (zaehlernummerVergeben(await zaehlerDb.list(), art, String(nummer), id)) {
+      return NextResponse.json({ error: `Zählernummer „${nummer}" ist für die Art ${art} bereits vergeben.` }, { status: 409 });
+    }
+  }
   const zaehler = await zaehlerDb.update(id, patch);
   if (!zaehler) return NextResponse.json({ error: "Nicht gefunden" }, { status: 404 });
   await logAudit({ table: "zaehler", recordId: id, aktion: "update", changedBy: auth.id, oldData: vorher, newData: zaehler });

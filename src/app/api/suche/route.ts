@@ -14,6 +14,7 @@ import {
   veranstaltungsflaechenDb,
   ticketsDb,
   ablageDb,
+  raeumeDb,
   handwerkerDb,
 } from "@/lib/db";
 import { getCurrentUser } from "@/lib/auth";
@@ -117,6 +118,23 @@ export async function GET(req: NextRequest) {
           titel: v.bezeichnung,
           untertitel: `${v.art} · ${v.vertragspartner}`,
           link: `/vertraege`,
+        });
+      }
+    }
+  }
+
+  if (darf("immobilien")) {
+    // UX-001: Räume (Bezeichnung, Nutzung, Nummer) inkl. Gebäude als Untertitel
+    const [raeume, gebaeudeListe] = await Promise.all([raeumeDb.list(), gebaeudeDb.list()]);
+    const gebaeudeName = new Map(gebaeudeListe.map((g) => [g.id, g.name]));
+    for (const r of raeume) {
+      if (enthaelt(r.bezeichnung, q) || enthaelt(r.nutzung, q) || enthaelt(r.nummer, q)) {
+        treffer.push({
+          typ: "Raum",
+          id: r.id,
+          titel: r.bezeichnung,
+          untertitel: [gebaeudeName.get(r.gebaeudeId), r.etage].filter(Boolean).join(" · "),
+          link: `/raeume`,
         });
       }
     }

@@ -4,6 +4,7 @@ import { Vertrag } from "@/lib/types";
 import { uid } from "@/lib/utils";
 import { requirePermission } from "@/lib/auth";
 import { logAudit } from "@/lib/audit";
+import { vertragZeitraumFehler } from "@/lib/validierung";
 
 export async function GET(req: NextRequest) {
   const auth = await requirePermission("vertraege", "read");
@@ -33,6 +34,8 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
+  const zeitraumFehler = vertragZeitraumFehler(body.beginn, body.ende, Boolean(body.unbefristet));
+  if (zeitraumFehler) return NextResponse.json({ error: zeitraumFehler }, { status: 400 });
   const now = new Date().toISOString();
   const vertrag: Vertrag = {
     id: uid(),

@@ -4,6 +4,7 @@ import { requirePermission } from "@/lib/auth";
 import { pickAllowed } from "@/lib/patch-whitelist";
 import type { Vertrag } from "@/lib/types";
 import { logAudit } from "@/lib/audit";
+import { vertragZeitraumFehler } from "@/lib/validierung";
 
 
 // Nicht überschreibbar: id, nummer, createdAt, updatedAt
@@ -31,6 +32,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const vorher = await vertraegeDb.get(id);
   const patch = pickAllowed<Vertrag>(await req.json().catch(() => ({})), VERTRAG_PATCH_FELDER);
   if (patch.unbefristet === true) patch.ende = undefined;
+  if (vorher) {
+    const zeitraumFehler = vertragZeitraumFehler(
+      patch.beginn ?? vorher.beginn,
+      "ende" in patch ? patch.ende : vorher.ende,
+      patch.unbefristet ?? vorher.unbefristet
+    );
+    if (zeitraumFehler) return NextResponse.json({ error: zeitraumFehler }, { status: 400 });
+  }
   const vertrag = await vertraegeDb.update(id, patch);
   if (!vertrag) return NextResponse.json({ error: "Nicht gefunden" }, { status: 404 });
   await logAudit({ table: "vertraege", recordId: id, aktion: "update", changedBy: auth.id, oldData: vorher, newData: vertrag });
