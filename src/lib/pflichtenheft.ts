@@ -156,7 +156,7 @@ export const ANFORDERUNGEN: Anforderung[] = [
     ["TECH-004", "Kartendienste / GIS-Schnittstelle", O],
     ["TECH-005", "Revisionssichere, datenschutzkonforme Ablage", T],
     ["TECH-006", "Zentrale Authentifizierung/Berechtigungen; optional Verzeichnisdienst", T, "/systemadministration/nutzer", "Verzeichnisdienst offen"],
-    ["TECH-007", "Auslegung für 140 Gebäude / 3.000+ Flurstücke", T, undefined, "Fachmodule laufen weiter über db.json. Adapter für Flurstücke und Grundbuch (paginiert, geprüft mit 3.200 Flurstücken) und schema_fachmodule.sql liegen vor; Rest der Module offen."],
+    ["TECH-007", "Auslegung für 140 Gebäude / 3.000+ Flurstücke", T, undefined, "Fachmodule laufen weiter über db.json. Supabase-Adapter für Flurstücke/Grundbuch und paginierte Alt-Adapter (geprüft mit über 1.000 Zeilen) sowie schema_fachmodule.sql liegen vor; Adapter für die übrigen Fachmodule offen."],
     ["TECH-008", "Sicherung, Wiederherstellung, Protokollierung", T, undefined, "readDb() überschreibt defektes JSON nicht mehr, rollierende .bak-Kopie. Backup-/Restore-Konzept und Tests fehlen weiter."],
   ]),
   ...rows(M.SEC, [

@@ -30,5 +30,5 @@ Die übrigen Fachmodule (Verträge, Anlagen, Zähler, Räume, Veranstaltungen, T
 
 ## Bekannte Grenzen
 
-- Die Adapter für Liegenschaft, Gebäude, Wohnung, Mieter und Mietvertrag (`db-supabase.ts`) lesen ohne Paginierung. PostgREST liefert höchstens 1.000 Zeilen; ab dieser Grenze würden Listen still abgeschnitten. Die neuen Adapter (`db-supabase-fach.ts`) paginieren.
+- Die Adapter für Liegenschaft, Gebäude, Wohnung, Mieter und Mietvertrag (`db-supabase.ts`) lesen jetzt ebenfalls seitenweise und laden Kind-Datensätze (Mietkonto, Soll/Ist, Anhänge) blockweise. Vorher schnitt PostgREST bei 1.000 Zeilen still ab, und `.in()` mit tausenden IDs schlug fehl. Die Reihenfolge der Kind-Datensätze ist jetzt deterministisch (Mietkonto nach Datum, Soll/Ist nach Jahr, Anhänge nach Upload-Zeit).
 - `db.json`-Betrieb: `readDb()` überschreibt bei defektem JSON nicht mehr die Datei, sondern wirft einen Fehler und legt einmalig `db.json.corrupt-<Zeitstempel>` an. Zusätzlich entsteht höchstens alle 10 Minuten eine Kopie `db.json.bak`. Ein Backup-Konzept ersetzt das nicht.

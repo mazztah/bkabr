@@ -50,6 +50,66 @@ export function set(row: Record<string, unknown>, obj: Record<string, unknown>, 
 }
 
 // ---------------------------------------------------------------------------
+// Lesen ohne stilles Abschneiden
+// ---------------------------------------------------------------------------
+// PostgREST (Supabase) liefert je Anfrage höchstens 1.000 Zeilen (Standard "max-rows"). Ein einfaches
+// select("*") schneidet größere Tabellen ohne Fehlermeldung ab; ein .in() mit sehr vielen IDs
+// sprengt zusätzlich die URL-Länge. Diese Helfer lesen seitenweise bzw. blockweise.
+
+const PAGE_SIZE = 1000;
+const IN_CHUNK = 150; // UUIDs je .in()-Abfrage (~5,5 KB URL)
+const IN_PARALLEL = 6; // gleichzeitige Blöcke
+
+// Zeilen aus dem untypisierten Supabase-Client (wie bisher `any`-Zeilen aus .select())
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type DbRow = Record<string, any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type QueryFn = (q: any) => any;
+
+/** Liest alle Zeilen einer Tabelle seitenweise. orderCols muss eine eindeutige Reihenfolge ergeben (z. B. [..., "id"]). */
+export async function fetchAllRows(
+  table: string,
+  filters: QueryFn,
+  orderCols: string[]
+): Promise<DbRow[]> {
+  const sb = requireClient();
+  const out: DbRow[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    let q = filters(sb.from(table).select("*"));
+    for (const c of orderCols) q = q.order(c, { ascending: true });
+    const { data, error } = await q.range(from, from + PAGE_SIZE - 1);
+    if (error) throw new Error(`[db-supabase] ${table}.list fehlgeschlagen: ${error.message}`);
+    const rows = (data || []) as DbRow[];
+    out.push(...rows);
+    if (rows.length < PAGE_SIZE) break;
+  }
+  return out;
+}
+
+/** Wie fetchAllRows, aber für "column in (ids)" — IDs werden in Blöcken abgefragt, jeder Block paginiert. */
+export async function fetchRowsByIds(
+  table: string,
+  column: string,
+  ids: string[],
+  orderCols: string[],
+  extraFilters: QueryFn = (q) => q
+): Promise<DbRow[]> {
+  const uniq = [...new Set(ids)];
+  const chunks: string[][] = [];
+  for (let i = 0; i < uniq.length; i += IN_CHUNK) chunks.push(uniq.slice(i, i + IN_CHUNK));
+  const out: DbRow[] = [];
+  for (let i = 0; i < chunks.length; i += IN_PARALLEL) {
+    const results = await Promise.all(
+      chunks.slice(i, i + IN_PARALLEL).map((c) =>
+        fetchAllRows(table, (q) => extraFilters(q).in(column, c), orderCols)
+      )
+    );
+    for (const r of results) out.push(...r);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Generische Fabrik für Entitäten OHNE Kind-Tabellen (Liegenschaft, Gebäude, Wohnung)
 // ---------------------------------------------------------------------------
 
@@ -70,16 +130,19 @@ function makeSimpleSupabaseCrud<T extends { id: string; nummer?: string }>(
 ): SimpleCrud<T> {
   return {
     async list(filter) {
-      const sb = requireClient();
-      let q = sb.from(table).select("*").order("created_at", { ascending: true });
-      if (filter) {
-        for (const [k, v] of Object.entries(filter)) {
-          q = q.eq(filterColumns[k] || k, v as string | number | boolean);
-        }
-      }
-      const { data, error } = await q;
-      if (error) throw new Error(`[db-supabase] ${table}.list fehlgeschlagen: ${error.message}`);
-      return (data || []).map(fromRow);
+      const rows = await fetchAllRows(
+        table,
+        (q) => {
+          if (filter) {
+            for (const [k, v] of Object.entries(filter)) {
+              q = q.eq(filterColumns[k] || k, v as string | number | boolean);
+            }
+          }
+          return q;
+        },
+        ["created_at", "id"]
+      );
+      return rows.map(fromRow);
     },
     async get(id) {
       const sb = requireClient();
@@ -285,24 +348,23 @@ function mieterFromRow(r: Record<string, unknown>, sollIst: SollIstEintrag[], mi
 }
 
 async function fetchMieterChildren(mieterIds: string[]) {
-  const sb = requireClient();
   const sollIstByMieter = new Map<string, SollIstEintrag[]>();
   const mietkontoByMieter = new Map<string, MietkontoBuchung[]>();
   if (!mieterIds.length) return { sollIstByMieter, mietkontoByMieter };
 
-  const [sollIstRes, mietkontoRes] = await Promise.all([
-    sb.from("mieter_soll_ist").select("*").in("mieter_id", mieterIds),
-    sb.from("mieter_mietkonto").select("*").in("mieter_id", mieterIds),
+  // Ein Mieter hat oft Dutzende Buchungen: Summe über alle Mieter überschreitet schnell 1.000 Zeilen.
+  // Reihenfolge deterministisch (Jahr/Datum, dann id), damit die Seiten sich nicht überlappen.
+  const [sollIstRows, mietkontoRows] = await Promise.all([
+    fetchRowsByIds("mieter_soll_ist", "mieter_id", mieterIds, ["jahr", "id"]),
+    fetchRowsByIds("mieter_mietkonto", "mieter_id", mieterIds, ["datum", "id"]),
   ]);
-  if (sollIstRes.error) throw new Error(`[db-supabase] mieter_soll_ist fehlgeschlagen: ${sollIstRes.error.message}`);
-  if (mietkontoRes.error) throw new Error(`[db-supabase] mieter_mietkonto fehlgeschlagen: ${mietkontoRes.error.message}`);
 
-  for (const row of sollIstRes.data || []) {
+  for (const row of sollIstRows) {
     const list = sollIstByMieter.get(row.mieter_id) || [];
     list.push({ id: row.id, jahr: row.jahr, sollVorauszahlung: row.soll_vorauszahlung, istZahlungen: row.ist_zahlungen, notiz: row.notiz ?? undefined });
     sollIstByMieter.set(row.mieter_id, list);
   }
-  for (const row of mietkontoRes.data || []) {
+  for (const row of mietkontoRows) {
     const list = mietkontoByMieter.get(row.mieter_id) || [];
     list.push({ id: row.id, datum: row.datum, typ: row.typ, soll: row.soll, ist: row.ist, text: row.text ?? undefined });
     mietkontoByMieter.set(row.mieter_id, list);
@@ -338,12 +400,11 @@ async function replaceMieterChildren(mieterId: string, sollIst?: SollIstEintrag[
 
 export const mieterDb: SimpleCrud<Mieter> = {
   async list(filter) {
-    const sb = requireClient();
-    let q = sb.from("mieter").select("*").order("created_at", { ascending: true });
-    if (filter?.wohnungId) q = q.eq("wohnung_id", filter.wohnungId);
-    const { data, error } = await q;
-    if (error) throw new Error(`[db-supabase] mieter.list fehlgeschlagen: ${error.message}`);
-    const rows = data || [];
+    const rows = await fetchAllRows(
+      "mieter",
+      (q) => (filter?.wohnungId ? q.eq("wohnung_id", filter.wohnungId) : q),
+      ["created_at", "id"]
+    );
     const { sollIstByMieter, mietkontoByMieter } = await fetchMieterChildren(rows.map((r) => r.id));
     return rows.map((r) => mieterFromRow(r, sollIstByMieter.get(r.id) || [], mietkontoByMieter.get(r.id) || []));
   },
@@ -461,10 +522,10 @@ function anhangFromRow(row: Record<string, unknown>): Anhang {
 async function fetchAnhaenge(parentTyp: "mietvertrag" | "eigentuemer" | "pm_vertrag", parentIds: string[]) {
   const byParent = new Map<string, Anhang[]>();
   if (!parentIds.length) return byParent;
-  const sb = requireClient();
-  const { data, error } = await sb.from("anhaenge").select("*").eq("parent_typ", parentTyp).in("parent_id", parentIds);
-  if (error) throw new Error(`[db-supabase] anhaenge lesen fehlgeschlagen: ${error.message}`);
-  for (const row of data || []) {
+  const rows = await fetchRowsByIds("anhaenge", "parent_id", parentIds, ["hochgeladen_am", "id"], (q) =>
+    q.eq("parent_typ", parentTyp)
+  );
+  for (const row of rows) {
     const list = byParent.get(row.parent_id) || [];
     list.push(anhangFromRow(row));
     byParent.set(row.parent_id, list);
@@ -488,13 +549,15 @@ async function replaceAnhaenge(parentTyp: "mietvertrag" | "eigentuemer" | "pm_ve
 
 export const mietvertraegeDb: SimpleCrud<Mietvertrag> = {
   async list(filter) {
-    const sb = requireClient();
-    let q = sb.from("mietvertraege").select("*").order("created_at", { ascending: true });
-    if (filter?.wohnungId) q = q.eq("wohnung_id", filter.wohnungId);
-    if (filter?.mieterId) q = q.eq("mieter_id", filter.mieterId);
-    const { data, error } = await q;
-    if (error) throw new Error(`[db-supabase] mietvertraege.list fehlgeschlagen: ${error.message}`);
-    const rows = data || [];
+    const rows = await fetchAllRows(
+      "mietvertraege",
+      (q) => {
+        if (filter?.wohnungId) q = q.eq("wohnung_id", filter.wohnungId);
+        if (filter?.mieterId) q = q.eq("mieter_id", filter.mieterId);
+        return q;
+      },
+      ["created_at", "id"]
+    );
     const anhaengeByParent = await fetchAnhaenge("mietvertrag", rows.map((r) => r.id));
     return rows.map((r) => mietvertragFromRow(r, anhaengeByParent.get(r.id) || []));
   },

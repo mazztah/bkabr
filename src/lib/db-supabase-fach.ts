@@ -16,15 +16,13 @@
 //   Spalten wie version/sensibel/vorgaenger_id erhalten bleiben.
 // - Fehler werden geworfen (kein stilles Leerergebnis), wie in db-supabase.ts.
 
-import { requireClient, nextNummerSupabase, set } from "./db-supabase";
+import { requireClient, nextNummerSupabase, set, fetchAllRows } from "./db-supabase";
 import type { Anhang, Flurstueck, GrundbuchEintrag } from "./types";
 
-const PAGE = 1000; // PostgREST-Standardlimit
+const PAGE = 1000; // PostgREST-Standardlimit (nur noch für die Entscheidung in flurstueckeDb.list)
 const IN_CHUNK = 150; // UUIDs je .in()-Abfrage (~5,5 KB URL)
 
 type Row = Record<string, unknown>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type QueryFn = (q: any) => any;
 
 interface Crud<T> {
   list(filter?: Partial<T>): Promise<T[]>;
@@ -34,21 +32,8 @@ interface Crud<T> {
   remove(id: string): Promise<boolean>;
 }
 
-/** Liest alle Zeilen einer Tabelle seitenweise (stabile Sortierung). */
-async function fetchAll(table: string, filters: QueryFn, orderCols: string[]): Promise<Row[]> {
-  const sb = requireClient();
-  const out: Row[] = [];
-  for (let from = 0; ; from += PAGE) {
-    let q = filters(sb.from(table).select("*"));
-    for (const c of orderCols) q = q.order(c, { ascending: true });
-    const { data, error } = await q.range(from, from + PAGE - 1);
-    if (error) throw new Error(`[db-supabase-fach] ${table}.list fehlgeschlagen: ${error.message}`);
-    const rows = (data || []) as Row[];
-    out.push(...rows);
-    if (rows.length < PAGE) break;
-  }
-  return out;
-}
+/** Seitenweises Lesen: gemeinsamer Helfer aus db-supabase.ts (PostgREST-Limit 1.000 Zeilen). */
+const fetchAll = fetchAllRows;
 
 const dateOnly = (v: unknown) => (typeof v === "string" && v ? v.slice(0, 10) : v);
 
