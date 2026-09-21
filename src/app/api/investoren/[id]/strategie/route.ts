@@ -2,8 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { investorenDb, investorStrategieBerichteDb, logEvent } from "@/lib/db";
 import { generateInvestorStrategieBericht } from "@/lib/ai";
 import { v4 as uuidv4 } from "uuid";
+import { requirePermission } from "@/lib/auth";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("finanzen", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const alle = await investorStrategieBerichteDb.list({ investorId: id });
   const sortiert = [...alle].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -11,6 +15,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("finanzen", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const investor = await investorenDb.get(id);
   if (!investor) return NextResponse.json({ error: "Investor nicht gefunden" }, { status: 404 });

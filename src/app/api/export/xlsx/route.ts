@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listAbrechnungen, liegenschaftenDb, gebaeudeDb, wohnungenDb } from "@/lib/db";
 import { buildXlsx } from "@/lib/xlsx";
+import { requirePermission } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -10,6 +11,9 @@ export const runtime = "nodejs";
  * Gebäude, Wohnung, Zeitraum, Summe und Status).
  */
 export async function GET(_req: NextRequest) {
+  const auth = await requirePermission("finanzen", "read");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const [abrechnungen, liegenschaften, gebaeude, wohnungen] = await Promise.all([
       listAbrechnungen(),

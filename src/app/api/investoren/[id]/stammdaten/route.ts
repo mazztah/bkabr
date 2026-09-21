@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { investorenDb, logEvent } from "@/lib/db";
 import { enrichInvestorStammdaten } from "@/lib/ai";
 import { Investor } from "@/lib/types";
+import { requirePermission } from "@/lib/auth";
 
 /**
  * Reichert die Stammdaten EINES Investors an (Websuche + strukturierter
@@ -14,6 +15,9 @@ import { Investor } from "@/lib/types";
  * in ein Server-Timeout laufen würde.
  */
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("finanzen", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const investor = await investorenDb.get(id);
   if (!investor) return NextResponse.json({ error: "Investor nicht gefunden" }, { status: 404 });

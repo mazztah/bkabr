@@ -43,6 +43,7 @@ import {
   HierarchieWohnungVorschlag,
   SmartUploadErgebnis,
 } from "@/lib/types";
+import { requireAnyPermission } from "@/lib/auth";
 
 const EINHEIT_TYPEN = new Set<EinheitTyp>(["Wohnung", "Gewerbe", "Stellplatz", "Sonstige"]);
 
@@ -692,6 +693,9 @@ async function mapMitLimit<T, R>(items: T[], limit: number, fn: (item: T, i: num
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requireAnyPermission([["dokumente", "write"], ["immobilien", "write"], ["liegenschaften", "write"], ["vertraege", "write"]]);
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const formData = await req.formData();
     const files = formData.getAll("files").filter((f): f is File => f instanceof File);

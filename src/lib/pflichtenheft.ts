@@ -161,8 +161,8 @@ export const ANFORDERUNGEN: Anforderung[] = [
   ]),
   ...rows(M.SEC, [
     ["SEC-001", "Datenminimierung bei personenbezogenen Daten", O, undefined, "Kein Datenminimierungskonzept, keine Maskierung. Vertrags-, Konto- und Mieterdaten werden an externe LLM-Anbieter gesendet (Groq, Cerebras, Cloudflare, NVIDIA, Mistral, OpenRouter)."],
-    ["SEC-002", "Rollenbasierte Einschränkung sensibler Daten", T, "/systemadministration/nutzer", "Wirkt nur mit Supabase-Auth; 46 API-Routen ohne Modulprüfung"],
-    ["SEC-003", "Protokollierung wesentlicher Änderungen", T, undefined, "logAudit nur mit Supabase, fail open; Trigger für Fachmodule in schema_fachmodule.sql"],
+    ["SEC-002", "Rollenbasierte Einschränkung sensibler Daten", T, "/systemadministration/nutzer", "Modulprüfung in allen Fachrouten, KI-Agent prüft Rechte je Tool, PATCH-Whitelist bei Verträgen/Anlagen. Offen: Objekt-Scope wird nirgends erzwungen, Ticketbearbeiter sieht alle Tickets, Dashboard-/Log-Routen nur mit Login."],
+    ["SEC-003", "Protokollierung wesentlicher Änderungen", T, undefined, "logAudit nur mit Supabase und fail open; bulk-delete jetzt protokolliert. Weiterhin ohne Audit: smart-upload, upload, kalender, team-nachrichten, Nachträge."],
     ["SEC-004", "Konfigurierbare Lösch- und Aufbewahrungsregeln", O],
     ["SEC-005", "Backup und Wiederherstellung nach Betriebskonzept", O],
   ]),

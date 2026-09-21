@@ -1,5 +1,7 @@
 import { getSystemLogStream } from "@/lib/observability-stream";
 import { getFunComments } from "@/lib/fun-mode";
+import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/auth";
 
 /**
  * GET /api/dashboard/log-stream
@@ -15,6 +17,9 @@ import { getFunComments } from "@/lib/fun-mode";
  *   - flyLogStatus → { active, error } für den Verbindungsstatus in der UI
  */
 export async function GET() {
+  const auth = await requireUser();
+  if (auth instanceof NextResponse) return auth;
+
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({

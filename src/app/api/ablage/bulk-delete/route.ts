@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ablageDb, logEvent } from "@/lib/db";
 import { deleteStoredFile } from "@/lib/storage";
+import { requirePermission } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 /**
  * Löscht alle Ablage-Dokumente, die (noch) nicht zugeordnet sind (Status "neu",
@@ -9,6 +11,9 @@ import { deleteStoredFile } from "@/lib/storage";
  * fragt der Agent vorher aktiv nach, ob der Nutzer sich sicher ist.
  */
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("dokumente", "delete");
+  if (auth instanceof NextResponse) return auth;
+
   const body = await req.json().catch(() => ({}));
   if (body.bestaetigt !== true) {
     return NextResponse.json(
@@ -23,6 +28,7 @@ export async function POST(req: NextRequest) {
   for (const doc of zuLoeschen) {
     await deleteStoredFile(doc.storedFileName);
     await ablageDb.remove(doc.id);
+    await logAudit({ table: "ablage", recordId: doc.id, aktion: "delete", changedBy: auth.id, oldData: doc });
   }
 
   await logEvent(

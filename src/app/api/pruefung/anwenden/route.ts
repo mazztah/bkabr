@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { pruefLaufDb } from "@/lib/db";
 import { wendeBefundAn } from "@/lib/pruefung";
+import { requirePermission } from "@/lib/auth";
 
 /**
  * Wendet die vom Nutzer freigegebenen Befunde eines Prüflaufs an (Häkchen im
  * Dashboard – komplett oder nur einzelne). Body: { laufId, befundIds: string[] }
  */
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("finanzen", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const body = await req.json().catch(() => ({}));
   const laufId: string = body.laufId;
   const befundIds: string[] = body.befundIds || [];

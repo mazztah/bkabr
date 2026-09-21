@@ -2,8 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { investorenDb, logEvent } from "@/lib/db";
 import { Investor, InvestorStatus } from "@/lib/types";
 import { v4 as uuidv4 } from "uuid";
+import { requirePermission } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
+  const auth = await requirePermission("finanzen", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const alle = await investorenDb.list();
   const status = req.nextUrl.searchParams.get("status");
   const sektor = req.nextUrl.searchParams.get("sektor")?.toLowerCase();
@@ -25,6 +29,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("finanzen", "write");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const body = await req.json();
     const firma = String(body.firma || "").trim();

@@ -3,14 +3,21 @@ import { agentSchedulesDb, logEvent } from "@/lib/db";
 import { AgentSchedule, AgentScheduleRecurrence } from "@/lib/types";
 import { computeNextRun, validateRecurrence } from "@/lib/schedule";
 import { uid } from "@/lib/utils";
+import { requirePermission } from "@/lib/auth";
 
 export async function GET() {
+  const auth = await requirePermission("kalender", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const items = await agentSchedulesDb.list();
   items.sort((a, b) => new Date(a.nextRunAt).getTime() - new Date(b.nextRunAt).getTime());
   return NextResponse.json({ schedules: items });
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("kalender", "write");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const body = await req.json().catch(() => ({}));
 

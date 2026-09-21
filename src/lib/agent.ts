@@ -1,4 +1,5 @@
 import Groq from "groq-sdk";
+import { agentToolDenied, agentUserCan } from "./agent-context";
 import { v4 as uuidv4 } from "uuid";
 import { inferCapability, inferRisk } from "./agent-capabilities";
 import { completeAgentRun, createAgentRun, type AgentRunStep } from "./supabase";
@@ -1614,6 +1615,10 @@ async function executeTool(
   name: string,
   args: Record<string, unknown>
 ): Promise<unknown> {
+  // Rechteprüfung im Kontext des angemeldeten Nutzers (siehe agent-context.ts)
+  const verweigert = agentToolDenied(name);
+  if (verweigert) return { error: verweigert };
+
   const { liegenschaften, gebaeude, wohnungen, mieter } = await loadHierarchy();
 
   switch (name) {
@@ -4412,7 +4417,7 @@ export async function runAgent(params: {
       (params.history || []).slice(-4).some((h) => mentionsBestand(h.content)));
 
   // Bei klarem Bereinigungsauftrag: deterministisch ausführen (zuverlässig, kein Timeout)
-  const det = wantsInvestorTools || wantsBestandTools ? null : await tryDeterministicCleanup(params.message);
+  const det = wantsInvestorTools || wantsBestandTools || !agentUserCan("immobilien", "delete") ? null : await tryDeterministicCleanup(params.message);
   if (det) return det;
 
   // Agent-Gedächtnis (Durchgang 9): 1 von max. 2 Supabase-Writes für diesen Lauf.
@@ -4721,7 +4726,7 @@ export async function runAgent(params: {
       reply: e?.message,
     });
 
-    const cleanupFallback = wantsInvestorTools || wantsBestandTools ? null : await tryDeterministicCleanup(params.message);
+    const cleanupFallback = wantsInvestorTools || wantsBestandTools || !agentUserCan("immobilien", "delete") ? null : await tryDeterministicCleanup(params.message);
     if (cleanupFallback) {
       return {
         reply:

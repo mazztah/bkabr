@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { handwerkerDb, logEvent } from "@/lib/db";
 import { HandwerkerTrackrecordEintrag } from "@/lib/types";
 import { uid } from "@/lib/utils";
+import { requirePermission } from "@/lib/auth";
 
 /**
  * Fügt einen "externen" Trackrecord-Eintrag hinzu – also Auftragshistorie, die
@@ -11,6 +12,9 @@ import { uid } from "@/lib/utils";
  * und werden hier nicht angelegt.
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("ticketsystem", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const hw = await handwerkerDb.get(id);
   if (!hw) return NextResponse.json({ error: "Handwerker nicht gefunden" }, { status: 404 });
@@ -40,6 +44,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("ticketsystem", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const eintragId = req.nextUrl.searchParams.get("eintragId");
   const hw = await handwerkerDb.get(id);

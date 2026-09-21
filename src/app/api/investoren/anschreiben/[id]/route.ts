@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { investorAnschreibenDb } from "@/lib/db";
 import { InvestorAnschreibenStatus } from "@/lib/types";
+import { requirePermission } from "@/lib/auth";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("finanzen", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const doc = await investorAnschreibenDb.get(id);
   if (!doc) return NextResponse.json({ error: "Nicht gefunden" }, { status: 404 });
@@ -10,6 +14,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("finanzen", "write");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const { id } = await params;
     const body = await req.json();
@@ -28,6 +35,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 }
 
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("finanzen", "delete");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const ok = await investorAnschreibenDb.remove(id);
   if (!ok) return NextResponse.json({ error: "Nicht gefunden" }, { status: 404 });

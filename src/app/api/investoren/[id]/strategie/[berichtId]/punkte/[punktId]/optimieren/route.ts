@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { investorenDb, investorStrategieBerichteDb } from "@/lib/db";
 import { optimizeInvestorStrategiePunkt } from "@/lib/ai";
+import { requirePermission } from "@/lib/auth";
 
 /**
  * Schlägt für EINEN Strategiepunkt eine überarbeitete Beschreibung vor,
@@ -12,6 +13,9 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string; berichtId: string; punktId: string }> }
 ) {
+  const auth = await requirePermission("finanzen", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const { id, berichtId, punktId } = await params;
   const investor = await investorenDb.get(id);
   const bericht = await investorStrategieBerichteDb.get(berichtId);

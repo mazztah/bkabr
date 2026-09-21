@@ -148,6 +148,25 @@ export async function requireUser(): Promise<AuthUser | NextResponse> {
  *   const auth = await requirePermission("liegenschaften", "write");
  *   if (auth instanceof NextResponse) return auth;
  */
+/**
+ * Wie requirePermission(), erlaubt aber mehrere Alternativen (z. B. für Upload, den Ticketbearbeiter
+ * und Sachbearbeiter verschiedener Module nutzen). Es genügt EIN passendes Recht.
+ */
+export async function requireAnyPermission(
+  optionen: ReadonlyArray<readonly [Modul, Aktion]>
+): Promise<AuthUser | NextResponse> {
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ error: "Nicht angemeldet." }, { status: 401 });
+  const erlaubt = optionen.some(([m, a]) => user.rechte.has(`${m}:${a}`) || user.rechte.has(`${m}:admin`));
+  if (!erlaubt) {
+    return NextResponse.json(
+      { error: `Keine Berechtigung (benötigt eines von: ${optionen.map(([m, a]) => `${m}:${a}`).join(", ")}).` },
+      { status: 403 }
+    );
+  }
+  return user;
+}
+
 export async function requirePermission(modul: Modul, aktion: Aktion): Promise<AuthUser | NextResponse> {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Nicht angemeldet." }, { status: 401 });

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAiObservatoryUebersicht } from "@/lib/db";
+import { requireUser } from "@/lib/auth";
 
 /**
  * AI Cost & Model Observatory – liefert die Übersicht, die
@@ -12,6 +13,9 @@ import { getAiObservatoryUebersicht } from "@/lib/db";
  * damit das Dashboard nie leer „Lade…" hängt.
  */
 export async function GET() {
+  const auth = await requireUser();
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const uebersicht = await getAiObservatoryUebersicht();
     return NextResponse.json({ uebersicht });

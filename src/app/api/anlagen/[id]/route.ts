@@ -2,7 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { anlagenDb, anlagenWartungenDb, logEvent } from "@/lib/db";
 import { AnlagenWartung } from "@/lib/types";
 import { requirePermission } from "@/lib/auth";
+import { pickAllowed } from "@/lib/patch-whitelist";
+import type { Anlage } from "@/lib/types";
 import { logAudit } from "@/lib/audit";
+
+
+// Nicht überschreibbar: id, nummer, createdAt, updatedAt
+const ANLAGE_PATCH_FELDER = [
+  "typ", "bezeichnung", "liegenschaftId", "gebaeudeId", "standortDetail", "hersteller", "modell", "seriennummer",
+  "baujahr", "wartungsfirma", "naechstePruefung", "pruefintervallMonate", "status", "notizen", "anhaenge",
+] as const satisfies ReadonlyArray<keyof Anlage>;
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requirePermission("anlagen", "read");
@@ -20,7 +29,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   const { id } = await params;
   const vorher = await anlagenDb.get(id);
-  const patch = await req.json().catch(() => ({}));
+  const patch = pickAllowed<Anlage>(await req.json().catch(() => ({})), ANLAGE_PATCH_FELDER);
   const anlage = await anlagenDb.update(id, patch);
   if (!anlage) return NextResponse.json({ error: "Nicht gefunden" }, { status: 404 });
   await logAudit({ table: "anlagen", recordId: id, aktion: "update", changedBy: auth.id, oldData: vorher, newData: anlage });

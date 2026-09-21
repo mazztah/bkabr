@@ -1,7 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { vertraegeDb, logEvent } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
+import { pickAllowed } from "@/lib/patch-whitelist";
+import type { Vertrag } from "@/lib/types";
 import { logAudit } from "@/lib/audit";
+
+
+// Nicht überschreibbar: id, nummer, createdAt, updatedAt
+const VERTRAG_PATCH_FELDER = [
+  "art", "bezeichnung", "vertragspartner", "liegenschaftId", "flurstueckId", "nutzungsart", "beginn", "ende",
+  "unbefristet", "kuendigungsfrist", "betrag", "zahlungsintervall", "status", "dateiName", "storedFileName",
+  "mimeType", "notizen", "anhaenge",
+] as const satisfies ReadonlyArray<keyof Vertrag>;
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requirePermission("vertraege", "read");
@@ -19,7 +29,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   const { id } = await params;
   const vorher = await vertraegeDb.get(id);
-  const patch = await req.json().catch(() => ({}));
+  const patch = pickAllowed<Vertrag>(await req.json().catch(() => ({})), VERTRAG_PATCH_FELDER);
   if (patch.unbefristet === true) patch.ende = undefined;
   const vertrag = await vertraegeDb.update(id, patch);
   if (!vertrag) return NextResponse.json({ error: "Nicht gefunden" }, { status: 404 });

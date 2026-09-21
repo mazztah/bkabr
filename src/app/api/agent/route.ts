@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAgentIntent, runAgent } from "@/lib/agent";
+import { requireUser } from "@/lib/auth";
+import { runWithAgentUser } from "@/lib/agent-context";
 
 /**
  * POST /api/agent
@@ -7,6 +9,10 @@ import { isAgentIntent, runAgent } from "@/lib/agent";
  * Body: { message: string, history?: [...], path?: string, force?: boolean }
  */
 export async function POST(req: NextRequest) {
+  // Login Pflicht; die Modulrechte werden je Tool im Agenten geprüft (agent-context.ts).
+  const auth = await requireUser();
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const body = await req.json();
     const message = body?.message;
@@ -35,11 +41,13 @@ export async function POST(req: NextRequest) {
           .slice(-8)
       : [];
 
-    const result = await runAgent({
-      message,
-      history,
-      path: typeof body.path === "string" ? body.path : undefined,
-    });
+    const result = await runWithAgentUser(auth, () =>
+      runAgent({
+        message,
+        history,
+        path: typeof body.path === "string" ? body.path : undefined,
+      })
+    );
 
     return NextResponse.json({
       reply: result.reply,

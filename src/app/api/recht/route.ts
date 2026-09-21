@@ -2,12 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { rechtCheck } from "@/lib/ai";
 import { getAbrechnung } from "@/lib/db";
 import { RECHT_CONTENT } from "@/lib/recht-content";
+import { requirePermission, requireUser } from "@/lib/auth";
 
 export async function GET() {
+  const auth = await requireUser();
+  if (auth instanceof NextResponse) return auth;
+
   return NextResponse.json({ content: RECHT_CONTENT });
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("finanzen", "read");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const { id } = await req.json().catch(() => ({ id: null }));
     const abrechnung = id ? await getAbrechnung(id) : null;

@@ -2,8 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { agentSchedulesDb, logEvent } from "@/lib/db";
 import { AgentScheduleRecurrence } from "@/lib/types";
 import { computeNextRun, validateRecurrence } from "@/lib/schedule";
+import { requirePermission } from "@/lib/auth";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("kalender", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const schedule = await agentSchedulesDb.get(id);
   if (!schedule) return NextResponse.json({ error: "Nicht gefunden" }, { status: 404 });
@@ -11,6 +15,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("kalender", "write");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const { id } = await params;
     const existing = await agentSchedulesDb.get(id);
@@ -43,6 +50,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 }
 
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("kalender", "delete");
+  if (auth instanceof NextResponse) return auth;
+
   const { id } = await params;
   const existing = await agentSchedulesDb.get(id);
   if (!existing) return NextResponse.json({ error: "Nicht gefunden" }, { status: 404 });

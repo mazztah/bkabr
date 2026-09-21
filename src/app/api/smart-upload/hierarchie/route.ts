@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { gebaeudeDb, liegenschaftenDb, logEvent, mieterDb, pmVertraegeDb, wohnungenDb } from "@/lib/db";
 import { Anhang, AnhangTyp, EinheitTyp, Gebaeude, Liegenschaft, Mieter, Wohnung } from "@/lib/types";
 import { uid } from "@/lib/utils";
+import { requirePermission } from "@/lib/auth";
 
 interface LiegenschaftInput {
   modus: "vorhanden" | "neu";
@@ -61,6 +62,9 @@ interface DokumentInput {
  * die ID der vorigen benötigt.
  */
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("immobilien", "write");
+  if (auth instanceof NextResponse) return auth;
+
   const body = await req.json().catch(() => ({}));
   const liegenschaftInput: LiegenschaftInput = body.liegenschaft;
   const gebaeudeInput: GebaeudeInput[] = body.gebaeude || [];

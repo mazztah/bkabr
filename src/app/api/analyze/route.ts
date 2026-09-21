@@ -3,6 +3,7 @@ import { classifyDocument } from "@/lib/ai";
 import { extractTextFromFile } from "@/lib/document-ocr";
 import { ingestRechnungDokument } from "@/lib/rechnung-intake";
 import { DOKUMENT_TYP_LABEL } from "@/lib/types";
+import { requirePermission } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -10,6 +11,9 @@ export const maxDuration = 60;
 const SUPPORTED = ["application/pdf", "image/jpeg", "image/jpg", "image/png", "text/plain"];
 
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("finanzen", "write");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const formData = await req.formData();
     const file = formData.get("file") as File | null;

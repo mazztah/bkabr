@@ -5,6 +5,7 @@ import {
   runMonthlyModelUpdate,
   setFunMode,
 } from "@/lib/db";
+import { requirePermission, requireUser } from "@/lib/auth";
 
 /**
  * GET /api/dashboard/observability
@@ -12,6 +13,9 @@ import {
  * Modell-Katalog mit Health, Rate-Limits, LED-Wall, Agent-Audit, Summary.
  */
 export async function GET() {
+  const auth = await requireUser();
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const overview = await getObservabilityOverview();
     return NextResponse.json({ overview });
@@ -30,6 +34,9 @@ export async function GET() {
  *  - { action: "set_fun_mode", enabled }  → Spaßmodus umschalten
  */
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("systemadministration", "write");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const body = (await req.json().catch(() => ({}))) as {
       action?: string;

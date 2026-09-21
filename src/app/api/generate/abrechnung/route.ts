@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateBetriebskostenabrechnung } from "@/lib/ai";
 import { getAbrechnung, updateAbrechnung } from "@/lib/db";
+import { requirePermission } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
+  const auth = await requirePermission("finanzen", "write");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const { id } = await req.json();
     const abr = await getAbrechnung(id);

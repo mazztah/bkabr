@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getChainStats, getObservabilityOverview } from "@/lib/db";
 import { KNOWN_FREE_TIER_LIMITS } from "@/lib/llm-observability";
 import { KLASSEN_TEXT, type LlmErrorClass } from "@/lib/llm-error-classifier";
+import { requireUser } from "@/lib/auth";
 
 /**
  * GET /api/dashboard/cost-recommendation?modelId=...
@@ -46,6 +47,9 @@ const MASSNAHME: Record<LlmErrorClass, (ctx: { tpm?: number }) => string> = {
 };
 
 export async function GET(req: NextRequest) {
+  const auth = await requireUser();
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const modelId = req.nextUrl.searchParams.get("modelId");
     if (!modelId) {

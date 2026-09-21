@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { listAbrechnungen } from "@/lib/db";
+import { requirePermission } from "@/lib/auth";
 
 function csvEscape(value: string | number): string {
   const str = String(value ?? "");
@@ -8,6 +9,9 @@ function csvEscape(value: string | number): string {
 }
 
 export async function GET() {
+  const auth = await requirePermission("finanzen", "read");
+  if (auth instanceof NextResponse) return auth;
+
   const all = await listAbrechnungen();
   const header = [
     "Name",

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { chatWithContext } from "@/lib/ai";
 import { isAgentIntent, runAgent } from "@/lib/agent";
+import { requireUser } from "@/lib/auth";
+import { runWithAgentUser } from "@/lib/agent-context";
 import {
   getAbrechnung,
   listAbrechnungen,
@@ -12,6 +14,10 @@ import {
 } from "@/lib/db";
 
 export async function POST(req: NextRequest) {
+  // Login Pflicht; Agent-Aktionen werden je Tool gegen die Modulrechte geprüft (agent-context.ts).
+  const auth = await requireUser();
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const body = await req.json();
     const { message, id, path, history, forceAgent } = body || {};
@@ -33,11 +39,13 @@ export async function POST(req: NextRequest) {
     // Agent-Workflow: Briefe/Mahnungen erstellen
     if (forceAgent || isAgentIntent(message)) {
       try {
-        const result = await runAgent({
-          message,
-          history: safeHistory,
-          path: typeof path === "string" ? path : "/",
-        });
+        const result = await runWithAgentUser(auth, () =>
+          runAgent({
+            message,
+            history: safeHistory,
+            path: typeof path === "string" ? path : "/",
+          })
+        );
         return NextResponse.json({
           reply: result.reply,
           agent: true,

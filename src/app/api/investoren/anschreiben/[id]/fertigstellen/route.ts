@@ -2,8 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { investorAnschreibenDb, logEvent } from "@/lib/db";
 import { buildSchriftverkehrPdf } from "@/lib/pdf";
 import { storeFile } from "@/lib/storage";
+import { requirePermission } from "@/lib/auth";
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requirePermission("finanzen", "write");
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const { id } = await params;
     const doc = await investorAnschreibenDb.get(id);
